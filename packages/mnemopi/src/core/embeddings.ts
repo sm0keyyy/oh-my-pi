@@ -20,6 +20,7 @@ import {
 	type EmbeddingOutput,
 	getMnemopiRuntimeOptions,
 	mnemopiDebugEnabled,
+	type RemoteEmbeddingUsage,
 	resolveEmbeddingProvider,
 } from "./runtime-options";
 import { clipToWindow, DEFAULT_INPUT_CHARS } from "./text-window";
@@ -257,7 +258,10 @@ export function isApiModel(modelName: string): boolean {
 		return true;
 	}
 	const active = activeEmbeddingOptions();
-	const baseUrl = active?.apiUrl ?? ($env.MNEMOPI_EMBEDDING_API_URL || $env.OPENROUTER_BASE_URL);
+	// An explicit endpoint, including OpenRouter, is a remote embedding host.
+	// The env default OpenRouter URL is not: that would send local models to the API.
+	if (active?.apiUrl !== undefined && active.apiUrl !== "") return true;
+	const baseUrl = $env.MNEMOPI_EMBEDDING_API_URL || $env.OPENROUTER_BASE_URL;
 	if (baseUrl !== undefined && baseUrl !== "" && !hostMatchesUrl(baseUrl, "openrouter")) {
 		return true;
 	}
@@ -282,6 +286,7 @@ const MODEL_DIMS: Record<string, number> = {
 	"text-embedding-3-large": 3072,
 	"jina-embeddings-v5-omni-nano": 768,
 	"jina-embeddings-v5-omni-small": 1024,
+	"qwen/qwen3-embedding-8b": 4096,
 };
 export function embeddingDimFor(modelName: string): number {
 	const override = Number.parseInt($env.MNEMOPI_EMBEDDING_DIM ?? "", 10);
@@ -360,8 +365,11 @@ async function embedApi(texts: readonly string[]): Promise<EmbeddingMatrix | nul
 	if (!isCustom && !embeddingKeyConfigured(apiKey)) {
 		return null;
 	}
+	const model = defaultModel();
+	// Bind before the request so an in-flight call keeps the session that started it.
+	const report = activeEmbeddingOptions()?.beginRemoteEmbedding?.();
 
-	const body = JSON.stringify({ model: defaultModel(), input: texts });
+	const body = JSON.stringify({ model, input: texts });
 	try {
 		// withAuth re-resolves the key on 401 (force-refresh, then sibling
 		// rotation) when `apiKey` is a resolver. The 429 backoff stays inside
@@ -391,19 +399,46 @@ async function embedApi(texts: readonly string[]): Promise<EmbeddingMatrix | nul
 		if (!response.ok) {
 			return null;
 		}
-		const data = (await response.json()) as { data?: Array<{ embedding: number[] }> };
+		const parsed = (await response.json()) as { data?: Array<{ embedding: number[] }>; usage?: unknown };
 		return withLoopPhase("mnemopi.embed", () => {
-			const { data: rows } = data;
+			const rows = parsed.data;
 			if (rows === undefined) {
 				return null;
 			}
 			apiCallCount += 1;
+			report?.(embeddingUsageReport(texts, baseUrl, model, parsed.usage));
 			return rows.map(row => new Float32Array(row.embedding));
 		});
 	} catch (error) {
 		logger.debug("mnemopi embedding request failed", { status: extractHttpStatusFromError(error) });
 		return null;
 	}
+}
+
+function nonnegative(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function embeddingUsageReport(
+	texts: readonly string[],
+	apiUrl: string,
+	model: string,
+	raw: unknown,
+): RemoteEmbeddingUsage {
+	const usage =
+		raw && typeof raw === "object"
+			? (raw as { prompt_tokens?: unknown; total_tokens?: unknown; cost?: unknown })
+			: {};
+	const reportedTokens = nonnegative(usage.prompt_tokens) ?? nonnegative(usage.total_tokens);
+	const reportedCost = nonnegative(usage.cost);
+	let chars = 0;
+	for (const text of texts) chars += text.length;
+	return {
+		model,
+		apiUrl,
+		inputTokens: reportedTokens ?? (chars === 0 ? 0 : Math.max(1, Math.ceil(chars / 4))),
+		...(reportedCost !== undefined ? { reportedCost } : {}),
+	};
 }
 
 async function providerAvailable(provider: EmbeddingProvider): Promise<boolean> {

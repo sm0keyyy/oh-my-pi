@@ -33,12 +33,26 @@ export interface MnemopiEmbeddingProvider {
 	available?(): boolean | Promise<boolean>;
 }
 
+/** Usage of one remote embedding request, reported after the response arrives. */
+export interface RemoteEmbeddingUsage {
+	model: string;
+	apiUrl: string;
+	inputTokens: number;
+	/** Provider-reported total cost, when the embeddings response includes one. */
+	reportedCost?: number;
+}
+
 export interface MnemopiEmbeddingRuntimeOptions {
 	disabled?: boolean;
 	model?: string;
 	apiUrl?: string;
 	apiKey?: ApiKey;
 	provider?: MnemopiEmbeddingProvider | ((texts: readonly string[]) => EmbeddingOutput | Promise<EmbeddingOutput>);
+	/**
+	 * Called when a remote embedding request starts. The returned reporter is
+	 * invoked with that request's usage and keeps the initiating session.
+	 */
+	beginRemoteEmbedding?: () => ((usage: RemoteEmbeddingUsage) => void) | undefined;
 	/** Override `MNEMOPI_EMBEDDING_MAX_INPUT_CHARS`. `0` disables the cap. See `config.embeddingMaxInputChars`. */
 	maxInputChars?: number;
 }
@@ -69,6 +83,7 @@ export interface ResolvedMnemopiEmbeddingRuntimeOptions {
 	apiUrl?: string;
 	apiKey?: ApiKey;
 	provider?: MnemopiEmbeddingProvider;
+	beginRemoteEmbedding?: () => ((usage: RemoteEmbeddingUsage) => void) | undefined;
 	maxInputChars?: number;
 }
 

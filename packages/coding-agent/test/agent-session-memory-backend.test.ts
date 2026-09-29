@@ -14,7 +14,7 @@ import { hindsightBackend, rebindMemoryBackendForCwd } from "@oh-my-pi/pi-coding
 import { MEMORY_BACKEND_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/memory-backend/tool-names";
 import { computeMnemopiBankScope } from "@oh-my-pi/pi-coding-agent/mnemopi/config";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
-import { getMnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
+import { getMnemopiSessionState, type MnemopiSessionState } from "@oh-my-pi/pi-coding-agent/mnemopi/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -135,6 +135,46 @@ describe("AgentSession memory backend lifecycle", () => {
 					: undefined;
 		if (!complete) throw new Error("Expected managed memory completion");
 		return { current, complete };
+	}
+
+	async function startRemoteEmbeddings() {
+		settings = Settings.isolated({
+			"compaction.enabled": false,
+			"memory.backend": "mnemopi",
+			"mnemopi.noEmbeddings": false,
+			"mnemopi.llmMode": "none",
+			"mnemopi.autoRetain": false,
+			"mnemopi.embeddingModel": "qwen/qwen3-embedding-8b",
+			"mnemopi.embeddingApiUrl": "https://openrouter.ai/api/v1",
+			"mnemopi.embeddingApiKey": "test-embedding-key",
+		});
+		const current = createSession(async () => []);
+		await current.applyMemoryBackend();
+		const state = getMnemopiSessionState(current);
+		if (!state) throw new Error("Expected Mnemopi state");
+		return { current, state };
+	}
+
+	function mockEmbeddingFetch(usage: { prompt_tokens: number; total_tokens: number; cost?: number }) {
+		return spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async () =>
+					new Response(
+						JSON.stringify({
+							data: [{ embedding: [0.1, 0.2, 0.3], index: 0 }],
+							model: "qwen/qwen3-embedding-8b",
+							usage,
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					),
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+	}
+
+	async function retainEmbeddedFact(state: MnemopiSessionState, fact: string) {
+		state.rememberScoped(fact);
+		await state.consolidate({ retain: false, sleep: false });
 	}
 
 	function memoryReply(model: Model<Api>, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
@@ -272,6 +312,78 @@ describe("AgentSession memory backend lifecycle", () => {
 			model: model.id,
 			usage: response.usage,
 			stopReason: "stop",
+		});
+	});
+
+	it("journals a remote embedding with the provider-reported cost", async () => {
+		mockEmbeddingFetch({ prompt_tokens: 20, total_tokens: 20, cost: 0.0000002 });
+		const { current, state } = await startRemoteEmbeddings();
+
+		await retainEmbeddedFact(state, "Sam works at Globex.");
+
+		const usage = current.sessionManager.getBranch().filter(entry => entry.type === "model_usage");
+		expect(usage).toHaveLength(1);
+		expect(usage[0]).toMatchObject({
+			purpose: "memory-embedding",
+			role: "memory",
+			api: "openai-embeddings",
+			provider: "openrouter",
+			model: "qwen/qwen3-embedding-8b",
+			usage: { input: 20, totalTokens: 20, cost: { total: 0.0000002 } },
+			stopReason: "stop",
+		});
+	});
+
+	it("prices a remote embedding from the model rate when the response omits cost", async () => {
+		mockEmbeddingFetch({ prompt_tokens: 1_000_000, total_tokens: 1_000_000 });
+		const { current, state } = await startRemoteEmbeddings();
+
+		await retainEmbeddedFact(state, "Sam works at Globex.");
+
+		const usage = current.sessionManager.getBranch().filter(entry => entry.type === "model_usage");
+		expect(usage).toHaveLength(1);
+		expect(usage[0]).toMatchObject({
+			purpose: "memory-embedding",
+			model: "qwen/qwen3-embedding-8b",
+			usage: { input: 1_000_000, cost: { total: 0.01 } },
+		});
+	});
+
+	it("does not journal local-inference embeddings", async () => {
+		const fetchSpy = spyOn(globalThis, "fetch");
+		settings = Settings.isolated({
+			"compaction.enabled": false,
+			"memory.backend": "mnemopi",
+			"mnemopi.noEmbeddings": false,
+			"mnemopi.llmMode": "none",
+			"mnemopi.autoRetain": false,
+			"mnemopi.embeddingModel": "BAAI/bge-base-en-v1.5",
+		});
+		const current = createSession(async () => []);
+		await current.applyMemoryBackend();
+		const state = getMnemopiSessionState(current)!;
+		await retainEmbeddedFact(state, "Sam works at Globex.");
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(current.sessionManager.getBranch().filter(entry => entry.type === "model_usage")).toEqual([]);
+	});
+
+	it("journals a remote embedding on the session that started after a switch", async () => {
+		mockEmbeddingFetch({ prompt_tokens: 8, total_tokens: 8, cost: 0.00000008 });
+		const { current, state } = await startRemoteEmbeddings();
+		const previousSessionId = current.sessionManager.getSessionId();
+		await current.sessionManager.newSession();
+		expect(current.sessionManager.getSessionId()).not.toBe(previousSessionId);
+
+		await retainEmbeddedFact(state, "The release branch is copper-release.");
+
+		const usage = current.sessionManager.getBranch().filter(entry => entry.type === "model_usage");
+		expect(usage).toHaveLength(1);
+		expect(usage[0]).toMatchObject({
+			purpose: "memory-embedding",
+			provider: "openrouter",
+			model: "qwen/qwen3-embedding-8b",
+			usage: { input: 8, cost: { total: 0.00000008 } },
 		});
 	});
 

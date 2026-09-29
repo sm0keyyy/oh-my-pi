@@ -2,8 +2,10 @@ import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { type ApiKeyResolver, completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import type { Usage } from "@oh-my-pi/pi-catalog/types";
 import type { Mnemopi } from "@oh-my-pi/pi-mnemopi";
-import type { MnemopiLlmCompleteOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
+import type { MnemopiLlmCompleteOptions, RemoteEmbeddingUsage } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 import type * as MnemopiDiagnoseNs from "@oh-my-pi/pi-mnemopi/diagnose";
 import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger, prompt, withLoopPhase } from "@oh-my-pi/pi-utils";
@@ -542,6 +544,26 @@ async function resolveMnemopiProviderOptions(
 		embeddingApiKey:
 			config.providerOptions.embeddingApiKey ??
 			(await openrouterKeyResolver(modelRegistry, sessionId, config.providerOptions.embeddingApiUrl)),
+		embeddings: {
+			beginRemoteEmbedding: () => {
+				const journal = journalJudgmentUsage(usageLedger);
+				if (!journal) return undefined;
+				return report => {
+					const provider = hostMatchesUrl(report.apiUrl, "openrouter")
+						? "openrouter"
+						: embeddingHost(report.apiUrl);
+					journal({
+						purpose: "memory-embedding",
+						role: "memory",
+						api: "openai-embeddings",
+						provider,
+						model: report.model,
+						usage: priceRemoteEmbedding(provider, report),
+						stopReason: "stop",
+					});
+				};
+			},
+		},
 		llm: false,
 	};
 
@@ -688,6 +710,37 @@ async function resolveMnemopiProviderOptions(
 		logger.warn("Mnemopi: memory LLM resolution failed; continuing without LLM.", { error: String(error) });
 		return base;
 	}
+}
+
+function embeddingHost(apiUrl: string): string {
+	try {
+		return new URL(apiUrl).hostname;
+	} catch {
+		return "openai";
+	}
+}
+
+function priceRemoteEmbedding(provider: string, report: RemoteEmbeddingUsage): Usage {
+	const input = report.inputTokens;
+	const reported = report.reportedCost;
+	const usage: Usage = {
+		input,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: input,
+		cost: {
+			input: reported ?? 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: reported ?? 0,
+		},
+	};
+	if (reported !== undefined) return usage;
+	const model = provider === "openrouter" ? getBundledModel("openrouter", report.model) : undefined;
+	if (model) calculateCost(model, usage);
+	return usage;
 }
 
 function getMnemopiSessionStateFromParent(options: MemoryBackendStartOptions): MnemopiSessionState | undefined {

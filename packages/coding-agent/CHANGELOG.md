@@ -1268,6 +1268,8 @@
 ### Removed
 
 - Removed the bash tool's `env` parameter; services inherit the configured shell environment
+- Fixed session usage and cost totals omitting Mnemopi memory completions, including billed failures before a fallback succeeds. ([#13631](https://github.com/can1357/oh-my-pi/pull/13631) by [@sm0keyyy](https://github.com/sm0keyyy))
+- Fixed session usage and cost totals omitting remote Mnemopi embedding calls. Local embedding inference stays unrecorded.
 
 ## [18.4.3] - 2026-09-28
 

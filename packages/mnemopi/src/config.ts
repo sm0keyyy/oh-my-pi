@@ -47,6 +47,7 @@ export const EMBEDDING_DIMS: Readonly<Record<string, number>> = {
 	"text-embedding-3-large": 3072,
 	"jina-embeddings-v5-omni-nano": 768,
 	"jina-embeddings-v5-omni-small": 1024,
+	"qwen/qwen3-embedding-8b": 4096,
 };
 
 export const VERACITY_WEIGHT_DEFAULTS = {

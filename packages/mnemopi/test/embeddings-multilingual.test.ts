@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { embeddingDimFor, isApiModel } from "@oh-my-pi/pi-mnemopi/core/embeddings";
+import { withMnemopiRuntimeOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 
 function withEnvValue<T>(key: string, value: string | undefined, fn: () => T): T {
 	const previous = process.env[key];
@@ -109,6 +110,23 @@ describe("multilingual embedding metadata", () => {
 			() => {
 				expect(isApiModel("jina-embeddings-v5-omni-nano")).toBe(false);
 				expect(isApiModel("openai/text-embedding-3-small")).toBe(true);
+			},
+		);
+
+		withEnvValues(
+			{
+				MNEMOPI_EMBEDDING_API_URL: undefined,
+				MNEMOPI_EMBEDDINGS_VIA_API: undefined,
+				OPENROUTER_BASE_URL: undefined,
+			},
+			() => {
+				expect(embeddingDimFor("qwen/qwen3-embedding-8b")).toBe(4096);
+				expect(
+					withMnemopiRuntimeOptions({ embeddings: { apiUrl: "https://openrouter.ai/api/v1" } }, () =>
+						isApiModel("qwen/qwen3-embedding-8b"),
+					),
+				).toBe(true);
+				expect(isApiModel("qwen/qwen3-embedding-8b")).toBe(false);
 			},
 		);
 	});

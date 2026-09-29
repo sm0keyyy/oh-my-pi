@@ -433,11 +433,16 @@ function embeddingUsageReport(
 	const reportedCost = nonnegative(usage.cost);
 	let chars = 0;
 	for (const text of texts) chars += text.length;
+	const estimated = chars === 0 ? 0 : Math.max(1, Math.ceil(chars / 4));
+	const inputTokens = reportedTokens !== undefined && reportedTokens > 0 ? reportedTokens : estimated;
+	// A zero cost with no positive token count is not a bill; price from the model rate.
+	const cost =
+		reportedCost !== undefined && (reportedCost > 0 || inputTokens === reportedTokens) ? reportedCost : undefined;
 	return {
 		model,
 		apiUrl,
-		inputTokens: reportedTokens ?? (chars === 0 ? 0 : Math.max(1, Math.ceil(chars / 4))),
-		...(reportedCost !== undefined ? { reportedCost } : {}),
+		inputTokens,
+		...(cost !== undefined && cost > 0 ? { reportedCost: cost } : {}),
 	};
 }
 

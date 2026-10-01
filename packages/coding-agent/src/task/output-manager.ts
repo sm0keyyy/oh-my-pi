@@ -26,6 +26,8 @@ export class AgentOutputManager {
 	#initializing: Promise<void> | undefined;
 	/** Final ids already handed out, relative to this manager's scope. */
 	readonly #taken = new Set<string>();
+	/** Suffixed id → id of the first run that held the same requested name. */
+	readonly #firstRunOf = new Map<string, string>();
 	readonly #getArtifactsDir: () => string | null;
 	readonly #parentPrefix: string | undefined;
 
@@ -87,7 +89,17 @@ export class AgentOutputManager {
 			candidate = `${id}-${n}`;
 		}
 		this.#taken.add(candidate);
-		return this.#parentPrefix ? `${this.#parentPrefix}.${candidate}` : candidate;
+		const prefix = this.#parentPrefix ? `${this.#parentPrefix}.` : "";
+		if (candidate !== id) this.#firstRunOf.set(`${prefix}${candidate}`, `${prefix}${id}`);
+		return `${prefix}${candidate}`;
+	}
+
+	/**
+	 * Id of the first run when `id` re-dispatched a name already taken in this
+	 * session (the `-2`, `-3`, … disambiguation), else undefined.
+	 */
+	firstRunOf(id: string): string | undefined {
+		return this.#firstRunOf.get(id);
 	}
 
 	/** Reserve final IDs discovered outside the output directory scan. */

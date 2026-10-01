@@ -118,7 +118,34 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	 * before auto-mode persistence existed; readers fall back to `thinkingLevel`.
 	 */
 	configured?: string | null;
+	/** Why the level changed. Absent on entries written before row 62 logging and on session-start restores. */
+	source?: ThinkingLevelSource;
+	/** `source: "classifier"` only: the effort the classifier answered, before the session ceiling clamp. */
+	classifierAnswer?: string;
+	/** `source: "fallback"` only: why the classifier gave no answer. */
+	fallbackReason?: "timeout" | "error" | "no_answer";
 }
+
+/**
+ * Origin of a thinking-level change:
+ * - `classifier`: auto mode, the per-turn classifier answered.
+ * - `fallback`: auto mode, the classifier timed out, failed, or gave no answer.
+ * - `ultrathink`: auto mode, the prompt held the `ultrathink` magic word.
+ * - `manual`: a user selection (`/thinking`, the selector, the cycle key, RPC/ACP set).
+ * - `model_change`: re-applied after the active model changed.
+ * - `extension`: an extension called `setThinkingLevel`.
+ * - `mode`: a mode transition (plan mode, builtin mode commands) applied its level.
+ */
+export type ThinkingLevelSource =
+	| "classifier"
+	| "fallback"
+	| "ultrathink"
+	| "manual"
+	| "model_change"
+	| "extension"
+	| "mode";
+
+export type ThinkingLevelProvenance = Pick<ThinkingLevelChangeEntry, "source" | "classifierAnswer" | "fallbackReason">;
 
 export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
@@ -285,7 +312,26 @@ export interface SessionInitEntry extends SessionEntryBase {
 	isolated?: boolean;
 	/** Work-pool yield items of the last model call; revival restores them so the yield tool matches. Absent when none. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
+	/** Re-dispatch link: id of the first run when this subagent reused an id requested earlier in the parent session. */
+	redispatchOf?: string;
+	/**
+	 * Thinking selector the dispatch resolved: a concrete level, or `"auto"` when the
+	 * subagent classifies per turn. Auto picks follow as `thinking_level_change` entries
+	 * with `source` `classifier`/`fallback`/`ultrathink` in the same file.
+	 */
+	thinkingLevel?: string;
+	/** Where {@link thinkingLevel} came from. */
+	thinkingLevelSource?: SubagentThinkingLevelSource;
 }
+
+/**
+ * Origin of a subagent's dispatch-time thinking selector:
+ * - `effort`: the caller passed `effort` on the dispatch.
+ * - `explicit`: the resolved model pattern carried a `:level` suffix.
+ * - `agent`: the agent definition's `thinkingLevel` (for example `auto`).
+ * - `default`: the level the model pattern resolved to with no explicit selector.
+ */
+export type SubagentThinkingLevelSource = "effort" | "explicit" | "agent" | "default";
 
 /** Mode change entry - tracks agent mode transitions (e.g. plan mode). */
 export interface ModeChangeEntry extends SessionEntryBase {

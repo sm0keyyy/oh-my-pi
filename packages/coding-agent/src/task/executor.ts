@@ -78,6 +78,7 @@ import { type ArtifactManager, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
+import type { SubagentThinkingLevelSource } from "../session/session-entries";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
@@ -425,6 +426,8 @@ export interface ExecutorOptions {
 	description?: string;
 	index: number;
 	id: string;
+	/** Id of the first run when this dispatch reused a name taken earlier in the parent session; persisted on `session_init`. */
+	redispatchOf?: string;
 	parentToolCallId?: string;
 	/**
 	 * Spawn runs as a detached background job (parent turn not blocked on it).
@@ -4351,6 +4354,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// pattern-derived level.
 			const effectiveThinkingLevel =
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
+			const thinkingLevelSource: SubagentThinkingLevelSource =
+				effortLevel !== undefined
+					? "effort"
+					: explicitThinkingLevel
+						? "explicit"
+						: thinkingLevel !== undefined
+							? "agent"
+							: "default";
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const fork = preparedSession?.fork;
@@ -4697,6 +4708,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
+				redispatchOf: options.redispatchOf,
+				thinkingLevel: effectiveThinkingLevel,
+				thinkingLevelSource,
 			});
 
 			abortSignal.addEventListener(

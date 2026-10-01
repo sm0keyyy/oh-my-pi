@@ -72,7 +72,9 @@ import {
 	type SessionMessageEntry,
 	type SessionTitleSource,
 	type SessionTreeNode,
+	type SubagentThinkingLevelSource,
 	type ThinkingLevelChangeEntry,
+	type ThinkingLevelProvenance,
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
 	type TtsrInjectionEntry,
@@ -3479,12 +3481,17 @@ export class SessionManager {
 	}
 
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
-	appendThinkingLevelChange(thinkingLevel?: string, configured?: string): string {
+	appendThinkingLevelChange(
+		thinkingLevel?: string,
+		configured?: string,
+		provenance?: ThinkingLevelProvenance,
+	): string {
 		const entry: ThinkingLevelChangeEntry = {
 			type: "thinking_level_change",
 			...this.#freshEntryFields(),
 			thinkingLevel: thinkingLevel ?? null,
 			configured: configured ?? null,
+			...provenance,
 		};
 		this.#recordEntry(entry);
 		return entry.id;
@@ -3538,6 +3545,9 @@ export class SessionManager {
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		isolated?: boolean;
 		workPoolYieldItems?: WorkPoolYieldItem[];
+		redispatchOf?: string;
+		thinkingLevel?: string;
+		thinkingLevelSource?: SubagentThinkingLevelSource;
 	}): string {
 		const entry: SessionInitEntry = { type: "session_init", ...this.#freshEntryFields(), ...init };
 		this.#recordEntry(entry);

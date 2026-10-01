@@ -45,7 +45,7 @@ import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
-import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
+import { EPHEMERAL_MODEL_CHANGE_ROLE, type ThinkingLevelProvenance, type ThinkingLevelSource } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 import {
@@ -304,7 +304,7 @@ export class ModelControls {
 		// Apply explicit thinking level if given; otherwise prefer the model's
 		// configured defaultLevel; otherwise re-clamp the current level (or auto).
 		if (thinkingLevel !== undefined) {
-			this.setThinkingLevel(thinkingLevel);
+			this.setThinkingLevel(thinkingLevel, false, "model_change");
 		} else {
 			this.#reapplyThinkingLevel(targetModel.thinking?.defaultLevel);
 		}
@@ -391,7 +391,7 @@ export class ModelControls {
 	async applyRoleModel(entry: ResolvedRoleModel): Promise<void> {
 		await this.setModel(entry.model, entry.role);
 		if (entry.explicitThinkingLevel && entry.thinkingLevel !== undefined) {
-			this.setThinkingLevel(entry.thinkingLevel);
+			this.setThinkingLevel(entry.thinkingLevel, false, "model_change");
 		}
 	}
 
@@ -459,7 +459,7 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
 		// Apply the scoped model's configured thinking level, preserving auto.
-		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel);
+		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel, false, "model_change");
 		await this.#host.syncAfterModelChange(previousEditMode);
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
@@ -519,9 +519,14 @@ export class ModelControls {
 	 * Set the thinking level. `auto` enables per-turn classification. Entering
 	 * auto writes its provisional level plus `configured: "auto"` immediately,
 	 * giving external readers an authoritative selection receipt before the next
-	 * user turn. Later classifications persist only changed concrete resolutions.
+	 * user turn. Later classifications persist one entry per classified turn.
+	 * `source` is stamped on the persisted entry so logs can attribute the change.
 	 */
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+	setThinkingLevel(
+		level: ConfiguredThinkingLevel | undefined,
+		persist: boolean = false,
+		source: ThinkingLevelSource = "manual",
+	): void {
 		if (level === AUTO_THINKING) {
 			const provisional = clampThinkingLevelToCeiling(
 				this.#model,
@@ -542,7 +547,7 @@ export class ModelControls {
 			}
 			const isChanging = !wasAuto || previousLevel !== provisional;
 			if (isChanging) {
-				this.#host.sessionManager.appendThinkingLevelChange(provisional, AUTO_THINKING);
+				this.#host.sessionManager.appendThinkingLevelChange(provisional, AUTO_THINKING, { source });
 				this.#host.emit({ type: "thinking_level_changed", thinkingLevel: provisional, configured: AUTO_THINKING });
 			}
 			return;
@@ -565,7 +570,7 @@ export class ModelControls {
 
 		if (isChanging) {
 			this.#host.clearInheritedProviderPromptCacheKey();
-			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel);
+			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel, { source });
 			if (persist && effectiveLevel !== undefined && effectiveLevel !== ThinkingLevel.Off) {
 				cfgDefaultThinkingLevel.set(this.#host.settings, effectiveLevel);
 			}
@@ -583,6 +588,8 @@ export class ModelControls {
 			this.#autoThinking
 				? AUTO_THINKING
 				: automaticThinkingLevel(this.#model, preferredDefault ?? this.#thinkingLevel),
+			false,
+			"model_change",
 		);
 	}
 
@@ -638,11 +645,13 @@ export class ModelControls {
 		if (getSupportedEfforts(model).length === 0) return;
 
 		let resolved: Effort | undefined;
+		let provenance: ThinkingLevelProvenance;
 		if (this.#host.magicKeywordEnabled("ultrathink") && containsMagicKeyword(promptText, "ultrathink")) {
 			// The user explicitly asked for maximum thinking; bypass the classifier
 			// (and the `providers.autoThinkingMaxEffort` ceiling) and jump straight
 			// to the highest supported level for this model.
 			resolved = clampAutoThinkingEffort(model, Effort.Max);
+			provenance = { source: "ultrathink" };
 		} else {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), ModelControls.#AUTO_THINKING_TIMEOUT_MS);
@@ -667,7 +676,12 @@ export class ModelControls {
 						telemetry: this.#host.agent.telemetry,
 					},
 				);
+				provenance =
+					resolved === undefined
+						? { source: "fallback", fallbackReason: "no_answer" }
+						: { source: "classifier", classifierAnswer: resolved };
 			} catch (error) {
+				provenance = { source: "fallback", fallbackReason: controller.signal.aborted ? "timeout" : "error" };
 				logger.debug("auto-thinking: classification failed; using fallback level", {
 					error: error instanceof Error ? error.message : String(error),
 				});
@@ -685,13 +699,12 @@ export class ModelControls {
 			this.#thinkingLevelCeiling,
 		);
 		if (effort === undefined) return;
-		const shouldPersistResolution = this.#thinkingLevel !== effort;
 		this.#autoResolvedLevel = effort;
 		this.#thinkingLevel = effort;
 		this.#applyThinkingLevelToAgent(effort);
-		if (shouldPersistResolution) {
-			this.#host.sessionManager.appendThinkingLevelChange(effort, AUTO_THINKING);
-		}
+		// One entry per classified turn, changed or not: the row 62 count reads
+		// the picked level and its source from these entries.
+		this.#host.sessionManager.appendThinkingLevelChange(effort, AUTO_THINKING, provenance);
 		this.#host.emit({
 			type: "thinking_level_changed",
 			thinkingLevel: effort,

@@ -935,6 +935,11 @@
 - Sped up secret redaction on long conversations: it no longer slows down as history grows ([#14213](https://github.com/can1357/oh-my-pi/pull/14213) by [@H4vC](https://github.com/H4vC))
 - Startup is faster with plugins that bundle large dependency trees: the extension loader no longer re-reads and re-checks the same files while loading them (e.g. ~280 ms → ~185 ms with the IDA MCP plugin) ([#14219](https://github.com/can1357/oh-my-pi/pull/14219) by [@H4vC](https://github.com/H4vC))
 
+### Added
+
+- `thinking_level_change` session entries now carry `source` (`classifier`, `fallback`, `ultrathink`, `manual`, `model_change`, `extension`, `mode`), plus `classifierAnswer` or `fallbackReason` for auto turns; auto mode writes one entry per classified turn, even when the level is unchanged
+- Subagent `session_init` entries now carry `thinkingLevel`, `thinkingLevelSource` (`effort`, `explicit`, `agent`, `default`), and `redispatchOf`, the id of the first run when a dispatch reuses a name taken earlier in the parent session
+
 ### Fixed
 
 - Fixed an `EPIPE: broken pipe` unhandled rejection crashing the session when a debug adapter, eval kernel, IDA worker, or RPC server exits mid-write (seen on Windows) ([#14196](https://github.com/can1357/oh-my-pi/pull/14196) by [@andrebrait](https://github.com/andrebrait))

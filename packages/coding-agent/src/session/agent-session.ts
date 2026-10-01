@@ -437,7 +437,7 @@ import {
 	type SessionDumpLiveState,
 } from "./session-dump-format";
 import { collectSubSessions, type SubSession } from "./sub-sessions";
-import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import type { BranchSummaryEntry, NewSessionOptions, ThinkingLevelSource } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
@@ -1941,7 +1941,7 @@ export class AgentSession implements SettingsScope {
 			textOutputCommitted: () => this.#textOutputCommitted,
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
-			setThinkingLevel: level => this.#models.setThinkingLevel(level),
+			setThinkingLevel: level => this.#models.setThinkingLevel(level, false, "model_change"),
 			thinkingLevelCeiling: () => this.#models.thinkingLevelCeiling,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
@@ -10496,10 +10496,14 @@ export class AgentSession implements SettingsScope {
 		return this.#models.getAvailableModels();
 	}
 
-	/** Selects the session thinking level and optionally persists it as the default. */
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+	/** Selects the session thinking level and optionally persists it as the default. `source` is logged on the entry. */
+	setThinkingLevel(
+		level: ConfiguredThinkingLevel | undefined,
+		persist: boolean = false,
+		source: ThinkingLevelSource = "manual",
+	): void {
 		this.#prewalk.releaseHandoff();
-		this.#models.setThinkingLevel(level, persist);
+		this.#models.setThinkingLevel(level, persist, source);
 	}
 
 	/** Advances through the thinking selectors supported by the active model. */

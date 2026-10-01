@@ -129,7 +129,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			getCommands: () => getSessionSlashCommands(session),
 			setModel: model => runExtensionSetModel(session, model),
 			getThinkingLevel: () => session.thinkingLevel,
-			setThinkingLevel: level => session.setThinkingLevel(level),
+			setThinkingLevel: level => session.setThinkingLevel(level, false, "extension"),
 			getServiceTiers: () => session.serviceTierByFamily,
 			setServiceTier: (family, tier) => session.setServiceTierFamily(family, tier),
 			getSessionName: () => session.sessionManager.getSessionName(),

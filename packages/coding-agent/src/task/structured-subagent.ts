@@ -605,6 +605,7 @@ function buildExecutorOptions(
 		parentToolCallId: request.parentToolCallId,
 		detached: request.detached,
 		id,
+		redispatchOf: session.agentOutputManager?.firstRunOf(id),
 		taskDepth: session.taskDepth ?? 0,
 		invokedAt: request.invokedAt,
 		acquiredAt: request.acquiredAt,

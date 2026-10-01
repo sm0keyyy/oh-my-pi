@@ -4811,7 +4811,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			case "none":
 				return;
 			case "thinking":
-				this.session.setThinkingLevel(transition.thinkingLevel);
+				this.session.setThinkingLevel(transition.thinkingLevel, false, "mode");
 				return;
 			case "apply":
 				if (transition.deferred) {
@@ -5113,7 +5113,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (modelsAreEqual(this.session.model, prev.model)) {
 			// Same model — only thinking level may differ. Avoid setModelTemporary()
 			// which would reset provider-side sessions and break continuity.
-			this.session.setThinkingLevel(prev.thinkingLevel);
+			this.session.setThinkingLevel(prev.thinkingLevel, false, "model_change");
 		} else if (this.session.isStreaming) {
 			this.#pendingModelSwitch = {
 				model: prev.model,

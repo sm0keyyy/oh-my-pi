@@ -11,6 +11,7 @@ import {
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
+import { completeSimple, embed } from "@oh-my-pi/pi-ai";
 import type {
 	AssistantMessage,
 	CredentialDisabledEvent,
@@ -1420,6 +1421,7 @@ export class ExtensionRunner {
 		const createAnnotations = this.#createAnnotations;
 		const sendUserMessage = (text: string, options?: SendUserMessageOptions): void =>
 			this.runtime.sendUserMessage(text, options);
+		const usageOwner = { sessionId: this.sessionManager.getSessionId(), parentId: this.sessionManager.getLeafId() };
 		return {
 			ui: this.#uiContext,
 			mode: this.#mode,
@@ -1429,6 +1431,15 @@ export class ExtensionRunner {
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
+			appendModelUsage: usage => this.sessionManager.appendModelUsage(usage, usageOwner),
+			embedModel: (target, input, signal) =>
+				embed(target, input, { apiKey: this.modelRegistry.resolver(target, usageOwner.sessionId), signal }),
+			completeModel: (target, context, options) =>
+				completeSimple(target, context, {
+					...options,
+					apiKey: this.modelRegistry.resolver(target, usageOwner.sessionId),
+					sessionId: usageOwner.sessionId,
+				}),
 			modelRegistry: this.modelRegistry,
 			isProjectTrusted: () => true,
 			agent,

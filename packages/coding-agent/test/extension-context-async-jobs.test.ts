@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
@@ -12,7 +13,7 @@ function createRunner(getAsyncJobSnapshot?: () => AsyncJobSnapshot | null): Exte
 		[],
 		runtime,
 		"/tmp",
-		{ getCwd: () => "/tmp" } as never,
+		SessionManager.inMemory(),
 		{} as never,
 		undefined,
 		undefined,

@@ -939,6 +939,7 @@
 
 - `thinking_level_change` session entries now carry `source` (`classifier`, `fallback`, `ultrathink`, `manual`, `model_change`, `extension`, `mode`), plus `classifierAnswer` or `fallbackReason` for auto turns; auto mode writes one entry per classified turn, even when the level is unchanged
 - Subagent `session_init` entries now carry `thinkingLevel`, `thinkingLevelSource` (`effort`, `explicit`, `agent`, `default`), and `redispatchOf`, the id of the first run when a dispatch reuses a name taken earlier in the parent session
+- Extensions can use `ctx.embedModel()` and `ctx.completeModel()` for native model calls and record priced off-transcript usage with `ctx.appendModelUsage()`.
 
 ### Fixed
 

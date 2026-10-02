@@ -44,6 +44,8 @@ import type {
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Context,
+	EmbeddingRequest,
+	EmbeddingResult,
 	ImageContent,
 	Model,
 	ModelSpec,
@@ -88,6 +90,7 @@ import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/age
 import type { EphemeralTurnOptions, EphemeralTurnResult } from "../../session/agent-session-types";
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessagePayload } from "../../session/messages";
+import type { ModelUsageEntry } from "../../session/session-entries";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
 import type { BashToolInput, GlobToolInput, GrepToolInput, ReadToolInput, WriteToolInput } from "../../tools";
 import type { GlobToolDetails } from "@oh-my-pi/pi-tui/tools/glob";
@@ -663,6 +666,18 @@ export interface ExtensionContext {
 	cwd: string;
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
+	/** Record off-transcript model usage on this context's session and branch. */
+	appendModelUsage(usage: Pick<ModelUsageEntry, "purpose" | "role" | "api" | "provider" | "model" | "usage" | "stopReason" | "errorMessage">): string | undefined;
+	/** Embed through omp's model layer with this session's model credential. */
+	embedModel(model: Model, input: EmbeddingRequest, signal?: AbortSignal): Promise<EmbeddingResult>;
+	/** Complete through omp's model layer with this session's model credential. */
+	completeModel(
+		model: Model,
+		context: Context,
+		options?: Pick<SimpleStreamOptions, "signal" | "maxTokens" | "temperature" | "reasoning"> & {
+			onAttempt?: (message: AssistantMessage) => void;
+		},
+	): Promise<AssistantMessage>;
 	/** Model registry for API key resolution */
 	modelRegistry: ModelRegistry;
 	/** Calling session's `local://` root mapping for external tool bridges. */

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
+import { SessionManager } from "../src/session/session-manager";
 
 describe("ExtensionContext project trust compatibility", () => {
 	it("reports project-local inputs as trusted", () => {
@@ -7,7 +8,7 @@ describe("ExtensionContext project trust compatibility", () => {
 			[],
 			{} as never,
 			"/project",
-			{ getCwd: () => "/project" } as never,
+			SessionManager.inMemory(),
 			{} as never,
 		);
 

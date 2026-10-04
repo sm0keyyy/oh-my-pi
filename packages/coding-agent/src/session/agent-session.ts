@@ -80,7 +80,7 @@ import type {
 	UsageReport,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
-import { type Effort, serviceTierFamily, streamSimple } from "@oh-my-pi/pi-ai";
+import { completeSimple, type Effort, embed, serviceTierFamily, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { prewarmModelConnection } from "@oh-my-pi/pi-ai/providers/connection-prewarm";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
@@ -8446,13 +8446,22 @@ export class AgentSession implements SettingsScope {
 		if (this.#extensionRunner) {
 			return this.#extensionRunner.createCommandContext();
 		}
-
+		const usageOwner = { sessionId: this.sessionManager.getSessionId(), parentId: this.sessionManager.getLeafId() };
 		return {
 			ui: noOpUIContext,
 			mode: "print",
 			hasUI: false,
 			cwd: this.sessionManager.getCwd(),
 			sessionManager: this.sessionManager,
+			appendModelUsage: usage => this.sessionManager.appendModelUsage(usage, usageOwner),
+			embedModel: (target, input, signal) =>
+				embed(target, input, { apiKey: this.#modelRegistry.resolver(target, usageOwner.sessionId), signal }),
+			completeModel: (target, context, options) =>
+				completeSimple(target, context, {
+					...options,
+					apiKey: this.#modelRegistry.resolver(target, usageOwner.sessionId),
+					sessionId: usageOwner.sessionId,
+				}),
 			modelRegistry: this.#modelRegistry,
 			isProjectTrusted: () => true,
 			// Used only when the session has no extension runner. `createAgentSession` always builds

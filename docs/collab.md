@@ -165,6 +165,15 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 | `share.store`         | `blob`                | `/share` uploads to the blob server; `gist` uses an authenticated secret gist with blob fallback             |
 | `share.redactSecrets` | `true`                | Run the secret obfuscator over `/share` snapshots before upload                                                |
 
+### Cloudflare Access service credentials
+
+Set both `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` in the environment before you start omp.
+The collab socket sends them as `CF-Access-Client-Id` and `CF-Access-Client-Secret` on every WebSocket upgrade.
+Both host and guest sockets use these headers.
+If either value is absent or empty, the socket sends neither header.
+Store these credentials in the OS secret store, not in settings or join links.
+Browser guests use their Cloudflare Access login cookie instead.
+
 ## Self-hosting the relay
 
 The production relay is not currently distributed for self-hosting: its Go source and standalone binaries are not published. The endpoint list below documents the hosted service's network contract, not an installable release.

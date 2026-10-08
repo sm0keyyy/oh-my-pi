@@ -504,8 +504,13 @@ export class CollabSocket {
 	#openSocket(): void {
 		this.#clearBackpressureDrain();
 		const url = `${this.#opts.wsUrl}?role=${this.#opts.role}`;
+		const clientId = process.env.CF_ACCESS_CLIENT_ID;
+		const clientSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 		const options = {
 			proxy: getProxyForUrl("collab", new URL(url)),
+			...(clientId && clientSecret
+				? { headers: { "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret } }
+				: {}),
 		} satisfies Bun.WebSocketOptions;
 		const ws: WebSocket = Reflect.construct(WebSocket, [url, options]);
 		ws.binaryType = "arraybuffer";

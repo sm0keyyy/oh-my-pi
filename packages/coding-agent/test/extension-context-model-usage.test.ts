@@ -47,7 +47,14 @@ describe("ExtensionContext.appendModelUsage", () => {
 			api: "openai-embeddings",
 			provider: "openrouter",
 			model: "mistralai/codestral-embed-2505",
-			usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 1,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			stopReason: "stop",
 		});
 		expect(id).toBeUndefined();

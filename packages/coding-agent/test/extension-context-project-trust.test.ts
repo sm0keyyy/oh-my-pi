@@ -4,13 +4,7 @@ import { SessionManager } from "../src/session/session-manager";
 
 describe("ExtensionContext project trust compatibility", () => {
 	it("reports project-local inputs as trusted", () => {
-		const runner = new ExtensionRunner(
-			[],
-			{} as never,
-			"/project",
-			SessionManager.inMemory(),
-			{} as never,
-		);
+		const runner = new ExtensionRunner([], {} as never, "/project", SessionManager.inMemory(), {} as never);
 
 		expect(runner.createContext().isProjectTrusted()).toBe(true);
 	});

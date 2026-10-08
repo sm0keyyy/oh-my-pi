@@ -38,7 +38,9 @@ for (const role of ["host", "guest"] as const) {
 				websocket: { message() {} },
 			});
 			const socket = new CollabSocket({
-				wsUrl: `ws://127.0.0.1:${server.port}/r/AccessRoom_123`, role, key: await importRoomKey(generateRoomKey()),
+				wsUrl: `ws://127.0.0.1:${server.port}/r/AccessRoom_123`,
+				role,
+				key: await importRoomKey(generateRoomKey()),
 			});
 			sockets.push(socket);
 			socket.connect();

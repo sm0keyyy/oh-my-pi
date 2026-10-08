@@ -667,7 +667,12 @@ export interface ExtensionContext {
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
 	/** Record off-transcript model usage on this context's session and branch. */
-	appendModelUsage(usage: Pick<ModelUsageEntry, "purpose" | "role" | "api" | "provider" | "model" | "usage" | "stopReason" | "errorMessage">): string | undefined;
+	appendModelUsage(
+		usage: Pick<
+			ModelUsageEntry,
+			"purpose" | "role" | "api" | "provider" | "model" | "usage" | "stopReason" | "errorMessage"
+		>,
+	): string | undefined;
 	/** Embed through omp's model layer with this session's model credential. */
 	embedModel(model: Model, input: EmbeddingRequest, signal?: AbortSignal): Promise<EmbeddingResult>;
 	/** Complete through omp's model layer with this session's model credential. */

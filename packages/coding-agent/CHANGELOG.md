@@ -386,9 +386,14 @@
 - Fixed blank rows opening under the input after an `ask` dialog, command report or todo list closed in a session that had filled the screen; the transcript now refills the screen ([#15405](https://github.com/can1357/oh-my-pi/pull/15405) by [@H4vC](https://github.com/H4vC))
 - Fixed blank rows appearing between the last paragraphs of a streamed answer when the turn ended ([#15405](https://github.com/can1357/oh-my-pi/pull/15405) by [@H4vC](https://github.com/H4vC))
 
+### Added
+
+- Added a health-checked sessions gateway image with the built web client and bridge connection logs.
+
 ### Fixed
 
 - Fixed session socket startup importing ACP command metadata before the builtin registry was initialized.
+- Fixed the sessions bridge launch agent path for the 18.9.2 fork.
 
 ## [18.9.2] - 2026-10-11
 

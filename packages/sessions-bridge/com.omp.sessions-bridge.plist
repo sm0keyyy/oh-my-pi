@@ -8,7 +8,7 @@
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; export PATH; exec bun "$HOME/Developer/oh-my-pi-sessions-socket/packages/sessions-bridge/src/bridge.ts"</string>
+		<string>PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; export PATH; exec bun "$HOME/Developer/omp-fork-18.9.2/packages/sessions-bridge/src/bridge.ts"</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

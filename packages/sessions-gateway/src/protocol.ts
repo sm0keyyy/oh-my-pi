@@ -1,4 +1,4 @@
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord } from "@oh-my-pi/pi-utils/type-guards";
 import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
 import { MAX_RPC_FRAME_BYTES } from "../../coding-agent/src/modes/rpc/rpc-frame";
 

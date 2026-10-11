@@ -1,7 +1,8 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { isEnoent } from "@oh-my-pi/pi-utils/fs-error";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
 import { createAccessVerifier } from "./access";
 import {
@@ -62,6 +63,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const retireBridge = (socket: Socket): void => {
 		if (bridge !== socket) return;
 		bridge = undefined;
+		logger.info("Sessions bridge disconnected");
 		sessions.clear();
 		for (const browser of browsers.values()) closeBrowser(browser, "bridge_offline");
 		socket.close(4001, "bridge_offline");
@@ -145,6 +147,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 						return;
 					}
 					bridge = socket;
+					logger.info("Sessions bridge connected");
 					return;
 				}
 				if (!bridge) {
@@ -234,6 +237,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 }
 
 if (import.meta.main) {
+	logger.setTransports({ console: true, file: false });
 	const filename = process.env.BRIDGE_TOKEN_FILE ?? "/run/secrets/bridge-token";
 	const stat = await fs.lstat(filename);
 	if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Bridge token file needs mode 0600");

@@ -495,6 +495,7 @@ a.btn {
 	color: var(--fg);
 	margin-top: var(--s1);
 	overflow-wrap: anywhere;
+	white-space: pre-line;
 }
 .row-ask b {
 	font-weight: 600;

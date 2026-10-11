@@ -207,6 +207,25 @@ test("replaces an attachment without an old socket close withdrawing its replace
 	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("replacement");
 });
 
+test("carries real pending question text and removes it on the next snapshot", async () => {
+	await next("sessions");
+	bridge.stop();
+	vi.useFakeTimers();
+	snapshot.inputRequired = true;
+	snapshot.questionText = "Which transport?\nWhich viewport?";
+	try {
+		bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
+		expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
+		snapshot.inputRequired = false;
+		delete snapshot.questionText;
+		vi.advanceTimersByTime(30_000);
+		expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
+	} finally {
+		snapshot.inputRequired = false;
+		delete snapshot.questionText;
+	}
+});
+
 test("refreshes live snapshots on the 30-second heartbeat without a discovery file change", async () => {
 	await next("sessions");
 	bridge.stop();

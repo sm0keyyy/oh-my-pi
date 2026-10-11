@@ -42,6 +42,7 @@ export interface RpcSocketServer {
 		local: (signal: AbortSignal) => Promise<T>,
 		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
 		options?: ExtensionUIDialogOptions,
+		questionText?: string,
 	): Promise<T>;
 	close(): Promise<void>;
 }
@@ -64,7 +65,7 @@ export async function startRpcSocketServer(
 	const tmpPath = `${metaPath}.tmp`;
 	const sockets = new Set<net.Socket>();
 	const clients = new Map<net.Socket, RpcConnection>();
-	const races = new Set<(client: RpcConnection) => void>();
+	const races = new Map<(client: RpcConnection) => void, string | undefined>();
 	let lastActivity = startedAt;
 	let closing = false;
 	const snapshot = (): RpcSessionSnapshot => ({
@@ -76,6 +77,7 @@ export async function startRpcSocketServer(
 		model: session.model,
 		busy: session.isBusyForSnapshot,
 		inputRequired: races.size > 0,
+		questionText: races.values().next().value,
 		startedAt,
 		lastActivity,
 	});
@@ -181,7 +183,7 @@ export async function startRpcSocketServer(
 						return;
 					}
 					clients.set(socket, client);
-					for (const join of races) join(client);
+					for (const join of races.keys()) join(client);
 					await client.done;
 				})
 				.catch(error => {
@@ -243,6 +245,7 @@ export async function startRpcSocketServer(
 			local: (signal: AbortSignal) => Promise<T>,
 			remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
 			dialogOptions?: ExtensionUIDialogOptions,
+			questionText?: string,
 		): Promise<T> {
 			const abort = new AbortController();
 			const signal = dialogOptions?.signal ? AbortSignal.any([dialogOptions.signal, abort.signal]) : abort.signal;
@@ -252,7 +255,7 @@ export async function startRpcSocketServer(
 					logger.debug("RPC dialog participant withdrew", { error: String(error) });
 				});
 			};
-			races.add(join);
+			races.set(join, questionText);
 			try {
 				const localResult = local(signal);
 				for (const client of clients.values()) join(client);
@@ -327,6 +330,7 @@ function parseSnapshot(value: unknown, meta: DiscoveryMetadata): RpcSessionSnaps
 		typeof value.cwd !== "string" ||
 		typeof value.busy !== "boolean" ||
 		typeof value.inputRequired !== "boolean" ||
+		(value.questionText !== undefined && typeof value.questionText !== "string") ||
 		typeof value.lastActivity !== "number" ||
 		!Number.isFinite(value.lastActivity) ||
 		(value.sessionName !== undefined && typeof value.sessionName !== "string") ||

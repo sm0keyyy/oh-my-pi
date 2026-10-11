@@ -504,3 +504,94 @@ export async function runBrowserAcceptance(page: Page, base: string, root: strin
 		screenshots: results.map(result => result.screenshot),
 	};
 }
+
+export async function runLobbyQuestionAcceptance(page: Page, base: string, root: string) {
+	const names = ["lobby-desktop", "lobby-phone"];
+	const expected = "Which local option?\nChoose local checks";
+	const screenshots: string[] = [];
+	const lobby = await page.browser().newPage();
+	try {
+		for (const name of names) {
+			const response = await fetch(`${base}/fixture/start?name=${name}`);
+			if (!response.ok) throw new Error(`Fixture start failed: ${await response.text()}`);
+		}
+		let target: { instanceId: string; cwd: string } | undefined;
+		for (let attempt = 0; attempt < 60; attempt++) {
+			const body = await (await fetch(`${base}/api/sessions`)).json();
+			target = body.sessions.find((session: { cwd: string }) => session.cwd.endsWith("/lobby-desktop"));
+			if (target && body.sessions.length === 2) break;
+			await Bun.sleep(200);
+		}
+		if (!target) throw new Error("Waiting source TUI was not discovered");
+		await page.bringToFront();
+		await page.goto(`${base}/session/${target.instanceId}`);
+		await page.waitForFunction(() => {
+			const input = document.querySelector<HTMLTextAreaElement>("#message");
+			return input && !input.disabled;
+		});
+		await page.type("#message", "/web-dialog ask");
+		await page.keyboard.press("Enter");
+		await page.waitForSelector(".dlg");
+		const capture = async (name: string) => {
+			const screenshot = `packages/sessions-web/evidence/screenshots/${name}.png`;
+			await lobby.screenshot({ path: path.join(root, screenshot) });
+			screenshots.push(screenshot);
+		};
+		const results = [];
+		for (const viewport of ["desktop", "phone"]) {
+			const width = viewport === "desktop" ? 1440 : 390;
+			const height = viewport === "desktop" ? 1000 : 844;
+			await lobby.setViewport({
+				width,
+				height,
+				isMobile: viewport === "phone",
+				hasTouch: viewport === "phone",
+			});
+			await lobby.bringToFront();
+			await lobby.goto(base);
+			await lobby.waitForFunction(
+				(id, expected) => document.querySelector(`[data-instance-id="${id}"] .row-ask`)?.textContent === expected,
+				{ timeout: 30000 },
+				target.instanceId,
+				expected,
+			);
+			const order = await lobby.$$eval("[data-instance-id]", nodes =>
+				nodes.map(node => node.getAttribute("data-instance-id")),
+			);
+			if (order[0] !== target.instanceId) throw new Error("Waiting session is not first");
+			const actualViewport = await lobby.evaluate(() => [innerWidth, innerHeight]);
+			if (actualViewport[0] !== width || actualViewport[1] !== height) throw new Error("Viewport mismatch");
+			const body = await (await fetch(`${base}/api/sessions`)).json();
+			const snapshot = body.sessions.find(
+				(session: { instanceId: string }) => session.instanceId === target.instanceId,
+			);
+			if (!snapshot?.inputRequired || snapshot.questionText !== expected)
+				throw new Error("Gateway snapshot differs from the real question");
+			await capture(`lobby-question-${viewport}`);
+			results.push({ viewport: [width, height], instanceId: target.instanceId, questionText: expected, order });
+		}
+		await page.bringToFront();
+		await page.click('.dlg input[value="Desktop"]');
+		await page.click('.dlg button[type="submit"]');
+		await page.waitForFunction(() => !document.querySelector(".dlg"));
+		await lobby.bringToFront();
+		await lobby.waitForFunction(
+			id =>
+				!document.querySelector(`[data-instance-id="${id}"] .row-ask`) &&
+				!!document.querySelector(`.group:not(.group-waiting) [data-instance-id="${id}"]`),
+			{ timeout: 30000 },
+			target.instanceId,
+		);
+		const body = await (await fetch(`${base}/api/sessions`)).json();
+		const cleared = body.sessions.find((session: { instanceId: string }) => session.instanceId === target.instanceId);
+		if (!cleared || cleared.inputRequired || cleared.questionText !== undefined)
+			throw new Error("Answered question remained in the gateway snapshot");
+		await capture("lobby-question-cleared-phone");
+		await lobby.setViewport({ width: 1440, height: 1000, isMobile: false, hasTouch: false });
+		await capture("lobby-question-cleared-desktop");
+		return { results, cleared: true, screenshots };
+	} finally {
+		await lobby.close();
+		for (const name of names) await fetch(`${base}/fixture/stop?name=${name}`);
+	}
+}

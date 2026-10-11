@@ -48,6 +48,7 @@ function parseSnapshot(value: unknown): RpcSessionSnapshot {
 		(value.sessionName !== undefined && typeof value.sessionName !== "string") ||
 		typeof value.busy !== "boolean" ||
 		typeof value.inputRequired !== "boolean" ||
+		(value.questionText !== undefined && typeof value.questionText !== "string") ||
 		typeof value.startedAt !== "number" ||
 		!Number.isSafeInteger(value.startedAt) ||
 		value.startedAt < 0 ||
@@ -71,6 +72,7 @@ function parseSnapshot(value: unknown): RpcSessionSnapshot {
 		model: value.model as RpcSessionSnapshot["model"],
 		busy: value.busy,
 		inputRequired: value.inputRequired,
+		questionText: value.questionText,
 		startedAt: value.startedAt,
 		lastActivity: value.lastActivity,
 	};

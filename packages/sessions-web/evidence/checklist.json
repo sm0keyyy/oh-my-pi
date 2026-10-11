@@ -624,6 +624,6 @@
 		"live_start proves a real handler rejection round-trip, not voice functionality; ordinary startup timed out in native WebRTC.",
 		"login and live_mute prove structured error responses; no login or voice controls were added.",
 		"Predictor returned no suggestion; visible ghost suggestion and feedback need install checks.",
-		"Waiting-first lobby order proved with two source-run TUIs at both viewports; question preview is held by Main."
+		"Waiting-first lobby order, real question text, and clearing proved at both viewports; see packages/sessions-web/evidence/question-preview.json."
 	]
 }

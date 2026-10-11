@@ -927,6 +927,7 @@
 
 - Top-level TUIs serve authenticated local RPC sockets, with live discovery, shared dialogs, and remote control that updates the terminal.
 - The sessions web client lists live TUIs and supports desktop and phone transcripts, remote controls, dialogs, and reconnect rebuilding.
+- Waiting session lobby rows show the real pending TUI question from the optional discovery snapshot field.
 
 ## [18.6.0] - 2026-10-03
 

@@ -2584,6 +2584,10 @@
 				},
 				"model": {
 					"$ref": "#/$defs/ModelInfo"
+				},
+				"questionText": {
+					"type": "string",
+					"description": "Real text of the first pending TUI dialog; omitted when no question is pending."
 				}
 			},
 			"required": [

@@ -2535,6 +2535,8 @@ type RpcSessionSnapshot struct {
 	LastActivity  int64      `json:"lastActivity"`
 	SessionName   *string    `json:"sessionName,omitempty"`
 	Model         *ModelInfo `json:"model,omitempty"`
+	// Real text of the first pending TUI dialog; omitted when no question is pending.
+	QuestionText *string `json:"questionText,omitempty"`
 }
 
 func (v *RpcSessionSnapshot) UnmarshalJSON(data []byte) error {
@@ -2554,6 +2556,7 @@ func (v *RpcSessionSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
 	d.required("lastActivity", &out.LastActivity)
 	d.optional("sessionName", &out.SessionName)
 	d.optional("model", &out.Model)
+	d.optional("questionText", &out.QuestionText)
 	if d.err != nil {
 		return d.err
 	}

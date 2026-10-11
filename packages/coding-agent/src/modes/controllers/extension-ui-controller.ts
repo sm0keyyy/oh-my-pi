@@ -140,11 +140,14 @@ export class ExtensionUiController {
 	}
 
 	#raceRpcDialog<T>(
+		questionText: string,
 		local: (signal: AbortSignal | undefined) => Promise<T>,
 		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
 		options?: ExtensionUIDialogOptions,
 	): Promise<T> {
-		return this.#rpcSocketServer ? this.#rpcSocketServer.raceDialog(local, remote, options) : local(options?.signal);
+		return this.#rpcSocketServer
+			? this.#rpcSocketServer.raceDialog(local, remote, options, questionText)
+			: local(options?.signal);
 	}
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -667,6 +670,7 @@ export class ExtensionUiController {
 			helpText: dialogOptions?.helpText,
 		};
 		return this.#raceRpcDialog(
+			title,
 			signal =>
 				this.#raceCollabDialog(request, signal, localSignal =>
 					this.showHookSelector(title, options, { ...dialogOptions, signal: localSignal }, extra),
@@ -684,6 +688,7 @@ export class ExtensionUiController {
 	): Promise<string | undefined> {
 		const request: CollabUiRequestDraft = { kind: "editor", title, prefill };
 		return this.#raceRpcDialog(
+			title,
 			signal =>
 				this.#raceCollabDialog(request, signal, localSignal =>
 					this.showHookEditor(title, prefill, { ...dialogOptions, signal: localSignal }, editorOptions),
@@ -794,6 +799,7 @@ export class ExtensionUiController {
 	): Promise<ExtensionAskDialogResult | undefined> {
 		const normalized = normalizeDialogQuestions(questions);
 		return this.#raceRpcDialog(
+			normalized.map(question => question.question).join("\n"),
 			signal => this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
 			(ui, signal) => ui.askDialog!(normalized, { ...dialogOptions, signal }),
 			dialogOptions,
@@ -1220,6 +1226,7 @@ export class ExtensionUiController {
 		dialogOptions?: InteractiveSelectorDialogOptions,
 	): Promise<boolean> {
 		return this.#raceRpcDialog(
+			`${title}\n${message}`,
 			async signal =>
 				(await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], { ...dialogOptions, signal })) ===
 				"Yes",
@@ -1237,6 +1244,7 @@ export class ExtensionUiController {
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
 		return this.#raceRpcDialog(
+			title,
 			signal => this.#showLocalHookInput(title, placeholder, { ...dialogOptions, signal }),
 			(ui, signal) => ui.input(title, placeholder, { ...dialogOptions, signal }),
 			dialogOptions,

@@ -57,7 +57,7 @@
 	{
 		"defect": "Ordinary live_start did not return within 120 seconds",
 		"evidence": "Real RPC live_start blocked in native WebRTC initialization before provider authentication",
-		"fix": "Await Main ruling for negative transport coverage; no production voice code changed"
+		"fix": "Recorded malformed-template rejection as negative transport coverage, not voice functionality; sent before Main answered. Main ruled no further change."
 	},
 	{
 		"defect": "Phone test close selector targeted an inert parent dialog",
@@ -72,6 +72,21 @@
 	{
 		"defect": "Regression test started a source CLI without isolated config",
 		"evidence": "rpc-client.start.test.ts:7-9; worktree .claude-session-events records SessionStart/End and a ~/.omp session path at 19:00:08 UTC",
-		"fix": "Reported to Main; did not inspect or delete ~/.omp data"
+		"fix": "Reported to Main; did not inspect or delete ~/.omp data. Main authorized deleting only the regression-created worktree event directory."
+	},
+	{
+		"defect": "Initial lobby question condition used an unknown record value as a React child",
+		"evidence": "sessions-web typecheck: app.tsx:175 TS2322 unknown is not assignable to ReactNode",
+		"fix": "Compare the validated inputRequired flag explicitly with true"
+	},
+	{
+		"defect": "Initial pending-dialog Map edit replaced the connected-client join loop",
+		"evidence": "rpc-socket.ts edit response showed join(client) with client out of scope",
+		"fix": "Restore clients.values() before running checks"
+	},
+	{
+		"defect": "Question browser proof timed out after creating a second tab",
+		"evidence": "runLobbyQuestionAcceptance:527 waited 30 seconds while get_state replies continued",
+		"fix": "Bring each page to the front before its DOM waits; the desktop and phone proof then passed"
 	}
 ]

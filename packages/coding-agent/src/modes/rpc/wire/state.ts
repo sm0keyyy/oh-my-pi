@@ -117,6 +117,7 @@ export const stateDefs = {
 		"model?": "ModelInfo",
 		busy: "boolean",
 		inputRequired: "boolean",
+		"questionText?": doc("string", "Real text of the first pending TUI dialog; omitted when no question is pending."),
 		startedAt: "number.integer",
 		lastActivity: "number.integer",
 	},

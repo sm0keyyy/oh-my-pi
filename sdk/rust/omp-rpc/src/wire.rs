@@ -3073,6 +3073,9 @@ pub struct RpcSessionSnapshot {
 	pub session_name: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<ModelInfo>,
+	/// Real text of the first pending TUI dialog; omitted when no question is pending.
+	#[serde(rename = "questionText", default, skip_serializing_if = "Option::is_none")]
+	pub question_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

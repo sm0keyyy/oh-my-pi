@@ -1,0 +1,23 @@
+{
+	"results": [
+		{
+			"viewport": [1440, 1000],
+			"instanceId": "382a056d926c304c",
+			"questionText": "Which local option?\nChoose local checks",
+			"order": ["382a056d926c304c", "5da448eb12d05b10"]
+		},
+		{
+			"viewport": [390, 844],
+			"instanceId": "382a056d926c304c",
+			"questionText": "Which local option?\nChoose local checks",
+			"order": ["382a056d926c304c", "5da448eb12d05b10"]
+		}
+	],
+	"cleared": true,
+	"screenshots": [
+		"packages/sessions-web/evidence/screenshots/lobby-question-desktop.png",
+		"packages/sessions-web/evidence/screenshots/lobby-question-phone.png",
+		"packages/sessions-web/evidence/screenshots/lobby-question-cleared-phone.png",
+		"packages/sessions-web/evidence/screenshots/lobby-question-cleared-desktop.png"
+	]
+}

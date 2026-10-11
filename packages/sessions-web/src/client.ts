@@ -67,6 +67,7 @@ export function sortSessions(value: unknown): RecordValue[] {
 				typeof session.cwd !== "string" ||
 				typeof session.busy !== "boolean" ||
 				typeof session.inputRequired !== "boolean" ||
+				(session.questionText !== undefined && typeof session.questionText !== "string") ||
 				typeof session.lastActivity !== "number" ||
 				typeof session.startedAt !== "number"
 			)

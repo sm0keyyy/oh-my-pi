@@ -657,6 +657,8 @@ class RpcSessionSnapshot:
     last_activity: int
     session_name: str | None = None
     model: ModelInfo | None = None
+    question_text: str | None = None
+    """Real text of the first pending TUI dialog; omitted when no question is pending."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1974,6 +1976,7 @@ def parse_rpc_session_snapshot(value: object, path: str = "RpcSessionSnapshot") 
         last_activity=required(payload, "lastActivity", decode_int, path),
         session_name=optional(payload, "sessionName", decode_str, path),
         model=optional(payload, "model", parse_model_info, path),
+        question_text=optional(payload, "questionText", decode_str, path),
     )
 
 

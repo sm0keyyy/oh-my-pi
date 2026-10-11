@@ -311,30 +311,50 @@ describe("A4 TUI host adapter", () => {
 	}, 15_000);
 
 	it("mirrors select, editor, input, and ask dialogs and non-dialog extension presentation", async () => {
-		const { mode, client } = await interactiveFixture();
+		const { mode, client, discovery } = await interactiveFixture();
 		const ui = mode.getToolUIContext()!;
+		const checkQuestion = async (questionText?: string) => {
+			const snapshots = await listRpcSessions({ dir: discovery });
+			expect(snapshots).toHaveLength(1);
+			expect(snapshots[0]!.inputRequired).toBe(questionText !== undefined);
+			expect(snapshots[0]!.questionText).toBe(questionText);
+		};
+		const confirmation = ui.confirm("Socket confirm", "Exact confirmation text");
+		const confirmRequest = await client.next(frame => frame.method === "confirm");
+		await checkQuestion("Socket confirm\nExact confirmation text");
+		client.send({ type: "extension_ui_response", id: confirmRequest.id, confirmed: true });
+		expect(await confirmation).toBe(true);
+		await checkQuestion();
 		const selection = ui.select("Socket select", ["First", "Second"]);
 		let request = await client.next(frame => frame.method === "select");
+		await checkQuestion("Socket select");
 		client.send({ type: "extension_ui_response", id: request.id, value: "Second" });
 		expect(await selection).toBe("Second");
+		await checkQuestion();
 		const edit = ui.editor("Socket editor", "old");
 		request = await client.next(frame => frame.method === "editor");
+		await checkQuestion("Socket editor");
 		client.send({ type: "extension_ui_response", id: request.id, value: "edited" });
 		expect(await edit).toBe("edited");
+		await checkQuestion();
 		const input = ui.input("Socket input", "placeholder");
 		request = await client.next(frame => frame.method === "input");
+		await checkQuestion("Socket input");
 		client.send({ type: "extension_ui_response", id: request.id, value: "entered" });
 		expect(await input).toBe("entered");
+		await checkQuestion();
 		const ask = ui.askDialog!([
 			{ id: "choice", question: "Choose", options: [{ label: "First" }, { label: "Second" }] },
 		]);
 		request = await client.next(frame => frame.method === "ask");
+		await checkQuestion("Choose");
 		client.send({
 			type: "extension_ui_response",
 			id: request.id,
 			answers: [{ id: "choice", selectedOptions: ["Second"] }],
 		});
 		expect(await ask).toMatchObject({ kind: "submit", results: [{ id: "choice", selectedOptions: ["Second"] }] });
+		await checkQuestion();
 		ui.notify("Socket notice", "info");
 		ui.setStatus("socket", "status text");
 		ui.setWidget("socket", ["widget text"]);
@@ -347,6 +367,34 @@ describe("A4 TUI host adapter", () => {
 			widgetKey: "socket",
 			widgetLines: ["widget text"],
 		});
+	}, 15_000);
+
+	it("publishes real question text without a browser and clears it after cancellation", async () => {
+		const { mode, client, publication, discovery } = await interactiveFixture();
+		const closed = Promise.withResolvers<void>();
+		client.socket.once("close", closed.resolve);
+		client.socket.destroy();
+		await closed.promise;
+		const answer = mode.getToolUIContext()!.askDialog!([
+			{ id: "first", question: "Which transport?", options: [{ label: "Socket" }] },
+			{ id: "second", question: "Which viewport?", options: [{ label: "Phone" }] },
+		]);
+		const questionText = "Which transport?\nWhich viewport?";
+		expect((await listRpcSessions({ dir: discovery }))[0]).toMatchObject({
+			inputRequired: true,
+			questionText,
+		});
+		const replacement = new SocketClient(publication.endpoint, publication.token);
+		clients.push(replacement);
+		const request = await replacement.next(frame => frame.method === "ask");
+		replacement.send({ id: "pending-question", type: "get_state" });
+		const state = await replacement.next(frame => frame.id === "pending-question");
+		expect(state.data).toMatchObject({ rpcSession: { questionText, inputRequired: true } });
+		replacement.send({ type: "extension_ui_response", id: request.id, cancelled: true });
+		await answer;
+		const snapshot = (await listRpcSessions({ dir: discovery }))[0]!;
+		expect(snapshot.inputRequired).toBe(false);
+		expect(snapshot.questionText).toBeUndefined();
 	}, 15_000);
 
 	it("orders two socket clients and local TUI input during one tool-running turn", async () => {

@@ -23,6 +23,10 @@ test("lobby orders waiting sessions before recent activity and rejects malformed
 			?.inputRequired,
 	).toBe(true);
 	expect(() => sortSessions([{ ...session, inputRequired: "false" }])).toThrow("Invalid session snapshot");
+	expect(sortSessions([{ ...session, inputRequired: true, questionText: "Which option?" }])[0]?.questionText).toBe(
+		"Which option?",
+	);
+	expect(() => sortSessions([{ ...session, questionText: 123 }])).toThrow("Invalid session snapshot");
 });
 
 test("message keys remain stable between events and snapshots", () => {

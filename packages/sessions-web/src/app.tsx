@@ -172,6 +172,9 @@ function Lobby(): ReactNode {
 												<div className="row-path mono" title={path}>
 													{shortenPath(path)}
 												</div>
+												{session.inputRequired === true && text(session.questionText) && (
+													<div className="row-ask">{text(session.questionText)}</div>
+												)}
 												<div className="row-meta">
 													<span className="chip mono">{text(model.id) || "no model"}</span>
 													<time dateTime={new Date(number(session.lastActivity)).toISOString()}>

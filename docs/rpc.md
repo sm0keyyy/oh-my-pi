@@ -61,6 +61,10 @@ Session changes emit `{type: "session_changed", sessionId, sessionFile, sessionN
 Socket `get_state` responses add `data.rpcSession`, the live discovery snapshot.
 The snapshot contains `instanceId`, `pid`, `sessionId`, `sessionName`, `cwd`, `model`, `busy`,
 `inputRequired`, `startedAt`, and `lastActivity`. Its `model` has the same type as `get_state.model`.
+The optional `questionText` contains the first pending dialog's real question text.
+Ask dialogs join their questions with newlines; other dialogs use their title (and confirmation message).
+The field disappears when the dialog finishes. The sessions bridge carries it through S2 unchanged,
+and the gateway validates it as optional text before exposing it in the waiting lobby row.
 
 Local clients can import `listRpcSessions()` from
 `@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket`.

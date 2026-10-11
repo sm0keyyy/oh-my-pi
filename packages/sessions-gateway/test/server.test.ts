@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
 import { PUBLIC_ORIGIN } from "../src/protocol";
 import { startGateway, type SessionsGateway } from "../src/server";
 import { createAccessFixture, type AccessFixture } from "./access-fixture";
@@ -28,7 +29,7 @@ function peer(route: string, headers: Record<string, string>): Peer {
 	peers.push(result);
 	return result;
 }
-async function publish(bridge: Peer, sessions = [snapshot]): Promise<void> {
+async function publish(bridge: Peer, sessions: RpcSessionSnapshot[] = [snapshot]): Promise<void> {
 	bridge.ws.send(JSON.stringify({ t: "sessions", sessions }));
 	const pong = Promise.withResolvers<Event>();
 	bridge.ws.addEventListener("pong", pong.resolve, { once: true });
@@ -64,6 +65,20 @@ afterEach(async () => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	await fs.rm(siteDir, { recursive: true });
+});
+
+test("publishes real pending question text through S2 and clears it with the next snapshot", async () => {
+	const bridge = peer("/ws/bridge", { ...access.headers, authorization: `Bearer ${token}` });
+	await bridge.opened.promise;
+	await publish(bridge, [{ ...snapshot, inputRequired: true, questionText: "Which transport?\nWhich viewport?" }]);
+	await publish(bridge);
+});
+
+test("rejects malformed optional question text and clears discovery", async () => {
+	const { bridge } = await attach();
+	bridge.ws.send(JSON.stringify({ t: "sessions", sessions: [{ ...snapshot, questionText: 123 }] }));
+	expect((await bridge.closed.promise).reason).toBe("bridge_offline");
+	expect(await (await access.fetch(`${gateway.url}/api/sessions`)).json()).toEqual({ sessions: [] });
 });
 
 test("denies missing and invalid Access JWTs on requests and both upgrades", async () => {

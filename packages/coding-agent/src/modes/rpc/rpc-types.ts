@@ -206,6 +206,7 @@ export interface RpcSessionSnapshot {
 	model?: RpcSessionState["model"];
 	busy: boolean;
 	inputRequired: boolean;
+	questionText?: string;
 	startedAt: number;
 	lastActivity: number;
 }

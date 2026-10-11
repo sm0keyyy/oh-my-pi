@@ -499,6 +499,8 @@ export interface RpcSessionSnapshot {
 	lastActivity: number;
 	sessionName?: string;
 	model?: ModelInfo;
+	/** Real text of the first pending TUI dialog; omitted when no question is pending. */
+	questionText?: string;
 }
 
 export interface SessionState {

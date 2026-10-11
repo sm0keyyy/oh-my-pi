@@ -58,6 +58,7 @@ import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { buildToolsMarkdown } from "@oh-my-pi/pi-tui/prompt/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import { buildJobTree, jobTreeGuide, jobTreeIndent } from "@oh-my-pi/pi-tui/overlays/job-tree";
+import type { HandoffResult } from "../../session/agent-session-types";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import {
@@ -1330,8 +1331,8 @@ export class CommandController {
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
-	async handleClearCommand(): Promise<void> {
-		await this.#runNewSessionFlow();
+	async handleClearCommand(options?: NewSessionOptions): Promise<void> {
+		await this.#runNewSessionFlow(options);
 	}
 
 	async handleFreshCommand(): Promise<void> {
@@ -1385,7 +1386,11 @@ export class CommandController {
 		await this.#runNewSessionFlow({ drop: true }, "Session deleted");
 	}
 
-	async handleForkCommand(placement?: "pane" | "window"): Promise<void> {
+	async handleForkCommand(
+		placement?: "pane" | "window",
+		entryId?: string,
+		requireIdle = false,
+	): Promise<void> {
 		if (placement !== undefined) {
 			await this.#handleForkTerminalCommand(placement);
 			return;
@@ -1412,7 +1417,7 @@ export class CommandController {
 			? this.ctx.sessionManager.getSessionId()
 			: undefined;
 
-		const success = await this.ctx.session.fork();
+		const success = await this.ctx.session.fork(entryId, { requireIdle });
 		if (!success) {
 			this.ctx.showError("Fork failed (session not persisted or cancelled)");
 			return;
@@ -2116,7 +2121,7 @@ export class CommandController {
 		return outcome;
 	}
 
-	async handleHandoffCommand(customInstructions?: string): Promise<void> {
+	async handleHandoffCommand(customInstructions?: string, throwOnError = false): Promise<HandoffResult | undefined> {
 		if (this.ctx.session.isStreaming) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before handing off.");
 			return;
@@ -2149,11 +2154,13 @@ export class CommandController {
 		);
 		this.ctx.statusContainer.addChild(handoffLoader);
 		this.ctx.ui.requestRender();
+		let handoffResult: HandoffResult | undefined;
 
 		try {
 			// Handoff generation runs as a oneshot request; the document is then
 			// committed as a compaction entry on this session.
 			const result = await this.ctx.session.handoff(customInstructions);
+			handoffResult = result;
 
 			if (!result) {
 				this.ctx.showError("Handoff cancelled");
@@ -2191,11 +2198,13 @@ export class CommandController {
 				logger.error("Handoff failed", { error: message });
 				this.ctx.showError(`Handoff failed: ${message}`);
 			}
+			if (throwOnError) throw error;
 		} finally {
 			this.#finishHandoffUi(handoffLoader);
 			await this.ctx.flushCompactionQueue({ willRetry: false });
 		}
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
+		return handoffResult;
 	}
 
 	#finishHandoffUi(handoffLoader: Loader): void {

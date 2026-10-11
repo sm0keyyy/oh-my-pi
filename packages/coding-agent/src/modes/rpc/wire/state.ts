@@ -102,6 +102,24 @@ export const stateDefs = {
 		"UsageLimitLowPriority | UsageLimitWrapUp",
 		"Provider-neutral state of an account past its usage limit, discriminated by `stage`.",
 	),
+	RpcSessionHost: {
+		instanceId: "string",
+		pid: "number.integer",
+		cwd: "string",
+		startedAt: "number.integer",
+	},
+	RpcSessionSnapshot: {
+		instanceId: "string",
+		pid: "number.integer",
+		sessionId: "string",
+		"sessionName?": "string",
+		cwd: "string",
+		"model?": "ModelInfo",
+		busy: "boolean",
+		inputRequired: "boolean",
+		startedAt: "number.integer",
+		lastActivity: "number.integer",
+	},
 	SessionState: {
 		"model?": "ModelInfo",
 		"thinkingLevel?": "ThinkingLevel",
@@ -143,6 +161,7 @@ export const stateDefs = {
 		dumpTools: absentAs("ToolDescriptor[]", []),
 		"contextUsage?": "ContextUsage",
 		goal: absentAs(doc("GoalModeState | null", "Current goal mode; null when the session has no goal."), null),
+		"rpcSession?": "RpcSessionSnapshot",
 	},
 
 	BashResult: {

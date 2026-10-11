@@ -152,6 +152,16 @@ import {
 	type SessionWorktree,
 	type WorktreeExitPlan,
 } from "../session/session-worktree";
+import type { NewSessionOptions } from "../session/session-entries";
+import { findMostRecentNonEmptySession } from "../session/session-listing";
+import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
+import { parseSlashCommand } from "../slash-commands/helpers/parse";
+import type { RpcHostAdapter } from "./rpc/rpc-mode";
+import type { HandoffResult } from "../session/agent-session-types";
+import type { RpcResponse } from "./rpc/rpc-types";
+import { RpcLiveBridge } from "./rpc/rpc-live";
+import { startRpcSocketServer, type RpcSocketOptions, type RpcSocketServer } from "./rpc/rpc-socket";
+import { cfgRpcSocketEnabled } from "./rpc/settings";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
@@ -1522,6 +1532,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
 	#signalTeardown?: SessionTeardown;
+	#rpcSocketServer: RpcSocketServer | undefined;
+	#rpcLiveBridge: RpcLiveBridge | undefined;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	/** Header components below the config warnings + welcome, retained so a live config-warning change can rebuild the header (#10048). */
@@ -1751,6 +1763,146 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */
 	get subagentEventBus(): EventBus | undefined {
 		return this.#subagentEventBus;
+	}
+
+	async startRpcSocket(options?: RpcSocketOptions): Promise<void> {
+		if (this.#rpcSocketServer || !cfgRpcSocketEnabled.get(this.session.settings)) return;
+		const host: RpcHostAdapter = {
+			handleCommand: async command => {
+				const response = (data?: object | null) =>
+					({
+						id: command.id,
+						type: "response",
+						command: command.type,
+						success: true,
+						...(data === undefined ? {} : { data }),
+					}) as RpcResponse;
+				if (command.type === "set_host_tools" || command.type === "set_host_uri_schemes") {
+					return {
+						id: command.id,
+						type: "response",
+						command: command.type,
+						success: false,
+						code: "tui_owned",
+						error: "The TUI owns this command",
+					};
+				}
+				if (command.type === "prompt" || command.type === "abort_and_prompt") {
+					const parsed = parseSlashCommand(command.message);
+					const builtin = parsed ? lookupBuiltinSlashCommand(parsed.name) : undefined;
+					if (builtin && !builtin.handle) {
+						return {
+							id: command.id,
+							type: "response",
+							command: command.type,
+							success: false,
+							code: "tui_only",
+							error: `/${builtin.name} requires the TUI`,
+						};
+					}
+				}
+				switch (command.type) {
+					case "goal": {
+						if (command.op === "create" && !command.objective?.trim())
+							throw new Error("Goal objective must not be empty");
+						if (
+							command.token_budget !== undefined &&
+							(!Number.isInteger(command.token_budget) || command.token_budget <= 0)
+						)
+							throw new Error("Goal token budget must be a positive integer");
+						const current = this.session.getGoalModeState();
+						if (command.op === "create" && current?.enabled)
+							throw new Error("A goal is already active. Drop it before creating another.");
+						if (command.op === "create" && current?.goal.status === "paused")
+							throw new Error("Resume or drop the paused goal before creating another.");
+						if (command.op !== "get") {
+							if (!["create", "resume", "pause", "drop"].includes(command.op))
+								throw new Error("Unknown goal operation");
+							await this.handleGoalModeCommand(
+								command.op === "create" ? `set ${command.objective}` : command.op,
+								undefined,
+								command.token_budget,
+							);
+						}
+						const state = this.session.getGoalModeState();
+						if ((command.op === "create" || command.op === "resume") && !state?.enabled)
+							throw new Error("The TUI did not enter goal mode");
+						if (command.op === "pause" && state?.enabled) throw new Error("The TUI did not pause the goal");
+						return response({ goal: state?.goal ?? null, state: state ?? null });
+					}
+					case "new_session": {
+						const previous = this.sessionManager.getSessionId();
+						await this.handleClearCommand({ parentSession: command.parentSession });
+						return response({ cancelled: this.sessionManager.getSessionId() === previous });
+					}
+					case "switch_session": {
+						const cancelled = !(await this.#selectorController.handleResumeSession(command.sessionPath));
+						return response({ cancelled });
+					}
+					case "branch": {
+						const result = await this.handleBranchCommand(command.entryId);
+						return response(result);
+					}
+					case "fork": {
+						if (this.session.isBusyForSnapshot) throw new Error("Cannot fork while the session is busy");
+						const previous = this.sessionManager.getSessionId();
+						await this.handleForkCommand(undefined, command.entryId, true);
+						return response({ cancelled: this.sessionManager.getSessionId() === previous });
+					}
+					case "open_session": {
+						if (!this.session.sessionFile)
+							throw new Error("open_session requires session persistence (omit --no-session)");
+						const dir = path.resolve(command.sessionDir);
+						const latest = await findMostRecentNonEmptySession(dir);
+						const current = path.resolve(this.session.sessionFile);
+						const alreadyOpen = latest
+							? current === path.resolve(latest)
+							: path.dirname(current) === dir && this.session.messages.length === 0;
+						let cancelled = false;
+						if (!alreadyOpen) {
+							if (latest) cancelled = !(await this.#selectorController.handleResumeSession(latest));
+							else {
+								const previous = this.sessionManager.getSessionId();
+								await this.handleClearCommand({ sessionDir: dir });
+								cancelled = this.sessionManager.getSessionId() === previous;
+							}
+						}
+						return response({
+							cancelled,
+							resumed: !cancelled && latest !== null,
+							sessionId: this.session.sessionId,
+							sessionFile: this.session.sessionFile,
+						});
+					}
+					case "handoff": {
+						if (this.session.isStreaming) throw new Error("Cannot hand off while a response is in progress");
+						const result = await this.handleHandoffCommand(command.customInstructions, true);
+						return response(result ? { savedPath: result.savedPath } : null);
+					}
+				}
+				return undefined;
+			},
+			afterCommand: () => {
+				this.updatePendingMessagesDisplay();
+				this.ui.requestRender();
+			},
+			goalTurnScheduled: () => this.#goalContinuationTimer !== undefined || this.#pendingGoalContinuationTurns > 0,
+		};
+		this.#rpcLiveBridge = new RpcLiveBridge(this.session, frame => this.#rpcSocketServer?.broadcast(frame));
+		host.liveBridge = this.#rpcLiveBridge;
+		this.#rpcSocketServer = await startRpcSocketServer(this.session, host, {
+			subagentEventBus: this.#subagentEventBus,
+			...options,
+		});
+		this.#extensionUiController.setRpcSocketServer(this.#rpcSocketServer);
+	}
+
+	async stopRpcSocket(): Promise<void> {
+		this.#extensionUiController.setRpcSocketServer(undefined);
+		await this.#rpcSocketServer?.close();
+		this.#rpcSocketServer = undefined;
+		await this.#rpcLiveBridge?.stop();
+		this.#rpcLiveBridge = undefined;
 	}
 
 	constructor(
@@ -2115,6 +2267,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
+				await this.stopRpcSocket();
 				await this.#btwController.dispose();
 				await this.session.dispose({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
@@ -5266,7 +5419,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
-	async #enterGoalMode(options: { objective?: string; resume?: boolean; silent?: boolean }): Promise<void> {
+	async #enterGoalMode(options: {
+		objective?: string;
+		tokenBudget?: number;
+		resume?: boolean;
+		silent?: boolean;
+	}): Promise<void> {
 		if (this.goalModeEnabled) {
 			return;
 		}
@@ -5286,6 +5444,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			? await this.session.goalRuntime.resumeGoal()
 			: await this.session.goalRuntime.createGoal({
 					objective: options.objective ?? "",
+					tokenBudget: options.tokenBudget,
 				});
 		await this.session.setActiveToolsByName(goalTools);
 		this.session.setGoalModeState(state);
@@ -6280,6 +6439,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async handleGoalModeCommand(
 		rest?: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		tokenBudget?: number,
 	): Promise<boolean> {
 		if (this.planModeEnabled || this.planModePaused) {
 			this.#warnPlanModeBlocks();
@@ -6294,7 +6454,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			return false;
 		}
 		const { sub, rest: subRest } = parseGoalSubcommand(rest ?? "");
-		if (sub) return await this.#dispatchGoalSubcommand(sub, subRest, input);
+		if (sub) return await this.#dispatchGoalSubcommand(sub, subRest, input, tokenBudget);
 		if (this.goalModeEnabled) {
 			if (subRest) {
 				this.showStatus("Goal mode is already active. Use /goal to manage it, or /goal drop to start over.");
@@ -6388,10 +6548,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		sub: GoalSubcommand,
 		rest: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		tokenBudget?: number,
 	): Promise<boolean> {
 		switch (sub) {
 			case "set":
-				return await this.#handleGoalSetSubcommand(rest, input);
+				return await this.#handleGoalSetSubcommand(rest, input, tokenBudget);
 			case "show":
 				this.#showGoalDetails();
 				return false;
@@ -6528,8 +6689,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #startGoalFromObjective(
 		objective: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		tokenBudget?: number,
 	): Promise<boolean> {
-		await this.#enterGoalMode({ objective, silent: true });
+		await this.#enterGoalMode({ objective, tokenBudget, silent: true });
 		this.#resetGoalContinuationSuppression();
 		if (this.session.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
@@ -6585,6 +6747,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async #handleGoalSetSubcommand(
 		rest: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
+		tokenBudget?: number,
 	): Promise<boolean> {
 		if (!this.goalModeEnabled && this.#getPausedGoalState()) {
 			this.showWarning("Resume the current goal first, or drop it before setting a new objective.");
@@ -6599,7 +6762,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				)?.trim();
 		if (!objective) return false;
 		if (this.goalModeEnabled) return await this.#replaceGoalFromObjective(objective, input);
-		return await this.#startGoalFromObjective(objective, input);
+		return await this.#startGoalFromObjective(objective, input, tokenBudget);
 	}
 
 	/** Manually (re-)open the plan-review overlay — bound to `/plan-review`. Lets
@@ -7309,6 +7472,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Guests get goodbye and the registry entry disappears before the
 			// session is disposed, under the same still-closing progress notice.
 			await this.collabController.shutdown("host exited");
+			await this.stopRpcSocket();
 			await this.#liveCommandController.stop();
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();
@@ -8034,10 +8198,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#hidePlanReview();
 	}
 
-	async handleClearCommand(): Promise<void> {
+	async handleClearCommand(options?: NewSessionOptions): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		await this.prepareSessionSwitch();
-		await this.#commandController.handleClearCommand();
+		await this.#commandController.handleClearCommand(options);
 	}
 
 	/**
@@ -8066,14 +8230,31 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#commandController.handleDeleteCommand();
 	}
 
-	async handleForkCommand(placement?: "pane" | "window"): Promise<void> {
+	async handleForkCommand(
+		placement?: "pane" | "window",
+		entryId?: string,
+		requireIdle = false,
+	): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		if (!placement) {
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();
 			this.#cleanseController.dispose();
 		}
-		await this.#commandController.handleForkCommand(placement);
+		await this.#commandController.handleForkCommand(placement, entryId, requireIdle);
+	}
+
+	async handleBranchCommand(entryId: string): Promise<{ text: string; cancelled: boolean }> {
+		if (this.#vibeSessionTransitionBlocked()) return { text: "", cancelled: true };
+		await this.prepareSessionSwitch();
+		const result = await this.session.branch(entryId);
+		if (!result.cancelled) {
+			await this.renderInitialMessages({ clearTerminalHistory: true });
+			await this.reloadTodos();
+			this.editor.setDraft(result.selectedText, result.selectedImages);
+			this.showStatus("Branched to new session");
+		}
+		return { text: result.selectedText, cancelled: result.cancelled };
 	}
 
 	async handleMoveCommand(targetPath?: string): Promise<void> {
@@ -8279,8 +8460,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush, internalGuidance);
 	}
 
-	handleHandoffCommand(customInstructions?: string): Promise<void> {
-		return this.#commandController.handleHandoffCommand(customInstructions);
+	handleHandoffCommand(customInstructions?: string, throwOnError = false): Promise<HandoffResult | undefined> {
+		return this.#commandController.handleHandoffCommand(customInstructions, throwOnError);
 	}
 
 	handleShakeCommand(mode: ShakeMode): Promise<void> {

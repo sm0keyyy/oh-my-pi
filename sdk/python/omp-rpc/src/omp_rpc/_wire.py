@@ -638,6 +638,28 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class RpcSessionHost:
+    instance_id: str
+    pid: int
+    cwd: str
+    started_at: int
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RpcSessionSnapshot:
+    instance_id: str
+    pid: int
+    session_id: str
+    cwd: str
+    busy: bool
+    input_required: bool
+    started_at: int
+    last_activity: int
+    session_name: str | None = None
+    model: ModelInfo | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
     model: ModelInfo | None = None
@@ -675,6 +697,7 @@ class SessionState:
     context_usage: ContextUsage | None = None
     goal: GoalModeState | None = None
     """Current goal mode; null when the session has no goal."""
+    rpc_session: RpcSessionSnapshot | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1209,6 +1232,7 @@ class ReadyEvent:
     supported_protocol_versions: tuple[int, ...] | None = None
     max_frame_bytes: int | None = None
     max_reassembled_frame_bytes: int | None = None
+    host: RpcSessionHost | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1238,6 +1262,14 @@ class PromptResultEvent:
 class SessionSettledEvent:
     """The session went quiet: the last run yielded and no background work can wake it."""
     type: Literal["session_settled"] = "session_settled"
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionChangedEvent:
+    type: Literal["session_changed"] = "session_changed"
+    session_id: str
+    session_file: str | None = None
+    session_name: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1609,7 +1641,7 @@ RpcAgentEvent: TypeAlias = AgentStartEvent | AgentEndEvent | TurnStartEvent | Tu
 """A session event, discriminated by `type`; `set_event_filter` selects which are sent."""
 
 
-RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent | UnknownNotification
+RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEvent | SessionChangedEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent | UnknownNotification
 """Unsolicited outbound frame (everything except responses and host tool/URI requests), discriminated by `type`."""
 
 
@@ -1919,6 +1951,32 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_rpc_session_host(value: object, path: str = "RpcSessionHost") -> RpcSessionHost:
+    payload = expect_object(value, path)
+    return RpcSessionHost(
+        instance_id=required(payload, "instanceId", decode_str, path),
+        pid=required(payload, "pid", decode_int, path),
+        cwd=required(payload, "cwd", decode_str, path),
+        started_at=required(payload, "startedAt", decode_int, path),
+    )
+
+
+def parse_rpc_session_snapshot(value: object, path: str = "RpcSessionSnapshot") -> RpcSessionSnapshot:
+    payload = expect_object(value, path)
+    return RpcSessionSnapshot(
+        instance_id=required(payload, "instanceId", decode_str, path),
+        pid=required(payload, "pid", decode_int, path),
+        session_id=required(payload, "sessionId", decode_str, path),
+        cwd=required(payload, "cwd", decode_str, path),
+        busy=required(payload, "busy", decode_bool, path),
+        input_required=required(payload, "inputRequired", decode_bool, path),
+        started_at=required(payload, "startedAt", decode_int, path),
+        last_activity=required(payload, "lastActivity", decode_int, path),
+        session_name=optional(payload, "sessionName", decode_str, path),
+        model=optional(payload, "model", parse_model_info, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
@@ -1950,6 +2008,7 @@ def parse_session_state(value: object, path: str = "SessionState") -> SessionSta
         dump_tools=defaulted(payload, "dumpTools", array(parse_tool_descriptor), path, ()),
         context_usage=optional(payload, "contextUsage", parse_context_usage, path),
         goal=defaulted(payload, "goal", nullable(parse_goal_mode_state), path, None),
+        rpc_session=optional(payload, "rpcSession", parse_rpc_session_snapshot, path),
     )
 
 
@@ -2568,6 +2627,7 @@ def parse_ready_event(value: object, path: str = "ReadyEvent") -> ReadyEvent:
         supported_protocol_versions=optional(payload, "supportedProtocolVersions", array(decode_int), path),
         max_frame_bytes=optional(payload, "maxFrameBytes", decode_int, path),
         max_reassembled_frame_bytes=optional(payload, "maxReassembledFrameBytes", decode_int, path),
+        host=optional(payload, "host", parse_rpc_session_host, path),
     )
 
 
@@ -2598,6 +2658,16 @@ def parse_session_settled_event(value: object, path: str = "SessionSettledEvent"
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["session_settled"]]', literal(frozenset({"session_settled"}))), path)
     return SessionSettledEvent(
+    )
+
+
+def parse_session_changed_event(value: object, path: str = "SessionChangedEvent") -> SessionChangedEvent:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["session_changed"]]', literal(frozenset({"session_changed"}))), path)
+    return SessionChangedEvent(
+        session_id=required(payload, "sessionId", decode_str, path),
+        session_file=optional(payload, "sessionFile", decode_str, path),
+        session_name=optional(payload, "sessionName", decode_str, path),
     )
 
 
@@ -3063,6 +3133,7 @@ _RPC_NOTIFICATION_CASES: Final[dict[str, Decoder[RpcNotification]]] = {
         "ready": parse_ready_event,
         "prompt_result": parse_prompt_result_event,
         "session_settled": parse_session_settled_event,
+        "session_changed": parse_session_changed_event,
         "extension_error": parse_extension_error,
         "extension_ui_request": parse_extension_ui_request,
         "available_commands_update": parse_available_commands_update_event,
@@ -3526,6 +3597,10 @@ class WireClient:
         """Subscribe to `session_settled`: The session went quiet: the last run yielded and no background work can wake it."""
         return self._listen("session_settled", listener)
 
+    def on_session_changed(self, listener: Callable[[SessionChangedEvent], None]) -> Callable[[], None]:
+        """Subscribe to `session_changed` frames."""
+        return self._listen("session_changed", listener)
+
     def on_extension_error(self, listener: Callable[[ExtensionError], None]) -> Callable[[], None]:
         """Subscribe to `extension_error` frames."""
         return self._listen("extension_error", listener)
@@ -3847,8 +3922,11 @@ __all__ = [
     "RpcAgentEvent",
     "RpcFrameErrorEvent",
     "RpcNotification",
+    "RpcSessionHost",
+    "RpcSessionSnapshot",
     "SelectOptionDetail",
     "SelectUiRequest",
+    "SessionChangedEvent",
     "SessionCredits",
     "SessionEntries",
     "SessionInfoUpdateEvent",
@@ -4017,8 +4095,11 @@ __all__ = [
     "parse_retry_fallback_succeeded_event",
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
+    "parse_rpc_session_host",
+    "parse_rpc_session_snapshot",
     "parse_select_option_detail",
     "parse_select_ui_request",
+    "parse_session_changed_event",
     "parse_session_credits",
     "parse_session_entries",
     "parse_session_info_update_event",

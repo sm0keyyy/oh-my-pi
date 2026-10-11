@@ -2499,6 +2499,68 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type RpcSessionHost struct {
+	InstanceID string `json:"instanceId"`
+	Pid        int64  `json:"pid"`
+	Cwd        string `json:"cwd"`
+	StartedAt  int64  `json:"startedAt"`
+}
+
+func (v *RpcSessionHost) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RpcSessionHost", v.decodeFrom)
+}
+
+func (v *RpcSessionHost) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RpcSessionHost
+	d := fieldDecoder{raw: raw, owner: "RpcSessionHost"}
+	d.required("instanceId", &out.InstanceID)
+	d.required("pid", &out.Pid)
+	d.required("cwd", &out.Cwd)
+	d.required("startedAt", &out.StartedAt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RpcSessionSnapshot struct {
+	InstanceID    string     `json:"instanceId"`
+	Pid           int64      `json:"pid"`
+	SessionID     string     `json:"sessionId"`
+	Cwd           string     `json:"cwd"`
+	Busy          bool       `json:"busy"`
+	InputRequired bool       `json:"inputRequired"`
+	StartedAt     int64      `json:"startedAt"`
+	LastActivity  int64      `json:"lastActivity"`
+	SessionName   *string    `json:"sessionName,omitempty"`
+	Model         *ModelInfo `json:"model,omitempty"`
+}
+
+func (v *RpcSessionSnapshot) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RpcSessionSnapshot", v.decodeFrom)
+}
+
+func (v *RpcSessionSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RpcSessionSnapshot
+	d := fieldDecoder{raw: raw, owner: "RpcSessionSnapshot"}
+	d.required("instanceId", &out.InstanceID)
+	d.required("pid", &out.Pid)
+	d.required("sessionId", &out.SessionID)
+	d.required("cwd", &out.Cwd)
+	d.required("busy", &out.Busy)
+	d.required("inputRequired", &out.InputRequired)
+	d.required("startedAt", &out.StartedAt)
+	d.required("lastActivity", &out.LastActivity)
+	d.optional("sessionName", &out.SessionName)
+	d.optional("model", &out.Model)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
 	SessionID             string         `json:"sessionId"`
 	Model                 *ModelInfo     `json:"model,omitempty"`
@@ -2535,7 +2597,8 @@ type SessionState struct {
 	DumpTools    []ToolDescriptor `json:"dumpTools"`
 	ContextUsage *ContextUsage    `json:"contextUsage,omitempty"`
 	// Current goal mode; null when the session has no goal.
-	Goal *GoalModeState `json:"goal"`
+	Goal       *GoalModeState      `json:"goal"`
+	RpcSession *RpcSessionSnapshot `json:"rpcSession,omitempty"`
 }
 
 func (v *SessionState) UnmarshalJSON(data []byte) error {
@@ -2574,6 +2637,7 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	d.defaulted("dumpTools", &out.DumpTools, `[]`)
 	d.optional("contextUsage", &out.ContextUsage)
 	d.defaulted("goal", &out.Goal, `null`)
+	d.optional("rpcSession", &out.RpcSession)
 	if d.err != nil {
 		return d.err
 	}
@@ -4547,10 +4611,11 @@ func (v *RpcAgentEvent) decodeFrom(raw map[string]json.RawMessage) error {
 
 // First frame after startup; transport fields are absent on servers without protocol v2.
 type ReadyEvent struct {
-	ProtocolVersion           *int64  `json:"protocolVersion,omitempty"`
-	SupportedProtocolVersions []int64 `json:"supportedProtocolVersions,omitempty"`
-	MaxFrameBytes             *int64  `json:"maxFrameBytes,omitempty"`
-	MaxReassembledFrameBytes  *int64  `json:"maxReassembledFrameBytes,omitempty"`
+	ProtocolVersion           *int64          `json:"protocolVersion,omitempty"`
+	SupportedProtocolVersions []int64         `json:"supportedProtocolVersions,omitempty"`
+	MaxFrameBytes             *int64          `json:"maxFrameBytes,omitempty"`
+	MaxReassembledFrameBytes  *int64          `json:"maxReassembledFrameBytes,omitempty"`
+	Host                      *RpcSessionHost `json:"host,omitempty"`
 }
 
 func (v *ReadyEvent) UnmarshalJSON(data []byte) error {
@@ -4565,6 +4630,7 @@ func (v *ReadyEvent) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("supportedProtocolVersions", &out.SupportedProtocolVersions)
 	d.optional("maxFrameBytes", &out.MaxFrameBytes)
 	d.optional("maxReassembledFrameBytes", &out.MaxReassembledFrameBytes)
+	d.optional("host", &out.Host)
 	if d.err != nil {
 		return d.err
 	}
@@ -4683,6 +4749,35 @@ func (v *SessionSettledEvent) decodeFrom(raw map[string]json.RawMessage) error {
 func (v SessionSettledEvent) MarshalJSON() ([]byte, error) {
 	type plain SessionSettledEvent
 	return encodeObject(plain(v), `"type":"session_settled"`, nil)
+}
+
+type SessionChangedEvent struct {
+	SessionID   string  `json:"sessionId"`
+	SessionFile *string `json:"sessionFile,omitempty"`
+	SessionName *string `json:"sessionName,omitempty"`
+}
+
+func (v *SessionChangedEvent) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SessionChangedEvent", v.decodeFrom)
+}
+
+func (v *SessionChangedEvent) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SessionChangedEvent
+	d := fieldDecoder{raw: raw, owner: "SessionChangedEvent"}
+	d.constant("type", "session_changed")
+	d.required("sessionId", &out.SessionID)
+	d.optional("sessionFile", &out.SessionFile)
+	d.optional("sessionName", &out.SessionName)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SessionChangedEvent) MarshalJSON() ([]byte, error) {
+	type plain SessionChangedEvent
+	return encodeObject(plain(v), `"type":"session_changed"`, nil)
 }
 
 type ExtensionError struct {
@@ -6441,6 +6536,7 @@ type RpcNotificationVariant interface {
 func (ReadyEvent) isRpcNotification()                   {}
 func (PromptResultEvent) isRpcNotification()            {}
 func (SessionSettledEvent) isRpcNotification()          {}
+func (SessionChangedEvent) isRpcNotification()          {}
 func (ExtensionError) isRpcNotification()               {}
 func (ExtensionUiRequest) isRpcNotification()           {}
 func (AvailableCommandsUpdateEvent) isRpcNotification() {}
@@ -6508,6 +6604,8 @@ func (v *RpcNotification) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[PromptResultEvent](raw)
 	case "session_settled":
 		value, err = decodeVariant[SessionSettledEvent](raw)
+	case "session_changed":
+		value, err = decodeVariant[SessionChangedEvent](raw)
 	case "extension_error":
 		value, err = decodeVariant[ExtensionError](raw)
 	case "extension_ui_request":
@@ -6631,6 +6729,7 @@ func (HostUriCancelRequest) isRpcServerFrame()         {}
 func (ReadyEvent) isRpcServerFrame()                   {}
 func (PromptResultEvent) isRpcServerFrame()            {}
 func (SessionSettledEvent) isRpcServerFrame()          {}
+func (SessionChangedEvent) isRpcServerFrame()          {}
 func (ExtensionError) isRpcServerFrame()               {}
 func (ExtensionUiRequest) isRpcServerFrame()           {}
 func (AvailableCommandsUpdateEvent) isRpcServerFrame() {}
@@ -6708,6 +6807,8 @@ func (v *RpcServerFrame) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[PromptResultEvent](raw)
 	case "session_settled":
 		value, err = decodeVariant[SessionSettledEvent](raw)
+	case "session_changed":
+		value, err = decodeVariant[SessionChangedEvent](raw)
 	case "extension_error":
 		value, err = decodeVariant[ExtensionError](raw)
 	case "extension_ui_request":

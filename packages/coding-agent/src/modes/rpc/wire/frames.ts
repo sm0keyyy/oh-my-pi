@@ -15,6 +15,7 @@ export const frameDefs = {
 			"supportedProtocolVersions?": "number.integer[]",
 			"maxFrameBytes?": "number.integer",
 			"maxReassembledFrameBytes?": "number.integer",
+			"host?": "RpcSessionHost",
 		},
 		"First frame after startup; transport fields are absent on servers without protocol v2.",
 	),
@@ -47,6 +48,12 @@ export const frameDefs = {
 		{ type: "'session_settled'" },
 		"The session went quiet: the last run yielded and no background work can wake it.",
 	),
+	SessionChangedEvent: {
+		type: "'session_changed'",
+		sessionId: "string",
+		"sessionFile?": "string",
+		"sessionName?": "string",
+	},
 	ExtensionError: { type: "'extension_error'", extensionPath: "string", event: "string", error: "string" },
 	AvailableCommandsUpdateEvent: doc(
 		{ type: "'available_commands_update'", commands: "AvailableSlashCommand[]" },

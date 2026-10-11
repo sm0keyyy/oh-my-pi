@@ -481,6 +481,26 @@ export interface UsageLimitWrapUp {
 /** Provider-neutral state of an account past its usage limit, discriminated by `stage`. */
 export type UsageLimitState = UsageLimitLowPriority | UsageLimitWrapUp;
 
+export interface RpcSessionHost {
+	instanceId: string;
+	pid: number;
+	cwd: string;
+	startedAt: number;
+}
+
+export interface RpcSessionSnapshot {
+	instanceId: string;
+	pid: number;
+	sessionId: string;
+	cwd: string;
+	busy: boolean;
+	inputRequired: boolean;
+	startedAt: number;
+	lastActivity: number;
+	sessionName?: string;
+	model?: ModelInfo;
+}
+
 export interface SessionState {
 	sessionId: string;
 	model?: ModelInfo;
@@ -518,6 +538,7 @@ export interface SessionState {
 	contextUsage?: ContextUsage;
 	/** Current goal mode; null when the session has no goal. */
 	goal?: GoalModeState | null;
+	rpcSession?: RpcSessionSnapshot;
 }
 
 export interface BashResult {
@@ -1006,6 +1027,7 @@ export interface ReadyEvent {
 	supportedProtocolVersions?: number[];
 	maxFrameBytes?: number;
 	maxReassembledFrameBytes?: number;
+	host?: RpcSessionHost;
 }
 
 export type PromptStatus = "completed" | "aborted" | "error";
@@ -1034,6 +1056,13 @@ export interface PromptResultEvent {
 /** The session went quiet: the last run yielded and no background work can wake it. */
 export interface SessionSettledEvent {
 	type: "session_settled";
+}
+
+export interface SessionChangedEvent {
+	type: "session_changed";
+	sessionId: string;
+	sessionFile?: string;
+	sessionName?: string;
 }
 
 export interface ExtensionError {
@@ -1449,7 +1478,7 @@ export interface HostUriSchemeDefinition {
 }
 
 /** Unsolicited outbound frame (everything except responses and host tool/URI requests), discriminated by `type`. */
-export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
+export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | SessionChangedEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
 
 /** Any frame the server writes to stdout (after reassembling `rpc_chunk` sequences), discriminated by `type`. */
 export type RpcServerFrame = RpcResponse | RpcHostRequest | RpcNotification;

@@ -46,6 +46,8 @@ import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { launchTerminal } from "../../subprocess/terminal-launch";
+import { Snowflake } from "@oh-my-pi/pi-utils";
+import type { RpcSocketServer } from "../rpc/rpc-socket";
 
 const MAX_WIDGET_LINES = 10;
 /** Approval answers, as a collab guest's select shows them. */
@@ -131,6 +133,19 @@ export class ExtensionUiController {
 	 * call with the same picker/dialog primitives a live tool call would get.
 	 */
 	#toolUIContext: ExtensionUIContext | undefined;
+	#rpcSocketServer: RpcSocketServer | undefined;
+
+	setRpcSocketServer(server: RpcSocketServer | undefined): void {
+		this.#rpcSocketServer = server;
+	}
+
+	#raceRpcDialog<T>(
+		local: (signal: AbortSignal | undefined) => Promise<T>,
+		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
+		options?: ExtensionUIDialogOptions,
+	): Promise<T> {
+		return this.#rpcSocketServer ? this.#rpcSocketServer.raceDialog(local, remote, options) : local(options?.signal);
+	}
 	constructor(private ctx: InteractiveModeContext) {}
 
 	#syncExtensionComposerShapes(): void {
@@ -301,19 +316,8 @@ export class ExtensionUiController {
 				return { cancelled: false };
 			},
 			branch: async entryId => {
-				await this.ctx.prepareSessionSwitch();
-				const result = await this.ctx.session.branch(entryId);
-				if (result.cancelled) {
-					return { cancelled: true };
-				}
-
-				// Update UI
-				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-				await this.ctx.reloadTodos();
-				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
-				this.ctx.showStatus("Branched to new session");
-
-				return { cancelled: false };
+				const result = await this.ctx.handleBranchCommand(entryId);
+				return { cancelled: result.cancelled };
 			},
 			navigateTree: async (targetId, options) => {
 				const result = await this.ctx.session.navigateTree(targetId, { summarize: options?.summarize });
@@ -377,6 +381,16 @@ export class ExtensionUiController {
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
+		if (content === undefined || Array.isArray(content)) {
+			this.#rpcSocketServer?.broadcast({
+				type: "extension_ui_request",
+				id: Snowflake.next() as string,
+				method: "setWidget",
+				widgetKey: key,
+				widgetLines: content,
+				widgetPlacement: options?.placement,
+			});
+		}
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
@@ -625,6 +639,13 @@ export class ExtensionUiController {
 	 * Set hook status text in the footer.
 	 */
 	setHookStatus(key: string, text: string | undefined): void {
+		this.#rpcSocketServer?.broadcast({
+			type: "extension_ui_request",
+			id: Snowflake.next() as string,
+			method: "setStatus",
+			statusKey: key,
+			statusText: text,
+		});
 		this.ctx.statusLine.setHookStatus(key, text);
 		this.ctx.ui.requestRender();
 	}
@@ -645,8 +666,13 @@ export class ExtensionUiController {
 			markableCount: dialogOptions?.markableCount,
 			helpText: dialogOptions?.helpText,
 		};
-		return this.#raceCollabDialog(request, dialogOptions?.signal, signal =>
-			this.showHookSelector(title, options, { ...dialogOptions, signal }, extra),
+		return this.#raceRpcDialog(
+			signal =>
+				this.#raceCollabDialog(request, signal, localSignal =>
+					this.showHookSelector(title, options, { ...dialogOptions, signal: localSignal }, extra),
+				),
+			(ui, signal) => ui.select(title, options, { ...dialogOptions, signal }),
+			dialogOptions,
 		);
 	}
 
@@ -657,8 +683,13 @@ export class ExtensionUiController {
 		editorOptions?: { promptStyle?: boolean },
 	): Promise<string | undefined> {
 		const request: CollabUiRequestDraft = { kind: "editor", title, prefill };
-		return this.#raceCollabDialog(request, dialogOptions?.signal, signal =>
-			this.showHookEditor(title, prefill, { ...dialogOptions, signal }, editorOptions),
+		return this.#raceRpcDialog(
+			signal =>
+				this.#raceCollabDialog(request, signal, localSignal =>
+					this.showHookEditor(title, prefill, { ...dialogOptions, signal: localSignal }, editorOptions),
+				),
+			(ui, signal) => ui.editor(title, prefill, { ...dialogOptions, signal }, editorOptions),
+			dialogOptions,
 		);
 	}
 
@@ -758,6 +789,18 @@ export class ExtensionUiController {
 	}
 
 	async showAskDialog(
+		questions: ExtensionAskDialogQuestion[],
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionAskDialogResult | undefined> {
+		const normalized = normalizeDialogQuestions(questions);
+		return this.#raceRpcDialog(
+			signal => this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
+			(ui, signal) => ui.askDialog!(normalized, { ...dialogOptions, signal }),
+			dialogOptions,
+		);
+	}
+
+	async #showCollabAskDialog(
 		questions: ExtensionAskDialogQuestion[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined> {
@@ -1176,14 +1219,31 @@ export class ExtensionUiController {
 		message: string,
 		dialogOptions?: InteractiveSelectorDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], dialogOptions);
-		return result === "Yes";
+		return this.#raceRpcDialog(
+			async signal =>
+				(await this.showHookSelector(`${title}\n${message}`, ["Yes", "No"], { ...dialogOptions, signal })) ===
+				"Yes",
+			(ui, signal) => ui.confirm(title, message, { ...dialogOptions, signal }),
+			dialogOptions,
+		);
 	}
 
 	/**
 	 * Show a text input for hooks.
 	 */
 	showHookInput(
+		title: string,
+		placeholder?: string,
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<string | undefined> {
+		return this.#raceRpcDialog(
+			signal => this.#showLocalHookInput(title, placeholder, { ...dialogOptions, signal }),
+			(ui, signal) => ui.input(title, placeholder, { ...dialogOptions, signal }),
+			dialogOptions,
+		);
+	}
+
+	#showLocalHookInput(
 		title: string,
 		placeholder?: string,
 		dialogOptions?: ExtensionUIDialogOptions,
@@ -1262,6 +1322,13 @@ export class ExtensionUiController {
 	 * Show a notification for hooks.
 	 */
 	showHookNotify(message: string, type?: "info" | "warning" | "error"): void {
+		this.#rpcSocketServer?.broadcast({
+			type: "extension_ui_request",
+			id: Snowflake.next() as string,
+			method: "notify",
+			message,
+			notifyType: type,
+		});
 		if (type === "error") {
 			this.ctx.showError(message);
 		} else if (type === "warning") {

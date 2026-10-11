@@ -3045,6 +3045,37 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RpcSessionHost {
+	#[serde(rename = "instanceId")]
+	pub instance_id: String,
+	pub pid: i64,
+	pub cwd: String,
+	#[serde(rename = "startedAt")]
+	pub started_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RpcSessionSnapshot {
+	#[serde(rename = "instanceId")]
+	pub instance_id: String,
+	pub pid: i64,
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	pub cwd: String,
+	pub busy: bool,
+	#[serde(rename = "inputRequired")]
+	pub input_required: bool,
+	#[serde(rename = "startedAt")]
+	pub started_at: i64,
+	#[serde(rename = "lastActivity")]
+	pub last_activity: i64,
+	#[serde(rename = "sessionName", default, skip_serializing_if = "Option::is_none")]
+	pub session_name: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub model: Option<ModelInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
@@ -3110,6 +3141,8 @@ pub struct SessionState {
 	/// Current goal mode; null when the session has no goal.
 	#[serde(default = "default_session_state_goal")]
 	pub goal: Option<GoalModeState>,
+	#[serde(rename = "rpcSession", default, skip_serializing_if = "Option::is_none")]
+	pub rpc_session: Option<RpcSessionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4006,6 +4039,8 @@ pub struct ReadyEvent {
 	pub max_frame_bytes: Option<i64>,
 	#[serde(rename = "maxReassembledFrameBytes", default, skip_serializing_if = "Option::is_none")]
 	pub max_reassembled_frame_bytes: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub host: Option<RpcSessionHost>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -4061,6 +4096,16 @@ pub struct PromptResultEvent {
 /// The session went quiet: the last run yielded and no background work can wake it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionSettledEvent {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionChangedEvent {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub session_file: Option<String>,
+	#[serde(rename = "sessionName", default, skip_serializing_if = "Option::is_none")]
+	pub session_name: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionError {
@@ -4891,6 +4936,7 @@ pub enum RpcNotification {
 	PromptResult(PromptResultEvent),
 	/// The session went quiet: the last run yielded and no background work can wake it.
 	SessionSettled(SessionSettledEvent),
+	SessionChanged(SessionChangedEvent),
 	ExtensionError(ExtensionError),
 	/// Extension UI request, discriminated by `method`.
 	ExtensionUiRequest(ExtensionUiRequest),
@@ -4934,6 +4980,7 @@ impl RpcNotification {
 			Some("ready") => |value| serde_json::from_value(value).map(Self::Ready),
 			Some("prompt_result") => |value| serde_json::from_value(value).map(Self::PromptResult),
 			Some("session_settled") => |value| serde_json::from_value(value).map(Self::SessionSettled),
+			Some("session_changed") => |value| serde_json::from_value(value).map(Self::SessionChanged),
 			Some("extension_error") => |value| serde_json::from_value(value).map(Self::ExtensionError),
 			Some("extension_ui_request") => |value| serde_json::from_value(value).map(Self::ExtensionUiRequest),
 			Some("available_commands_update") => |value| serde_json::from_value(value).map(Self::AvailableCommandsUpdate),
@@ -4963,6 +5010,7 @@ impl Serialize for RpcNotification {
 			Self::Ready(member) => serialize_tagged(member, &[("type", "ready")], serializer),
 			Self::PromptResult(member) => serialize_tagged(member, &[("type", "prompt_result")], serializer),
 			Self::SessionSettled(member) => serialize_tagged(member, &[("type", "session_settled")], serializer),
+			Self::SessionChanged(member) => serialize_tagged(member, &[("type", "session_changed")], serializer),
 			Self::ExtensionError(member) => serialize_tagged(member, &[("type", "extension_error")], serializer),
 			Self::ExtensionUiRequest(member) => member.serialize(serializer),
 			Self::AvailableCommandsUpdate(member) => serialize_tagged(member, &[("type", "available_commands_update")], serializer),
@@ -5010,7 +5058,7 @@ impl RpcServerFrame {
 		let decode: fn(Value) -> Result<Self, serde_json::Error> = match value.get("type").and_then(Value::as_str) {
 			Some("response") => |value| serde_json::from_value(value).map(Self::Response),
 			Some("host_tool_call" | "host_tool_cancel" | "host_uri_request" | "host_uri_cancel") => |value| serde_json::from_value(value).map(Self::RpcHostRequest),
-			Some("ready" | "prompt_result" | "session_settled" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
+			Some("ready" | "prompt_result" | "session_settled" | "session_changed" | "extension_error" | "extension_ui_request" | "available_commands_update" | "subagent_lifecycle" | "subagent_progress" | "subagent_event" | "live_phase" | "live_levels" | "live_transcript" | "live_end" | "btw_delta" | "btw_record" | "command_output" | "session_info_update" | "config_update" | "rpc_frame_error" | "agent_start" | "agent_end" | "turn_start" | "turn_end" | "message_start" | "message_update" | "message_end" | "tool_execution_start" | "tool_execution_update" | "tool_stream_update" | "tool_execution_end" | "auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end" | "cache_warming_start" | "cache_warming_end" | "retry_fallback_applied" | "retry_fallback_succeeded" | "model_changed" | "config_warnings_changed" | "advisor_cost_changed" | "advisor_yielded" | "ttsr_triggered" | "todo_reminder" | "todo_auto_clear" | "irc_message" | "notice" | "thinking_level_changed" | "goal_updated" | "queue_update") => |value| serde_json::from_value(value).map(Self::RpcNotification),
 			_ => |value| Ok(Self::Unknown(value)),
 		};
 		decode(value)

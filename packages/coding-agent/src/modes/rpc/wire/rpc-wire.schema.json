@@ -2529,6 +2529,74 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"RpcSessionHost": {
+			"type": "object",
+			"properties": {
+				"instanceId": {
+					"type": "string"
+				},
+				"pid": {
+					"type": "integer"
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"startedAt": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"instanceId",
+				"pid",
+				"cwd",
+				"startedAt"
+			]
+		},
+		"RpcSessionSnapshot": {
+			"type": "object",
+			"properties": {
+				"instanceId": {
+					"type": "string"
+				},
+				"pid": {
+					"type": "integer"
+				},
+				"sessionId": {
+					"type": "string"
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"busy": {
+					"type": "boolean"
+				},
+				"inputRequired": {
+					"type": "boolean"
+				},
+				"startedAt": {
+					"type": "integer"
+				},
+				"lastActivity": {
+					"type": "integer"
+				},
+				"sessionName": {
+					"type": "string"
+				},
+				"model": {
+					"$ref": "#/$defs/ModelInfo"
+				}
+			},
+			"required": [
+				"instanceId",
+				"pid",
+				"sessionId",
+				"cwd",
+				"busy",
+				"inputRequired",
+				"startedAt",
+				"lastActivity"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
@@ -2671,6 +2739,9 @@
 					],
 					"description": "Current goal mode; null when the session has no goal.",
 					"default": null
+				},
+				"rpcSession": {
+					"$ref": "#/$defs/RpcSessionSnapshot"
 				}
 			},
 			"required": [
@@ -4309,6 +4380,9 @@
 				},
 				"maxReassembledFrameBytes": {
 					"type": "integer"
+				},
+				"host": {
+					"$ref": "#/$defs/RpcSessionHost"
 				}
 			},
 			"required": [
@@ -4392,6 +4466,27 @@
 				"type"
 			],
 			"description": "The session went quiet: the last run yielded and no background work can wake it."
+		},
+		"SessionChangedEvent": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "session_changed"
+				},
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string"
+				},
+				"sessionName": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"type",
+				"sessionId"
+			]
 		},
 		"ExtensionError": {
 			"type": "object",
@@ -5722,6 +5817,9 @@
 				},
 				{
 					"$ref": "#/$defs/SessionSettledEvent"
+				},
+				{
+					"$ref": "#/$defs/SessionChangedEvent"
 				},
 				{
 					"$ref": "#/$defs/ExtensionError"

@@ -25,6 +25,7 @@ import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
+import type { HandoffResult } from "../session/agent-session-types";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
@@ -468,7 +469,8 @@ export interface InteractiveModeContext {
 	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
 	handleDeleteCommand(): Promise<void>;
-	handleForkCommand(placement?: "pane" | "window"): Promise<void>;
+	handleForkCommand(placement?: "pane" | "window", entryId?: string, requireIdle?: boolean): Promise<void>;
+	handleBranchCommand(entryId: string): Promise<{ text: string; cancelled: boolean }>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
@@ -478,7 +480,7 @@ export interface InteractiveModeContext {
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 	): Promise<CompactionOutcome>;
-	handleHandoffCommand(customInstructions?: string): Promise<void>;
+	handleHandoffCommand(customInstructions?: string): Promise<HandoffResult | undefined>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
 	/** `/wt`: fork the checkout into a new worktree (keeping changes unless `keepChanges` is false) and move there. */

@@ -194,6 +194,27 @@ export interface RpcSessionState {
 	contextUsage?: ContextUsage;
 	/** Current goal-mode state; `null` when the session has no goal. */
 	goal: GoalModeState | null;
+	rpcSession?: RpcSessionSnapshot;
+}
+
+export interface RpcSessionSnapshot {
+	instanceId: string;
+	pid: number;
+	sessionId: string;
+	sessionName?: string;
+	cwd: string;
+	model?: RpcSessionState["model"];
+	busy: boolean;
+	inputRequired: boolean;
+	startedAt: number;
+	lastActivity: number;
+}
+
+export interface RpcSessionChangedFrame {
+	type: "session_changed";
+	sessionId: string;
+	sessionFile?: string;
+	sessionName?: string;
 }
 
 export interface RpcAvailableSlashCommand {
@@ -322,6 +343,7 @@ export interface RpcReadyFrame {
 	supportedProtocolVersions: [1, 2];
 	maxFrameBytes: number;
 	maxReassembledFrameBytes: number;
+	host?: Pick<RpcSessionSnapshot, "instanceId" | "pid" | "cwd" | "startedAt">;
 }
 
 export interface RpcChunkFrame {

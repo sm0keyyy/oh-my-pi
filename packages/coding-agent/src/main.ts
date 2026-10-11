@@ -687,6 +687,7 @@ async function runInteractiveMode(
 				autoStartCollab: joinLink === undefined,
 			}),
 		);
+		if (joinLink === undefined) await mode.startRpcSocket();
 		startDeferredStartupWork?.();
 
 		if (setupWizard && playStartupSplash) {
@@ -761,6 +762,11 @@ async function runInteractiveMode(
 		} catch (cleanupError) {
 			logger.warn("Failed to stop collaboration after startup failure", { error: String(cleanupError) });
 		} finally {
+			try {
+				await mode.stopRpcSocket();
+			} catch (cleanupError) {
+				logger.warn("Failed to stop RPC socket after startup failure", { error: String(cleanupError) });
+			}
 			mode.stop();
 		}
 		throw error;

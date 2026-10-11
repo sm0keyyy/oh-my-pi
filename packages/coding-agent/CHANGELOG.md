@@ -923,6 +923,10 @@
 - Fixed `/btw` answers longer than 4 KiB being cut off with `[…truncated]` once they finished ([#14331](https://github.com/can1357/oh-my-pi/pull/14331) by [@H4vC](https://github.com/H4vC))
 - In Tern, Esc puts the BTW history sheet away while an answer keeps streaming (`/btw` reopens it); `x` cancels the answer ([#14331](https://github.com/can1357/oh-my-pi/pull/14331) by [@H4vC](https://github.com/H4vC))
 
+### Added
+
+- Top-level TUIs serve authenticated local RPC sockets, with live discovery, shared dialogs, and remote control that updates the terminal.
+
 ## [18.6.0] - 2026-10-03
 
 ### Added

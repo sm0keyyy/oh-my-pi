@@ -33,6 +33,42 @@ Behavior notes:
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and normal shutdown exits with code `0`. A session-persistence failure still latched at disposal exits with code `1` after delivering its `notice` frame.
 - Responses/events are written as one JSON object per line.
 
+### Local TUI sockets
+
+Top-level TUIs serve this protocol on a private local socket. Joined collab guests do not publish a socket.
+The fork enables `rpcSocket.enabled` by default. Restart the TUI after a change to this setting.
+
+Discovery files live in `~/.omp/run/rpc-sessions/` (`0700`), under the configured base root.
+Each publication has an instance id, PID, endpoint, start time, and private token.
+Metadata uses atomic replacement and mode `0600`; Unix sockets use mode `0600`.
+Long Unix socket paths use a private directory under `/tmp`.
+
+Send `{"type":"hello","token":"<token from metadata>"}` as the first line.
+A missing or wrong token closes the connection without a frame. The hello deadline is 2 seconds.
+The `ready` frame adds `host: {instanceId, pid, cwd, startedAt}`. Framing and v2 negotiation remain unchanged.
+
+Several clients can attach. Each receives session events and extension dialogs.
+The first dialog answer from the TUI or a client wins. Losing clients receive an `extension_ui_request` with `method: "cancel"`.
+A disconnect withdraws only that client; it does not stop the TUI or close its local dialog.
+Notifications, status text, and string-array widgets also reach attached clients.
+
+Remote prompts use RPC input hooks, skills, and text-mode builtins without replacing the local editor draft.
+TUI-only slash commands return `success: false` with `code: "tui_only"`.
+`set_host_tools` and `set_host_uri_schemes` return `code: "tui_owned"`.
+Goal and session-change commands use the TUI handlers so the terminal stays in sync.
+
+Session changes emit `{type: "session_changed", sessionId, sessionFile, sessionName}`.
+Socket `get_state` responses add `data.rpcSession`, the live discovery snapshot.
+The snapshot contains `instanceId`, `pid`, `sessionId`, `sessionName`, `cwd`, `model`, `busy`,
+`inputRequired`, `startedAt`, and `lastActivity`. Its `model` has the same type as `get_state.model`.
+
+Local clients can import `listRpcSessions()` from
+`@oh-my-pi/pi-coding-agent/modes/rpc/rpc-socket`.
+The lister queries live sockets with a 1500 ms deadline, removes entries whose sockets are missing or refused,
+and sorts snapshots by start time. Timeouts and access errors do not remove entries.
+TUI shutdown closes clients and removes its metadata and socket.
+
+
 ## Transport and Framing
 
 Protocol v1 stdout frames are a single JSON object followed by `\n`. The server caps each physical stdout frame at 1 MiB, including the newline. Inbound frames are always one unchunked JSONL object; clients SHOULD keep them within the advertised physical-frame limit. Input is not reassembled from `rpc_chunk` frames.

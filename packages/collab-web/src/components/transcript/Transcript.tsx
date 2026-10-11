@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ActiveTool, ConnectionPhase } from "../../lib/client";
 import { fmtTokens } from "../../lib/format";
-import type { ToolRenderHost } from "../../tool-render";
-import { Markdown, StreamingMarkdown } from "./Markdown";
+import type { ToolRenderHost } from "@oh-my-pi/web-render";
+import { Markdown, StreamingMarkdown } from "@oh-my-pi/web-render/Markdown";
 import { ToolCard } from "./ToolCard";
 import "./transcript.css";
 

@@ -1,0 +1,629 @@
+{
+	"allowed": 58,
+	"rows": [
+		{
+			"command": "negotiate_protocol",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "prompt",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/prompt-desktop.png",
+				"packages/sessions-web/evidence/screenshots/prompt-phone.png"
+			]
+		},
+		{
+			"command": "steer",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/steer-desktop.png",
+				"packages/sessions-web/evidence/screenshots/steer-phone.png"
+			]
+		},
+		{
+			"command": "follow_up",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/follow_up-desktop.png",
+				"packages/sessions-web/evidence/screenshots/follow_up-phone.png"
+			]
+		},
+		{
+			"command": "remove_queued_message",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/remove_queued_message-desktop.png",
+				"packages/sessions-web/evidence/screenshots/remove_queued_message-phone.png"
+			]
+		},
+		{
+			"command": "promote_queued_message",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/promote_queued_message-desktop.png",
+				"packages/sessions-web/evidence/screenshots/promote_queued_message-phone.png"
+			]
+		},
+		{
+			"command": "abort",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/abort-desktop.png",
+				"packages/sessions-web/evidence/screenshots/abort-phone.png"
+			]
+		},
+		{
+			"command": "abort_and_prompt",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: G2 excludes this control",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/abort_and_prompt-desktop.png",
+				"packages/sessions-web/evidence/screenshots/abort_and_prompt-phone.png"
+			]
+		},
+		{
+			"command": "new_session",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/new_session-desktop.png",
+				"packages/sessions-web/evidence/screenshots/new_session-phone.png"
+			]
+		},
+		{
+			"command": "open_session",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/open_session-desktop.png",
+				"packages/sessions-web/evidence/screenshots/open_session-phone.png"
+			]
+		},
+		{
+			"command": "get_state",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "set_fast_mode",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_fast_mode-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_fast_mode-phone.png"
+			]
+		},
+		{
+			"command": "goal",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/goal-desktop.png",
+				"packages/sessions-web/evidence/screenshots/goal-phone.png"
+			]
+		},
+		{
+			"command": "set_ask_dialog",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "get_available_commands",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "get_entries",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_entries-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_entries-phone.png"
+			]
+		},
+		{
+			"command": "get_tree",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_tree-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_tree-phone.png"
+			]
+		},
+		{
+			"command": "set_todos",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_todos-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_todos-phone.png"
+			]
+		},
+		{
+			"command": "set_subagent_subscription",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "set_event_filter",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "get_subagents",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "get_subagent_messages",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_subagent_messages-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_subagent_messages-phone.png"
+			]
+		},
+		{
+			"command": "cancel_subagent",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/cancel_subagent-desktop.png",
+				"packages/sessions-web/evidence/screenshots/cancel_subagent-phone.png"
+			]
+		},
+		{
+			"command": "steer_subagent",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/steer_subagent-desktop.png",
+				"packages/sessions-web/evidence/screenshots/steer_subagent-phone.png"
+			]
+		},
+		{
+			"command": "live_start",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "negative transport: invalid instructions; not voice functionality",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/live_start-desktop.png",
+				"packages/sessions-web/evidence/screenshots/live_start-phone.png"
+			]
+		},
+		{
+			"command": "live_stop",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: G2 excludes this control",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/live_stop-desktop.png",
+				"packages/sessions-web/evidence/screenshots/live_stop-phone.png"
+			]
+		},
+		{
+			"command": "live_mute",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: G2 excludes this control",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/live_mute-desktop.png",
+				"packages/sessions-web/evidence/screenshots/live_mute-phone.png"
+			]
+		},
+		{
+			"command": "set_model",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_model-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_model-phone.png"
+			]
+		},
+		{
+			"command": "cycle_model",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/cycle_model-desktop.png",
+				"packages/sessions-web/evidence/screenshots/cycle_model-phone.png"
+			]
+		},
+		{
+			"command": "get_available_models",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "set_thinking_level",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_thinking_level-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_thinking_level-phone.png"
+			]
+		},
+		{
+			"command": "cycle_thinking_level",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/cycle_thinking_level-desktop.png",
+				"packages/sessions-web/evidence/screenshots/cycle_thinking_level-phone.png"
+			]
+		},
+		{
+			"command": "get_available_thinking_levels",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "set_steering_mode",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_steering_mode-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_steering_mode-phone.png"
+			]
+		},
+		{
+			"command": "set_follow_up_mode",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_follow_up_mode-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_follow_up_mode-phone.png"
+			]
+		},
+		{
+			"command": "set_interrupt_mode",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_interrupt_mode-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_interrupt_mode-phone.png"
+			]
+		},
+		{
+			"command": "compact",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/compact-desktop.png",
+				"packages/sessions-web/evidence/screenshots/compact-phone.png"
+			]
+		},
+		{
+			"command": "set_auto_compaction",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_auto_compaction-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_auto_compaction-phone.png"
+			]
+		},
+		{
+			"command": "set_cache_warming",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_cache_warming-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_cache_warming-phone.png"
+			]
+		},
+		{
+			"command": "set_auto_retry",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_auto_retry-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_auto_retry-phone.png"
+			]
+		},
+		{
+			"command": "abort_retry",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/abort_retry-desktop.png",
+				"packages/sessions-web/evidence/screenshots/abort_retry-phone.png"
+			]
+		},
+		{
+			"command": "bash",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/bash-desktop.png",
+				"packages/sessions-web/evidence/screenshots/bash-phone.png"
+			]
+		},
+		{
+			"command": "abort_bash",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/abort_bash-desktop.png",
+				"packages/sessions-web/evidence/screenshots/abort_bash-phone.png"
+			]
+		},
+		{
+			"command": "get_session_stats",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "export_html",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/export_html-desktop.png",
+				"packages/sessions-web/evidence/screenshots/export_html-phone.png"
+			]
+		},
+		{
+			"command": "switch_session",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/switch_session-desktop.png",
+				"packages/sessions-web/evidence/screenshots/switch_session-phone.png"
+			]
+		},
+		{
+			"command": "branch",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/branch-desktop.png",
+				"packages/sessions-web/evidence/screenshots/branch-phone.png"
+			]
+		},
+		{
+			"command": "fork",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/fork-desktop.png",
+				"packages/sessions-web/evidence/screenshots/fork-phone.png"
+			]
+		},
+		{
+			"command": "get_branch_messages",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_branch_messages-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_branch_messages-phone.png"
+			]
+		},
+		{
+			"command": "get_last_assistant_text",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_last_assistant_text-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_last_assistant_text-phone.png"
+			]
+		},
+		{
+			"command": "set_session_name",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/set_session_name-desktop.png",
+				"packages/sessions-web/evidence/screenshots/set_session_name-phone.png"
+			]
+		},
+		{
+			"command": "handoff",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/handoff-desktop.png",
+				"packages/sessions-web/evidence/screenshots/handoff-phone.png"
+			]
+		},
+		{
+			"command": "get_messages",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/session-initial-desktop.png",
+				"packages/sessions-web/evidence/screenshots/session-initial-phone.png"
+			]
+		},
+		{
+			"command": "get_messages_page",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_messages_page-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_messages_page-phone.png"
+			]
+		},
+		{
+			"command": "get_login_providers",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: G2 excludes this control",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/get_login_providers-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_login_providers-phone.png"
+			]
+		},
+		{
+			"command": "login",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: G2 excludes this control",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/login-desktop.png",
+				"packages/sessions-web/evidence/screenshots/login-phone.png"
+			]
+		},
+		{
+			"command": "predict_word",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/predict_word-desktop.png",
+				"packages/sessions-web/evidence/screenshots/predict_word-phone.png"
+			]
+		},
+		{
+			"command": "predict_word_feedback",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport: predictor returned no suggestion",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/predict_word_feedback-desktop.png",
+				"packages/sessions-web/evidence/screenshots/predict_word_feedback-phone.png"
+			]
+		}
+	],
+	"missing": [],
+	"lobby": {
+		"desktop": {
+			"appearMs": 2009,
+			"disappearMs": 2010
+		},
+		"phone": {
+			"appearMs": 2010,
+			"disappearMs": 2014
+		}
+	},
+	"reconnect": {
+		"desktop": {
+			"matches": true,
+			"messageCount": 4,
+			"keys": [
+				"compactionSummary:1791745600252:",
+				"assistant:1791745600134:",
+				"user:1791745601027:",
+				"assistant:1791745601052:"
+			]
+		},
+		"phone": {
+			"matches": true,
+			"messageCount": 4,
+			"keys": [
+				"compactionSummary:1791745652641:",
+				"assistant:1791745652433:",
+				"user:1791745653485:",
+				"assistant:1791745653508:"
+			]
+		}
+	},
+	"coverageCounts": {
+		"browser": 40,
+		"automatic": 11,
+		"transport": 7
+	},
+	"notes": [
+		"live_start proves a real handler rejection round-trip, not voice functionality; ordinary startup timed out in native WebRTC.",
+		"login and live_mute prove structured error responses; no login or voice controls were added.",
+		"Predictor returned no suggestion; visible ghost suggestion and feedback need install checks.",
+		"Waiting-first lobby order proved with two source-run TUIs at both viewports; question preview is held by Main."
+	]
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ToolView } from "../src/tool-render/ToolView";
+import { ToolView } from "@oh-my-pi/web-render";
 
 describe("ToolView xd:// dispatches", () => {
 	it("renders successful execute-mode xdev writes as the inner generate_image tool", () => {
@@ -88,9 +88,7 @@ describe("ToolView xd:// dispatches", () => {
 	});
 
 	it("defaults a running xd://reject to discard before details arrive", () => {
-		const html = renderToStaticMarkup(
-			<ToolView name="reject" defaultOpen running args={{ reason: "" }} />,
-		);
+		const html = renderToStaticMarkup(<ToolView name="reject" defaultOpen running args={{ reason: "" }} />);
 
 		expect(html).toContain("proposed → rejected");
 	});
@@ -160,7 +158,17 @@ describe("ToolView xd:// dispatches", () => {
 					content: [],
 					details: {
 						op: "wait",
-						jobs: [{ id: "a1b2", type: "bash", status: "completed", label: "build", durationMs: 25, resultText: "Built", errorText: "" }],
+						jobs: [
+							{
+								id: "a1b2",
+								type: "bash",
+								status: "completed",
+								label: "build",
+								durationMs: 25,
+								resultText: "Built",
+								errorText: "",
+							},
+						],
 					},
 				}}
 			/>,
@@ -198,7 +206,7 @@ describe("ToolView ask renderer", () => {
 			/>,
 		);
 
-		expect(html).toContain('<span>OAuth2</span>');
+		expect(html).toContain("<span>OAuth2</span>");
 		expect(html).toContain("keep the redirect short-lived");
 	});
 
@@ -217,7 +225,13 @@ describe("ToolView ask renderer", () => {
 					content: [{ type: "text", text: "User answers:" }],
 					details: {
 						results: [
-							{ id: "db", question: "Storage backend?", multi: false, selectedOptions: ["Postgres"], note: "managed instance" },
+							{
+								id: "db",
+								question: "Storage backend?",
+								multi: false,
+								selectedOptions: ["Postgres"],
+								note: "managed instance",
+							},
 							{ id: "cache", question: "Cache?", multi: false, selectedOptions: ["Redis"] },
 						],
 					},
@@ -225,7 +239,7 @@ describe("ToolView ask renderer", () => {
 			/>,
 		);
 
-		expect(html).toContain('<span>Postgres</span>');
+		expect(html).toContain("<span>Postgres</span>");
 		expect(html).toContain("managed instance");
 		// The cache question answered without a note must not leak the db note.
 		expect(html.match(/managed instance/g)?.length).toBe(1);

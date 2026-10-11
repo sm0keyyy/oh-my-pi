@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { FrozenMarkdownPrefix } from "../src/components/transcript/Markdown";
-import { Markdown, renderStreamingMarkdown } from "../src/components/transcript/Markdown";
+import type { FrozenMarkdownPrefix } from "@oh-my-pi/web-render/Markdown";
+import { Markdown, renderStreamingMarkdown } from "@oh-my-pi/web-render/Markdown";
 
 function renderMarkdown(text: string): string {
 	return renderToStaticMarkup(<Markdown text={text} />);

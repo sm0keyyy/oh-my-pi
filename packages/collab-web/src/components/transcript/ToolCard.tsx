@@ -2,7 +2,7 @@ import type { ToolResultMessage } from "@oh-my-pi/pi-wire";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { messageText } from "../../lib/format";
-import { type ToolRenderHost, ToolView } from "../../tool-render";
+import { type ToolRenderHost, ToolView } from "@oh-my-pi/web-render";
 
 export interface ToolCardProps {
 	toolCallId: string;

@@ -121,6 +121,7 @@
       "dependencies": {
         "@oh-my-pi/pi-utils": "catalog:",
         "@oh-my-pi/pi-wire": "catalog:",
+        "@oh-my-pi/web-render": "workspace:*",
         "katex": "catalog:",
         "lucide-react": "catalog:",
         "react": "catalog:",
@@ -242,6 +243,23 @@
         "@types/bun": "catalog:",
       },
     },
+    "packages/sessions-web": {
+      "name": "@oh-my-pi/sessions-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@oh-my-pi/web-render": "workspace:*",
+        "lucide-react": "catalog:",
+        "react": "catalog:",
+        "react-dom": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "@types/react": "catalog:",
+        "@types/react-dom": "catalog:",
+        "puppeteer-core": "catalog:",
+        "ts-morph": "catalog:",
+      },
+    },
     "packages/snapcompact": {
       "name": "@oh-my-pi/snapcompact",
       "version": "18.12.0",
@@ -325,6 +343,22 @@
       },
       "devDependencies": {
         "@types/bun": "catalog:",
+      },
+    },
+    "packages/web-render": {
+      "name": "@oh-my-pi/web-render",
+      "version": "0.0.0",
+      "dependencies": {
+        "@oh-my-pi/pi-utils": "catalog:",
+        "@oh-my-pi/pi-wire": "catalog:",
+        "katex": "catalog:",
+        "react": "catalog:",
+        "react-dom": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "@types/react": "catalog:",
+        "@types/react-dom": "catalog:",
       },
     },
     "packages/wire": {
@@ -752,9 +786,13 @@
 
     "@oh-my-pi/sessions-gateway": ["@oh-my-pi/sessions-gateway@workspace:packages/sessions-gateway"],
 
+    "@oh-my-pi/sessions-web": ["@oh-my-pi/sessions-web@workspace:packages/sessions-web"],
+
     "@oh-my-pi/snapcompact": ["@oh-my-pi/snapcompact@workspace:packages/snapcompact"],
 
     "@oh-my-pi/typescript-edit-benchmark": ["@oh-my-pi/typescript-edit-benchmark@workspace:packages/typescript-edit-benchmark"],
+
+    "@oh-my-pi/web-render": ["@oh-my-pi/web-render@workspace:packages/web-render"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 

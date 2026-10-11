@@ -1,0 +1,77 @@
+[
+	{
+		"defect": "Browser type import pulled the server graph and DOM conflicts",
+		"evidence": "artifact://5560: TS2307 prompt assets and tab-worker.ts TS2403",
+		"fix": "Generate browser input contracts from the TUI AST"
+	},
+	{
+		"defect": "Wrong cache warming and build option names",
+		"evidence": "artifact://5560: CacheWarmingMode and BuildConfig diagnostics",
+		"fix": "Use off/streaming/idle and naming.entry"
+	},
+	{
+		"defect": "TypeScript 7 has no createPrinter runtime API",
+		"evidence": "command-contract.ts: TypeError ts.createPrinter is not a function",
+		"fix": "Use the installed ts-morph compiler API"
+	},
+	{
+		"defect": "Raw Read included a paging footer in copied CSS",
+		"evidence": "sessions.css:344 build error Invalid selector",
+		"fix": "Remove the fetched footer and report the tool defect"
+	},
+	{
+		"defect": "Deep links fetched relative bundles from /session",
+		"evidence": "Chromium GET /session/chunk-pyxrfvn3.css and /session/chunk-613wtzqm.js net::ERR_ABORTED",
+		"fix": "Build with publicPath /"
+	},
+	{
+		"defect": "Neutral index imported HTMLElement during non-browser tests",
+		"evidence": "client tests failed with ReferenceError: HTMLElement is not defined",
+		"fix": "Export the custom element only from the explicit ./element entry"
+	},
+	{
+		"defect": "Fixture type graph omitted prompt assets",
+		"evidence": "Fixture typecheck reported missing prompt module declarations",
+		"fix": "Include the existing root types/assets declarations"
+	},
+	{
+		"defect": "Fixture model did not support fast mode",
+		"evidence": "Live set_fast_mode rejected fake-model",
+		"fix": "Use a tier-capable gpt-4.1 fixture model"
+	},
+	{
+		"defect": "Default retention prevented fixture compaction",
+		"evidence": "Live compact returned Nothing to compact",
+		"fix": "Use isolated keepRecentTokens:1 for acceptance"
+	},
+	{
+		"defect": "Desktop rail expanded the document instead of scrolling",
+		"evidence": "Queue click missed after long rail interactions",
+		"fix": "Constrain the flex rail to the body viewport"
+	},
+	{
+		"defect": "RPC command inventory omitted terminal-only commands",
+		"evidence": "Browser /settings palette had no entry",
+		"fix": "Generate terminal-only inventory from existing builtin command specifications"
+	},
+	{
+		"defect": "Ordinary live_start did not return within 120 seconds",
+		"evidence": "Real RPC live_start blocked in native WebRTC initialization before provider authentication",
+		"fix": "Await Main ruling for negative transport coverage; no production voice code changed"
+	},
+	{
+		"defect": "Phone test close selector targeted an inert parent dialog",
+		"evidence": "Messages page unavailable while Last assistant text remained open above Panels",
+		"fix": "Close the last open native dialog first"
+	},
+	{
+		"defect": "Goal drop transport call awaited a confirmation without answering it",
+		"evidence": "Browser showed Drop goal? while probe evaluate timed out",
+		"fix": "Answer the real confirmation before awaiting the RPC result"
+	},
+	{
+		"defect": "Regression test started a source CLI without isolated config",
+		"evidence": "rpc-client.start.test.ts:7-9; worktree .claude-session-events records SessionStart/End and a ~/.omp session path at 19:00:08 UTC",
+		"fix": "Reported to Main; did not inspect or delete ~/.omp data"
+	}
+]

@@ -1,0 +1,11 @@
+{
+	"extends": "../tsconfig.workspace.json",
+	"include": ["src", "scripts", "test"],
+	"exclude": ["test/local-fixture.ts", "test/fixture-extension.ts"],
+	"compilerOptions": {
+		"jsx": "react-jsx",
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"noEmit": true,
+		"types": ["bun", "react", "react-dom"]
+	}
+}

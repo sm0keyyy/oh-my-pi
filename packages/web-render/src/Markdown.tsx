@@ -3,7 +3,7 @@ import { Marked } from "@oh-my-pi/pi-utils/marked";
 import { listMayContinueAt } from "@oh-my-pi/pi-utils/marked-list";
 import type { ReactNode } from "react";
 import { memo, useMemo, useRef } from "react";
-import { escapeHtml } from "../../lib/format";
+import { escapeHtml } from "./escape";
 import { mathExtension } from "./math";
 
 function unescapeHtml(raw: string): string {

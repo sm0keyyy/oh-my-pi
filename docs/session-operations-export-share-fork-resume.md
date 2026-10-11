@@ -59,7 +59,7 @@ Behavior details:
 - `--copy`, `clipboard`, and `copy` arguments are explicitly rejected with a warning to use `/dump`.
 - Export embeds session header/entries/leaf plus current `systemPrompt` and tool descriptions from agent state. `previousSessionFiles` is omitted from exported headers.
 - Subagent transcripts stored next to the session file (`<session>/<AgentId>.jsonl`, recursively for nested spawns) are embedded as `subSessions` (`collectSubSessions` in `src/session/sub-sessions.ts`; disable with `includeSubSessions: false` in `ExportOptions`). Discovery skips advisor transcripts (`__advisor*.jsonl`), descends only into real child directories, and flags tombstoned (killed) agents as `aborted`. In the page, agent ids in task tool cards open a breadcrumbed sub-session overlay.
-- Tool calls render through the `<omp-tool-view>` web component — the React per-tool renderers shared with collab-web (`packages/collab-web/src/tool-render/`), prebuilt into `src/export/html/tool-views.generated.js` by `bun run gen:tool-views`.
+- Tool calls render through the `<omp-tool-view>` web component. The neutral `packages/web-render/` renderers serve collab-web, sessions-web, and HTML exports. `bun run gen:tool-views` builds the self-contained export bundle.
 - No session entries are appended during export.
 - The default filename is `omp-session-<session-file-stem>.html` in the current directory. HTML export is not secret-redacted or encrypted; it can contain raw context, image data, and extension payloads.
 

@@ -1,0 +1,4 @@
+/dist/
+/evidence/*-tui.log
+/evidence/*-partial.json
+/evidence/rpc-receipts.json

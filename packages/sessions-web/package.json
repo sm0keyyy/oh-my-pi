@@ -1,0 +1,26 @@
+{
+	"name": "@oh-my-pi/sessions-web",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "bun scripts/build.ts",
+		"dev": "bun ./index.html",
+		"check:types": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.fixture.json --noEmit",
+		"lint": "oxlint .",
+		"test": "bun test test/client.test.ts"
+	},
+	"dependencies": {
+		"@oh-my-pi/web-render": "workspace:*",
+		"lucide-react": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
+		"puppeteer-core": "catalog:",
+		"ts-morph": "catalog:"
+	}
+}

@@ -5,7 +5,7 @@
  * embedding in coding-agent HTML session exports.
  *
  * Output: packages/coding-agent/src/export/html/tool-views.generated.js
- * Run via `bun run gen:tool-views` after changing src/tool-render/.
+ * Run via `bun run gen:tool-views` after changing web-render/src/tool-render/.
  */
 import * as path from "node:path";
 
@@ -13,7 +13,7 @@ const root = path.join(import.meta.dir, "..");
 const outFile = path.join(root, "../coding-agent/src/export/html/tool-views.generated.js");
 
 const result = await Bun.build({
-	entrypoints: [path.join(root, "src/tool-render/standalone.tsx")],
+	entrypoints: [path.join(root, "../web-render/src/tool-render/standalone.tsx")],
 	target: "browser",
 	format: "iife",
 	minify: true,

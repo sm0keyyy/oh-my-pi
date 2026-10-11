@@ -1,0 +1,28 @@
+{
+	"name": "@oh-my-pi/web-render",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/tool-render/index.ts",
+		"./element": "./src/tool-render/element.tsx",
+		"./Markdown": "./src/Markdown.tsx",
+		"./escape": "./src/escape.ts"
+	},
+	"scripts": {
+		"check:types": "tsgo -p tsconfig.json --noEmit",
+		"lint": "oxlint ."
+	},
+	"dependencies": {
+		"@oh-my-pi/pi-utils": "catalog:",
+		"@oh-my-pi/pi-wire": "catalog:",
+		"katex": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:"
+	}
+}

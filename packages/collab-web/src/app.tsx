@@ -10,7 +10,7 @@ import { Toasts } from "./components/shell/Toasts";
 import { Transcript } from "./components/transcript/Transcript";
 import { GuestClient } from "./lib/client";
 import { useGuestSnapshot } from "./lib/use-guest";
-import type { ToolRenderHost } from "./tool-render";
+import type { ToolRenderHost } from "@oh-my-pi/web-render";
 import "./components/shell/shell.css";
 
 const NAME_KEY = "omp.collab.name";

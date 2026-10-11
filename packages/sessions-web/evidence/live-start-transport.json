@@ -1,0 +1,30 @@
+[
+	{
+		"viewport": "desktop",
+		"command": "live_start",
+		"coverage": "negative transport: invalid instructions; not voice functionality",
+		"success": true,
+		"response": {
+			"id": "5bbb963b-5782-4314-ab47-8fad7e37d4b9",
+			"type": "response",
+			"command": "live_start",
+			"success": false,
+			"error": "Parse error: unclosed template expression"
+		},
+		"screenshot": "packages/sessions-web/evidence/screenshots/live_start-desktop.png"
+	},
+	{
+		"viewport": "phone",
+		"command": "live_start",
+		"coverage": "negative transport: invalid instructions; not voice functionality",
+		"success": true,
+		"response": {
+			"id": "b0e90869-5043-4bcb-9b03-c794cb248e35",
+			"type": "response",
+			"command": "live_start",
+			"success": false,
+			"error": "Parse error: unclosed template expression"
+		},
+		"screenshot": "packages/sessions-web/evidence/screenshots/live_start-phone.png"
+	}
+]

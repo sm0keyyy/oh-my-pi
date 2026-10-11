@@ -6,7 +6,7 @@ import {
 	mathStartIndex,
 } from "@oh-my-pi/pi-utils/math-delimiters";
 import { renderToString } from "katex";
-import { escapeHtml } from "../../lib/format";
+import { escapeHtml } from "./escape";
 
 /**
  * A backtick between the delimiters means the run is prose that merely looks

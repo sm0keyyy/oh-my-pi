@@ -1,0 +1,12 @@
+[
+	{
+		"viewport": "desktop",
+		"ordered": ["d4f31dbb8c3361ae", "a31af389516aa5cf"],
+		"screenshot": "packages/sessions-web/evidence/screenshots/lobby-waiting-desktop.png"
+	},
+	{
+		"viewport": "phone",
+		"ordered": ["d4f31dbb8c3361ae", "a31af389516aa5cf"],
+		"screenshot": "packages/sessions-web/evidence/screenshots/lobby-waiting-phone.png"
+	}
+]

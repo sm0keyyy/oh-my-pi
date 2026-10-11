@@ -1,0 +1,21 @@
+{
+	"name": "@oh-my-pi/sessions-bridge",
+	"version": "0.1.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"start": "bun src/bridge.ts",
+		"test": "bun test test",
+		"check": "oxlint . && oxfmt --check src test && bun run check:types",
+		"check:types": "tsgo -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@oh-my-pi/pi-coding-agent": "catalog:",
+		"@oh-my-pi/pi-utils": "catalog:",
+		"@oh-my-pi/sessions-gateway": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:"
+	}
+}

@@ -1,0 +1,20 @@
+{
+	"name": "@oh-my-pi/sessions-gateway",
+	"version": "0.1.0",
+	"private": true,
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"start": "bun src/server.ts",
+		"test": "bun test test",
+		"check": "oxlint . && oxfmt --check src test && bun run check:types",
+		"check:types": "tsgo -p tsconfig.json --noEmit"
+	},
+	"dependencies": {
+		"@oh-my-pi/pi-utils": "catalog:",
+		"jose": "6.2.12"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:"
+	}
+}

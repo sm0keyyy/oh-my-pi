@@ -95,6 +95,10 @@ export type RpcCommand =
 	  }
 	| {
 			id?: string;
+			type: "abort_and_restore_queue";
+	  }
+	| {
+			id?: string;
 			type: "new_session";
 			parentSession?: string;
 	  }
@@ -102,6 +106,8 @@ export type RpcCommand =
 			id?: string;
 			type: "open_session";
 			sessionDir: string;
+			provider?: string;
+			modelId?: string;
 	  }
 	| {
 			id?: string;
@@ -110,6 +116,11 @@ export type RpcCommand =
 	| {
 			id?: string;
 			type: "set_fast_mode";
+			enabled: boolean;
+	  }
+	| {
+			id?: string;
+			type: "set_slow_mode";
 			enabled: boolean;
 	  }
 	| {
@@ -278,6 +289,8 @@ export type RpcCommand =
 			id?: string;
 			type: "switch_session";
 			sessionPath: string;
+			provider?: string;
+			modelId?: string;
 	  }
 	| {
 			id?: string;
@@ -328,6 +341,17 @@ export type RpcCommand =
 	  }
 	| {
 			id?: string;
+			type: "get_logout_accounts";
+			providerId: string;
+	  }
+	| {
+			id?: string;
+			type: "logout";
+			providerId: string;
+			credentialId: number;
+	  }
+	| {
+			id?: string;
 			type: "predict_word";
 			text: string;
 			cursor: number;
@@ -339,6 +363,21 @@ export type RpcCommand =
 			cursor: number;
 			suggestion: string;
 			accepted: boolean;
+	  }
+	| {
+			id?: string;
+			type: "btw";
+			question: string;
+			recordId?: string;
+	  }
+	| {
+			id?: string;
+			type: "btw_cancel";
+			recordId?: string;
+	  }
+	| {
+			id?: string;
+			type: "get_btw_history";
 	  };
 export type RpcSubagentSubscriptionLevel = "off" | "progress" | "events";
 export type RpcExtensionUIResponse =
@@ -470,7 +509,7 @@ export const terminalCommands = [
 	},
 	{
 		name: "fork",
-		description: "Create a new fork from a previous message",
+		description: "Fork this session, or open it in a multiplexer pane or window",
 		source: "builtin",
 	},
 	{

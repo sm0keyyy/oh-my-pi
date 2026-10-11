@@ -1386,11 +1386,7 @@ export class CommandController {
 		await this.#runNewSessionFlow({ drop: true }, "Session deleted");
 	}
 
-	async handleForkCommand(
-		placement?: "pane" | "window",
-		entryId?: string,
-		requireIdle = false,
-	): Promise<void> {
+	async handleForkCommand(placement?: "pane" | "window", entryId?: string, requireIdle = false): Promise<void> {
 		if (placement !== undefined) {
 			await this.#handleForkTerminalCommand(placement);
 			return;

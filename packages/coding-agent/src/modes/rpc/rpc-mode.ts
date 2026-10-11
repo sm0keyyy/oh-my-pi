@@ -2592,7 +2592,11 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
 		cleanup = (async () => {
 			await host.disconnected?.();
-			await btw.close();
+			await btw.close().catch(btwError => {
+				const message = toError(btwError).message;
+				logger.error(message);
+				output({ type: "notice", level: "error", message, source: "btw-history" });
+			});
 			await inputDispatcher.drain();
 			await shutdownCoordinator.drain();
 			disposed = true;

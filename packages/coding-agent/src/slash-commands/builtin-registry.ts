@@ -1,3 +1,4 @@
+import type { AvailableCommand } from "@oh-my-pi/pi-utils/acp";
 import { clearSubmittedText } from "./helpers/draft";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
@@ -130,6 +131,15 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
  * ACP dispatcher requires `handle` and skips TUI-only entries.
  */
 export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
+/**
+ * All names (primary + aliases) that are reserved by ACP builtins. Used to
+ * filter out extension commands that would shadow a builtin or its alias at
+ * dispatch time (e.g. `models` is an alias for `/model`, so an extension
+ * registering `models` would appear in the palette but execute the builtin).
+ */
+export const ACP_BUILTIN_RESERVED_NAMES: ReadonlySet<string> = new Set(
+	BUILTIN_SLASH_COMMANDS_INTERNAL.filter(c => c.handle !== undefined).flatMap(c => [c.name, ...(c.aliases ?? [])]),
+);
 
 /**
  * Execute a builtin slash command in the interactive TUI.
@@ -195,3 +205,21 @@ export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | unde
 }
 
 export type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec, TuiSlashCommandRuntime };
+/**
+ * Commands advertised to ACP clients. Entries without a text-mode `handle`
+ * (e.g. `/quit`, `/login`, dashboards) are filtered out so the client doesn't
+ * see commands it cannot drive.
+ */
+export const ACP_BUILTIN_SLASH_COMMANDS: AvailableCommand[] = BUILTIN_SLASH_COMMANDS_INTERNAL.filter(
+	command => command.handle !== undefined,
+).map(command => {
+	// Honor mode-specific copy: ACP clients receive concise text-mode
+	// descriptions/hints when the spec sets `acpDescription` / `acpInputHint`,
+	// otherwise fall back to the unified `description` / `inlineHint`.
+	const hint = command.acpInputHint ?? command.inlineHint;
+	return {
+		name: command.name,
+		description: command.acpDescription ?? command.description,
+		input: hint ? { hint } : undefined,
+	};
+});

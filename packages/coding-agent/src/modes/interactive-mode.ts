@@ -8230,11 +8230,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#commandController.handleDeleteCommand();
 	}
 
-	async handleForkCommand(
-		placement?: "pane" | "window",
-		entryId?: string,
-		requireIdle = false,
-	): Promise<void> {
+	async handleForkCommand(placement?: "pane" | "window", entryId?: string, requireIdle = false): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		if (!placement) {
 			await this.#btwController.dispose();

@@ -156,11 +156,12 @@ import type { NewSessionOptions } from "../session/session-entries";
 import { findMostRecentNonEmptySession } from "../session/session-listing";
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../slash-commands/helpers/parse";
-import type { RpcHostAdapter } from "./rpc/rpc-mode";
+import { resolveRequestedRpcModel, type RpcHostAdapter } from "./rpc/rpc-mode";
 import type { HandoffResult } from "../session/agent-session-types";
 import type { RpcResponse } from "./rpc/rpc-types";
 import { RpcLiveBridge } from "./rpc/rpc-live";
 import { startRpcSocketServer, type RpcSocketOptions, type RpcSocketServer } from "./rpc/rpc-socket";
+import { RpcSubagentRegistry } from "./rpc/rpc-subagents";
 import { cfgRpcSocketEnabled } from "./rpc/settings";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
@@ -1534,6 +1535,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	#signalTeardown?: SessionTeardown;
 	#rpcSocketServer: RpcSocketServer | undefined;
 	#rpcLiveBridge: RpcLiveBridge | undefined;
+	#rpcSocketEpoch = 0;
+	#rpcSocketSuspended = false;
+	#rpcSocketOptions: RpcSocketOptions | undefined;
+	#rpcSocketStart: Promise<void> | undefined;
+	#rpcSubagentRegistry: RpcSubagentRegistry | undefined;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
 	/** Header components below the config warnings + welcome, retained so a live config-warning change can rebuild the header (#10048). */
@@ -1766,8 +1772,20 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async startRpcSocket(options?: RpcSocketOptions): Promise<void> {
-		if (this.#rpcSocketServer || !cfgRpcSocketEnabled.get(this.session.settings)) return;
+		if (this.#rpcSocketStart) return this.#rpcSocketStart;
+		if (
+			this.#rpcSocketServer ||
+			this.#rpcSocketSuspended ||
+			this.collabGuest ||
+			!cfgRpcSocketEnabled.get(this.session.settings)
+		)
+			return;
+		this.#rpcSocketOptions = options;
+		const epoch = this.#rpcSocketEpoch;
 		const host: RpcHostAdapter = {
+			isActive: () => epoch === this.#rpcSocketEpoch && !this.#rpcSocketSuspended && !this.collabGuest,
+			subagents: () => this.#rpcSubagentRegistry?.getSubagents() ?? [],
+			uiSnapshot: () => this.#extensionUiController.getRpcUiSnapshot(),
 			handleCommand: async command => {
 				const response = (data?: object | null) =>
 					({
@@ -1836,7 +1854,11 @@ export class InteractiveMode implements InteractiveModeContext {
 						return response({ cancelled: this.sessionManager.getSessionId() === previous });
 					}
 					case "switch_session": {
-						const cancelled = !(await this.#selectorController.handleResumeSession(command.sessionPath));
+						const model = await resolveRequestedRpcModel(this.session, command);
+						if (host.isActive?.() === false) throw new Error("The TUI no longer accepts RPC commands");
+						const cancelled = !(await this.#selectorController.handleResumeSession(command.sessionPath, {
+							model,
+						}));
 						return response({ cancelled });
 					}
 					case "branch": {
@@ -1850,23 +1872,28 @@ export class InteractiveMode implements InteractiveModeContext {
 						return response({ cancelled: this.sessionManager.getSessionId() === previous });
 					}
 					case "open_session": {
+						const model = await resolveRequestedRpcModel(this.session, command);
+						if (host.isActive?.() === false) throw new Error("The TUI no longer accepts RPC commands");
 						if (!this.session.sessionFile)
 							throw new Error("open_session requires session persistence (omit --no-session)");
 						const dir = path.resolve(command.sessionDir);
 						const latest = await findMostRecentNonEmptySession(dir);
+						if (host.isActive?.() === false) throw new Error("The TUI no longer accepts RPC commands");
 						const current = path.resolve(this.session.sessionFile);
 						const alreadyOpen = latest
 							? current === path.resolve(latest)
 							: path.dirname(current) === dir && this.session.messages.length === 0;
 						let cancelled = false;
 						if (!alreadyOpen) {
-							if (latest) cancelled = !(await this.#selectorController.handleResumeSession(latest));
+							if (latest) cancelled = !(await this.#selectorController.handleResumeSession(latest, { model }));
 							else {
 								const previous = this.sessionManager.getSessionId();
 								await this.handleClearCommand({ sessionDir: dir });
 								cancelled = this.sessionManager.getSessionId() === previous;
 							}
 						}
+						if (!cancelled && model && !modelsAreEqual(this.session.model, model))
+							await this.session.setModel(model);
 						return response({
 							cancelled,
 							resumed: !cancelled && latest !== null,
@@ -1890,19 +1917,43 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 		this.#rpcLiveBridge = new RpcLiveBridge(this.session, frame => this.#rpcSocketServer?.broadcast(frame));
 		host.liveBridge = this.#rpcLiveBridge;
-		this.#rpcSocketServer = await startRpcSocketServer(this.session, host, {
-			subagentEventBus: this.#subagentEventBus,
-			...options,
-		});
-		this.#extensionUiController.setRpcSocketServer(this.#rpcSocketServer);
+		this.#rpcSocketStart = (async () => {
+			const server = await startRpcSocketServer(this.session, host, {
+				subagentEventBus: this.#subagentEventBus ?? this.#eventBus,
+				...options,
+			});
+			if (host.isActive?.() === false) {
+				await server.close();
+				return;
+			}
+			this.#rpcSocketServer = server;
+			this.#extensionUiController.setRpcSocketServer(server);
+		})();
+		try {
+			await this.#rpcSocketStart;
+		} finally {
+			this.#rpcSocketStart = undefined;
+		}
 	}
 
 	async stopRpcSocket(): Promise<void> {
+		this.#rpcSocketEpoch++;
 		this.#extensionUiController.setRpcSocketServer(undefined);
+		await this.#rpcSocketStart;
 		await this.#rpcSocketServer?.close();
 		this.#rpcSocketServer = undefined;
 		await this.#rpcLiveBridge?.stop();
 		this.#rpcLiveBridge = undefined;
+	}
+
+	async suspendRpcSocket(): Promise<void> {
+		this.#rpcSocketSuspended = true;
+		await this.stopRpcSocket();
+	}
+
+	async resumeRpcSocket(): Promise<void> {
+		this.#rpcSocketSuspended = false;
+		if (this.isInitialized) await this.startRpcSocket(this.#rpcSocketOptions);
 	}
 
 	constructor(
@@ -1964,6 +2015,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.#eventBus = eventBus;
 		this.#subagentEventBus = subagentEventBus;
+		const rosterBus = subagentEventBus ?? eventBus;
+		if (rosterBus) {
+			this.#rpcSubagentRegistry = new RpcSubagentRegistry(rosterBus, () => {});
+			this.#eventBusUnsubscribers.push(
+				session.registerSessionChangeCallback(() => this.#rpcSubagentRegistry?.clear()),
+			);
+		}
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -7268,6 +7326,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#eventBusUnsubscribers = [];
 		this.#observerRegistry.dispose();
+		this.#rpcSubagentRegistry?.dispose();
+		this.#rpcSubagentRegistry = undefined;
 		this.#agentRegistryUnsubscribe?.();
 		this.#agentRegistryUnsubscribe = undefined;
 		this.#agentRegistrySubscriptionTarget = undefined;

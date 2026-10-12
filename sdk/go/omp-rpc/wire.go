@@ -2524,17 +2524,40 @@ func (v *RpcSessionHost) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type RpcSessionModel struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+	API      string `json:"api"`
+}
+
+func (v *RpcSessionModel) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RpcSessionModel", v.decodeFrom)
+}
+
+func (v *RpcSessionModel) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RpcSessionModel
+	d := fieldDecoder{raw: raw, owner: "RpcSessionModel"}
+	d.required("id", &out.ID)
+	d.required("provider", &out.Provider)
+	d.required("api", &out.API)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type RpcSessionSnapshot struct {
-	InstanceID    string     `json:"instanceId"`
-	Pid           int64      `json:"pid"`
-	SessionID     string     `json:"sessionId"`
-	Cwd           string     `json:"cwd"`
-	Busy          bool       `json:"busy"`
-	InputRequired bool       `json:"inputRequired"`
-	StartedAt     int64      `json:"startedAt"`
-	LastActivity  int64      `json:"lastActivity"`
-	SessionName   *string    `json:"sessionName,omitempty"`
-	Model         *ModelInfo `json:"model,omitempty"`
+	InstanceID    string           `json:"instanceId"`
+	Pid           int64            `json:"pid"`
+	SessionID     string           `json:"sessionId"`
+	Cwd           string           `json:"cwd"`
+	Busy          bool             `json:"busy"`
+	InputRequired bool             `json:"inputRequired"`
+	StartedAt     int64            `json:"startedAt"`
+	LastActivity  int64            `json:"lastActivity"`
+	SessionName   *string          `json:"sessionName,omitempty"`
+	Model         *RpcSessionModel `json:"model,omitempty"`
 	// Real text of the first pending TUI dialog; omitted when no question is pending.
 	QuestionText *string `json:"questionText,omitempty"`
 }
@@ -5735,6 +5758,58 @@ func (v SetWidgetUiRequest) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"extension_ui_request","method":"setWidget"`, nil)
 }
 
+type SnapshotWidget struct {
+	Lines     []string        `json:"lines"`
+	Placement WidgetPlacement `json:"placement"`
+}
+
+func (v *SnapshotWidget) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SnapshotWidget", v.decodeFrom)
+}
+
+func (v *SnapshotWidget) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SnapshotWidget
+	d := fieldDecoder{raw: raw, owner: "SnapshotWidget"}
+	d.required("lines", &out.Lines)
+	d.required("placement", &out.Placement)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Replace status and serializable widget state on attachment, including empty maps.
+type SnapshotUiRequest struct {
+	ID       string                    `json:"id"`
+	Statuses map[string]string         `json:"statuses"`
+	Widgets  map[string]SnapshotWidget `json:"widgets"`
+}
+
+func (v *SnapshotUiRequest) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SnapshotUiRequest", v.decodeFrom)
+}
+
+func (v *SnapshotUiRequest) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SnapshotUiRequest
+	d := fieldDecoder{raw: raw, owner: "SnapshotUiRequest"}
+	d.constant("type", "extension_ui_request")
+	d.required("id", &out.ID)
+	d.constant("method", "snapshot")
+	d.required("statuses", &out.Statuses)
+	d.required("widgets", &out.Widgets)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v SnapshotUiRequest) MarshalJSON() ([]byte, error) {
+	type plain SnapshotUiRequest
+	return encodeObject(plain(v), `"type":"extension_ui_request","method":"snapshot"`, nil)
+}
+
 type SetTitleUiRequest struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
@@ -5844,6 +5919,7 @@ func (CancelUiRequest) isExtensionUiRequest()        {}
 func (NotifyUiRequest) isExtensionUiRequest()        {}
 func (SetStatusUiRequest) isExtensionUiRequest()     {}
 func (SetWidgetUiRequest) isExtensionUiRequest()     {}
+func (SnapshotUiRequest) isExtensionUiRequest()      {}
 func (SetTitleUiRequest) isExtensionUiRequest()      {}
 func (SetEditorTextUiRequest) isExtensionUiRequest() {}
 func (OpenUrlUiRequest) isExtensionUiRequest()       {}
@@ -5881,6 +5957,8 @@ func (v *ExtensionUiRequest) decodeFrom(raw map[string]json.RawMessage) error {
 		value, err = decodeVariant[SetStatusUiRequest](raw)
 	case "setWidget":
 		value, err = decodeVariant[SetWidgetUiRequest](raw)
+	case "snapshot":
+		value, err = decodeVariant[SnapshotUiRequest](raw)
 	case "setTitle":
 		value, err = decodeVariant[SetTitleUiRequest](raw)
 	case "set_editor_text":

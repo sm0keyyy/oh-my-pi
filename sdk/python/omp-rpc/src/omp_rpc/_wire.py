@@ -191,8 +191,8 @@ _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset({"aboveEditor", "bel
 _decode_widget_placement = cast("Decoder[WidgetPlacement]", literal(_WIDGET_PLACEMENT_VALUES))
 
 
-ExtensionUiMethod: TypeAlias = Literal["select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "setTitle", "set_editor_text", "open_url"]
-_EXTENSION_UI_METHOD_VALUES: Final[frozenset[str]] = frozenset({"select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "setTitle", "set_editor_text", "open_url"})
+ExtensionUiMethod: TypeAlias = Literal["select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"]
+_EXTENSION_UI_METHOD_VALUES: Final[frozenset[str]] = frozenset({"select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"})
 _decode_extension_ui_method = cast("Decoder[ExtensionUiMethod]", literal(_EXTENSION_UI_METHOD_VALUES))
 
 
@@ -646,6 +646,13 @@ class RpcSessionHost:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class RpcSessionModel:
+    id: str
+    provider: str
+    api: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class RpcSessionSnapshot:
     instance_id: str
     pid: int
@@ -656,7 +663,7 @@ class RpcSessionSnapshot:
     started_at: int
     last_activity: int
     session_name: str | None = None
-    model: ModelInfo | None = None
+    model: RpcSessionModel | None = None
     question_text: str | None = None
     """Real text of the first pending TUI dialog; omitted when no question is pending."""
 
@@ -1529,6 +1536,22 @@ class SetWidgetUiRequest:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class SnapshotWidget:
+    lines: tuple[str, ...]
+    placement: WidgetPlacement
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SnapshotUiRequest:
+    """Replace status and serializable widget state on attachment, including empty maps."""
+    type: Literal["extension_ui_request"] = "extension_ui_request"
+    id: str
+    method: Literal["snapshot"] = "snapshot"
+    statuses: dict[str, str]
+    widgets: dict[str, SnapshotWidget]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SetTitleUiRequest:
     type: Literal["extension_ui_request"] = "extension_ui_request"
     id: str
@@ -1577,6 +1600,8 @@ class ExtensionUiRequest(ExtensionUiRequestMixin):
     widget_key: str | None = None
     widget_lines: tuple[str, ...] | None = None
     widget_placement: WidgetPlacement | None = None
+    statuses: dict[str, str] | None = None
+    widgets: dict[str, SnapshotWidget] | None = None
     text: str | None = None
     url: str | None = None
     launch_url: str | None = None
@@ -1963,6 +1988,15 @@ def parse_rpc_session_host(value: object, path: str = "RpcSessionHost") -> RpcSe
     )
 
 
+def parse_rpc_session_model(value: object, path: str = "RpcSessionModel") -> RpcSessionModel:
+    payload = expect_object(value, path)
+    return RpcSessionModel(
+        id=required(payload, "id", decode_str, path),
+        provider=required(payload, "provider", decode_str, path),
+        api=required(payload, "api", decode_str, path),
+    )
+
+
 def parse_rpc_session_snapshot(value: object, path: str = "RpcSessionSnapshot") -> RpcSessionSnapshot:
     payload = expect_object(value, path)
     return RpcSessionSnapshot(
@@ -1975,7 +2009,7 @@ def parse_rpc_session_snapshot(value: object, path: str = "RpcSessionSnapshot") 
         started_at=required(payload, "startedAt", decode_int, path),
         last_activity=required(payload, "lastActivity", decode_int, path),
         session_name=optional(payload, "sessionName", decode_str, path),
-        model=optional(payload, "model", parse_model_info, path),
+        model=optional(payload, "model", parse_rpc_session_model, path),
         question_text=optional(payload, "questionText", decode_str, path),
     )
 
@@ -2967,6 +3001,25 @@ def parse_set_widget_ui_request(value: object, path: str = "SetWidgetUiRequest")
     )
 
 
+def parse_snapshot_widget(value: object, path: str = "SnapshotWidget") -> SnapshotWidget:
+    payload = expect_object(value, path)
+    return SnapshotWidget(
+        lines=required(payload, "lines", array(decode_str), path),
+        placement=required(payload, "placement", _decode_widget_placement, path),
+    )
+
+
+def parse_snapshot_ui_request(value: object, path: str = "SnapshotUiRequest") -> SnapshotUiRequest:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["extension_ui_request"]]', literal(frozenset({"extension_ui_request"}))), path)
+    required(payload, "method", cast('Decoder[Literal["snapshot"]]', literal(frozenset({"snapshot"}))), path)
+    return SnapshotUiRequest(
+        id=required(payload, "id", decode_str, path),
+        statuses=required(payload, "statuses", record(decode_str), path),
+        widgets=required(payload, "widgets", record(parse_snapshot_widget), path),
+    )
+
+
 def parse_set_title_ui_request(value: object, path: str = "SetTitleUiRequest") -> SetTitleUiRequest:
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["extension_ui_request"]]', literal(frozenset({"extension_ui_request"}))), path)
@@ -3021,6 +3074,8 @@ def parse_extension_ui_request(value: object, path: str = "ExtensionUiRequest") 
         widget_key=optional(payload, "widgetKey", decode_str, path),
         widget_lines=optional(payload, "widgetLines", array(decode_str), path),
         widget_placement=optional(payload, "widgetPlacement", _decode_widget_placement, path),
+        statuses=optional(payload, "statuses", record(decode_str), path),
+        widgets=optional(payload, "widgets", record(parse_snapshot_widget), path),
         text=optional(payload, "text", decode_str, path),
         url=optional(payload, "url", decode_str, path),
         launch_url=optional(payload, "launchUrl", decode_str, path),
@@ -3926,6 +3981,7 @@ __all__ = [
     "RpcFrameErrorEvent",
     "RpcNotification",
     "RpcSessionHost",
+    "RpcSessionModel",
     "RpcSessionSnapshot",
     "SelectOptionDetail",
     "SelectUiRequest",
@@ -3945,6 +4001,8 @@ __all__ = [
     "SlashCommandSource",
     "SlashSubcommand",
     "SlowModeScope",
+    "SnapshotUiRequest",
+    "SnapshotWidget",
     "StopReason",
     "StreamingBehavior",
     "SubagentEvent",
@@ -4099,6 +4157,7 @@ __all__ = [
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
     "parse_rpc_session_host",
+    "parse_rpc_session_model",
     "parse_rpc_session_snapshot",
     "parse_select_option_detail",
     "parse_select_ui_request",
@@ -4116,6 +4175,8 @@ __all__ = [
     "parse_set_widget_ui_request",
     "parse_slash_command_input",
     "parse_slash_subcommand",
+    "parse_snapshot_ui_request",
+    "parse_snapshot_widget",
     "parse_subagent_event",
     "parse_subagent_event_payload",
     "parse_subagent_lifecycle_event",

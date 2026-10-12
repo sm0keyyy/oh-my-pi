@@ -203,7 +203,7 @@ export interface RpcSessionSnapshot {
 	sessionId: string;
 	sessionName?: string;
 	cwd: string;
-	model?: RpcSessionState["model"];
+	model?: Pick<NonNullable<RpcSessionState["model"]>, "id" | "provider" | "api">;
 	busy: boolean;
 	inputRequired: boolean;
 	questionText?: string;
@@ -715,6 +715,13 @@ export interface RpcAskDialogQuestion {
 
 /** Emitted when an extension needs user input */
 export type RpcExtensionUIRequest =
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "snapshot";
+			statuses: Record<string, string>;
+			widgets: Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>;
+	  }
 	| {
 			type: "extension_ui_request";
 			id: string;

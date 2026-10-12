@@ -116,9 +116,13 @@ export class RpcSubagentRegistry {
 	#output: RpcSubagentOutput;
 	#subscriptionLevel: RpcSubagentSubscriptionLevel = "off";
 
-	constructor(observabilityBus: EventBus, output: RpcSubagentOutput) {
+	constructor(observabilityBus: EventBus, output: RpcSubagentOutput, initial: RpcSubagentSnapshot[] = []) {
 		this.#observabilityBus = observabilityBus;
 		this.#output = output;
+		for (const snapshot of initial) {
+			this.#subagents.set(snapshot.id, snapshot);
+			this.#rememberTranscriptSession(snapshot.id, snapshot.sessionFile);
+		}
 		this.#unsubscribers.push(
 			observabilityBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				this.handleLifecycle(data as SubagentLifecyclePayload);
@@ -129,12 +133,16 @@ export class RpcSubagentRegistry {
 		);
 	}
 
-	dispose(): void {
+	detach(): void {
 		this.#eventUnsubscribe?.();
 		this.#eventUnsubscribe = undefined;
 		for (const unsubscribe of this.#unsubscribers) unsubscribe();
 		this.#unsubscribers = [];
 		this.#observabilityBus = undefined;
+	}
+
+	dispose(): void {
+		this.detach();
 		this.#subagents.clear();
 		this.#transcriptSessionFilesBySubagentId.clear();
 		this.#staleSubagentIds.clear();

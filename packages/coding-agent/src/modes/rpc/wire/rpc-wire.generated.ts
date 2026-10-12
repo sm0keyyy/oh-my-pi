@@ -488,6 +488,12 @@ export interface RpcSessionHost {
 	startedAt: number;
 }
 
+export interface RpcSessionModel {
+	id: string;
+	provider: string;
+	api: string;
+}
+
 export interface RpcSessionSnapshot {
 	instanceId: string;
 	pid: number;
@@ -498,7 +504,7 @@ export interface RpcSessionSnapshot {
 	startedAt: number;
 	lastActivity: number;
 	sessionName?: string;
-	model?: ModelInfo;
+	model?: RpcSessionModel;
 	/** Real text of the first pending TUI dialog; omitted when no question is pending. */
 	questionText?: string;
 }
@@ -1305,6 +1311,20 @@ export interface SetWidgetUiRequest {
 	widgetPlacement?: WidgetPlacement;
 }
 
+export interface SnapshotWidget {
+	lines: string[];
+	placement: WidgetPlacement;
+}
+
+/** Replace status and serializable widget state on attachment, including empty maps. */
+export interface SnapshotUiRequest {
+	type: "extension_ui_request";
+	id: string;
+	method: "snapshot";
+	statuses: Record<string, string>;
+	widgets: Record<string, SnapshotWidget>;
+}
+
 export interface SetTitleUiRequest {
 	type: "extension_ui_request";
 	id: string;
@@ -1330,7 +1350,7 @@ export interface OpenUrlUiRequest {
 }
 
 /** Extension UI request, discriminated by `method`. */
-export type ExtensionUiRequest = SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest;
+export type ExtensionUiRequest = SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest;
 
 /** Answer to one `ask` question: exact option labels, plus optional free text. */
 export interface AskAnswer {

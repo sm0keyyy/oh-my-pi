@@ -5,12 +5,15 @@ import { isEnoent, isRecord, logger } from "@oh-my-pi/pi-utils";
 import { MAX_RPC_FRAME_BYTES } from "../../coding-agent/src/modes/rpc/rpc-frame";
 import { listRpcSessions, rpcSessionsRuntimeDir } from "../../coding-agent/src/modes/rpc/rpc-socket";
 import { assertPrivateDir, socketFallbackDir } from "../../coding-agent/src/utils/private-socket";
+import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
 import {
 	HEARTBEAT_MS,
 	IDLE_MS,
 	MAX_PAYLOAD_BYTES,
 	parseGatewayMessage,
 	PUBLIC_ORIGIN,
+	sanitizeDiagnostic,
+	SNAPSHOT_MS,
 	type BridgeMessage,
 	type ClosedCode,
 } from "../../sessions-gateway/src/protocol";
@@ -27,6 +30,10 @@ export interface SessionsBridge {
 }
 interface Attachment {
 	socket?: net.Socket;
+	instanceId: string;
+	pid?: number;
+	output: string;
+	closing?: boolean;
 	pending: string[];
 	pendingBytes: number;
 	ready: boolean;
@@ -43,20 +50,35 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 	}
 	const dir = options.dir ?? rpcSessionsRuntimeDir();
 	const attachments = new Map<string, Attachment>();
+	const sessions = new Map<string, RpcSessionSnapshot>();
+	const gone = new Set<string>();
+	const closed = new Map<string, ClosedCode>();
 	let socket: WebSocket | undefined;
 	let watcher: fs.FSWatcher | undefined;
 	let retry: Timer | undefined;
 	let connectDeadline: Timer | undefined;
 	let backoff = 1_000;
 	let lastSeen = Date.now();
+	let openedAt = 0;
+	let closePath = "peer";
 	let stopped = false;
 	let refreshing = false;
 	let dirty = false;
-	const send = (frame: BridgeMessage): void => {
-		if (socket?.readyState === WebSocket.OPEN) {
-			if (socket.bufferedAmount > MAX_PAYLOAD_BYTES) socket.close(1009, "bridge backpressure limit");
-			else socket.send(JSON.stringify(frame));
-		}
+	const send = (frame: BridgeMessage): boolean => {
+		if (socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount >= MAX_PAYLOAD_BYTES) return false;
+		const text = JSON.stringify(frame);
+		if (socket.bufferedAmount + Buffer.byteLength(text) > MAX_PAYLOAD_BYTES) return false;
+		socket.send(text);
+		return true;
+	};
+	const publish = (): void => {
+		if (send({ t: "sessions", sessions: [...sessions.values()], ...(gone.size ? { gone: [...gone] } : {}) }))
+			gone.clear();
+	};
+	const closeRemote = (remote: WebSocket, code: number, reason: string, path: string): void => {
+		if (socket === remote) closePath = path;
+		logger.warn("Sessions gateway close initiated", { code, reason: sanitizeDiagnostic(reason), path });
+		remote.close(code, reason);
 	};
 	const detach = (conn: string, code?: ClosedCode): void => {
 		const attachment = attachments.get(conn);
@@ -64,7 +86,61 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		attachments.delete(conn);
 		clearTimeout(attachment.deadline);
 		attachment.socket?.destroy();
-		if (code) send({ t: "closed", conn, code });
+		if (code && !send({ t: "closed", conn, code })) closed.set(conn, code);
+	};
+	const confirmedExit = async (instanceId: string, pid?: number): Promise<boolean> => {
+		try {
+			await fs.promises.lstat(path.join(dir, `${instanceId}.json`));
+		} catch (cause) {
+			if (isEnoent(cause)) return true;
+			logger.warn("Sessions exit check failed", { cause: sanitizeDiagnostic(cause) });
+		}
+		if (pid !== undefined) {
+			try {
+				process.kill(pid, 0);
+			} catch (cause) {
+				return isRecord(cause) && cause.code === "ESRCH";
+			}
+		}
+		return false;
+	};
+	const flush = (conn: string, attachment: Attachment): void => {
+		const local = attachment.socket;
+		if (!local || attachment.closing) return;
+		let newline: number;
+		while ((newline = attachment.output.indexOf("\n")) >= 0) {
+			const line = attachment.output.slice(0, newline);
+			if (Buffer.byteLength(line) + 1 > MAX_RPC_FRAME_BYTES) {
+				detach(conn, "unreachable");
+				return;
+			}
+			if (!attachment.ready) {
+				try {
+					const ready: unknown = JSON.parse(line);
+					if (
+						!isRecord(ready) ||
+						ready.type !== "ready" ||
+						!isRecord(ready.host) ||
+						ready.host.instanceId !== attachment.instanceId
+					)
+						throw new Error("Invalid socket ready");
+				} catch (cause) {
+					logger.warn("Sessions attachment handshake failed", { cause: sanitizeDiagnostic(cause) });
+					detach(conn, "unreachable");
+					return;
+				}
+				attachment.ready = true;
+				clearTimeout(attachment.deadline);
+			}
+			if (!send({ t: "frame", conn, line })) {
+				local.pause();
+				return;
+			}
+			attachment.output = attachment.output.slice(newline + 1);
+		}
+		if (Buffer.byteLength(attachment.output) >= MAX_RPC_FRAME_BYTES) detach(conn, "unreachable");
+		else if (socket?.readyState === WebSocket.OPEN && socket.bufferedAmount < MAX_PAYLOAD_BYTES / 2) local.resume();
+		else local.pause();
 	};
 	const watch = (): void => {
 		if (watcher || stopped) return;
@@ -72,13 +148,13 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			watcher = fs.watch(path.dirname(dir), { recursive: true }, (_event, name) => {
 				if (name?.toString().includes(path.basename(dir))) void refresh();
 			});
-			watcher.on("error", () => {
+			watcher.on("error", cause => {
 				watcher?.close();
 				watcher = undefined;
-				logger.warn("Sessions discovery watch failed");
+				logger.warn("Sessions discovery watch failed", { cause: sanitizeDiagnostic(cause) });
 			});
 		} catch (cause) {
-			if (!isEnoent(cause)) logger.warn("Sessions discovery watch failed");
+			if (!isEnoent(cause)) logger.warn("Sessions discovery watch failed", { cause: sanitizeDiagnostic(cause) });
 		}
 	};
 	const refresh = async (): Promise<void> => {
@@ -89,19 +165,30 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		try {
 			do {
 				dirty = false;
-				const sessions = await listRpcSessions({ dir });
-				if (!stopped) send({ t: "sessions", sessions });
+				const discovered = await listRpcSessions({ dir });
+				const ids = new Set(discovered.map(session => session.instanceId));
+				for (const session of sessions.values()) {
+					if (!ids.has(session.instanceId) && (await confirmedExit(session.instanceId, session.pid))) {
+						sessions.delete(session.instanceId);
+						gone.add(session.instanceId);
+					}
+				}
+				for (const session of discovered) {
+					sessions.set(session.instanceId, session);
+					gone.delete(session.instanceId);
+				}
+				if (!stopped) publish();
 			} while (dirty && !stopped);
-		} catch {
-			logger.warn("Sessions discovery refresh failed");
-			socket?.close(1011, "discovery failed");
+		} catch (cause) {
+			logger.warn("Sessions discovery refresh failed", { cause: sanitizeDiagnostic(cause) });
+			if (!stopped) publish();
 		} finally {
 			refreshing = false;
 		}
 	};
 	const attach = async (conn: string, instanceId: string): Promise<void> => {
 		detach(conn);
-		const attachment: Attachment = { pending: [], pendingBytes: 0, ready: false };
+		const attachment: Attachment = { instanceId, pending: [], pendingBytes: 0, output: "", ready: false };
 		attachments.set(conn, attachment);
 		try {
 			const directory = await assertPrivateDir(dir);
@@ -123,6 +210,9 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 				!isRecord(metadata) ||
 				metadata.version !== 1 ||
 				metadata.instanceId !== instanceId ||
+				typeof metadata.pid !== "number" ||
+				!Number.isSafeInteger(metadata.pid) ||
+				metadata.pid <= 0 ||
 				typeof metadata.token !== "string" ||
 				!/^[a-f0-9]{64}$/.test(metadata.token) ||
 				typeof metadata.endpoint !== "string" ||
@@ -134,6 +224,7 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			const local = net.createConnection(metadata.endpoint);
 			const token = metadata.token;
 			attachment.socket = local;
+			attachment.pid = metadata.pid;
 			attachment.deadline = setTimeout(() => detach(conn, "unreachable"), 2_000);
 			local.setEncoding("utf8");
 			local.once("connect", () => {
@@ -143,47 +234,28 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 				attachment.pending = [];
 				attachment.pendingBytes = 0;
 			});
-			let buffer = "";
 			local.on("data", chunk => {
 				if (attachments.get(conn) !== attachment) return;
-				buffer += chunk;
-				let newline: number;
-				while ((newline = buffer.indexOf("\n")) >= 0) {
-					const line = buffer.slice(0, newline);
-					buffer = buffer.slice(newline + 1);
-					if (Buffer.byteLength(line) + 1 > MAX_RPC_FRAME_BYTES) {
-						detach(conn, "unreachable");
-						return;
-					}
-					if (!attachment.ready) {
-						try {
-							const ready: unknown = JSON.parse(line);
-							if (
-								!isRecord(ready) ||
-								ready.type !== "ready" ||
-								!isRecord(ready.host) ||
-								ready.host.instanceId !== instanceId
-							)
-								throw new Error("Invalid socket ready");
-						} catch {
-							detach(conn, "unreachable");
-							return;
-						}
-						attachment.ready = true;
-						clearTimeout(attachment.deadline);
-					}
-					send({ t: "frame", conn, line });
+				attachment.output += chunk;
+				flush(conn, attachment);
+			});
+			const finish = async (cause?: unknown): Promise<void> => {
+				if (attachments.get(conn) !== attachment || attachment.closing) return;
+				attachment.closing = true;
+				const exited = await confirmedExit(instanceId, attachment.pid);
+				if (attachments.get(conn) === attachment) {
+					if (cause) logger.warn("Sessions attachment failed", { cause: sanitizeDiagnostic(cause) });
+					detach(conn, exited ? "tui_exited" : "unreachable");
 				}
-				if (Buffer.byteLength(buffer) >= MAX_RPC_FRAME_BYTES) detach(conn, "unreachable");
-			});
-			local.on("error", () => {
-				if (attachments.get(conn) === attachment) detach(conn, attachment.ready ? "tui_exited" : "unreachable");
-			});
+				await refresh();
+			};
+			local.on("error", cause => void finish(cause));
 			local.once("close", () => {
-				if (attachments.get(conn) === attachment) detach(conn, attachment.ready ? "tui_exited" : "unreachable");
+				void finish();
 				void refresh();
 			});
 		} catch (cause) {
+			logger.warn("Sessions attachment failed", { cause: sanitizeDiagnostic(cause) });
 			if (attachments.get(conn) === attachment) detach(conn, isEnoent(cause) ? "not_found" : "unreachable");
 		}
 	};
@@ -191,10 +263,11 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		if (stopped) return;
 		const remote = new WebSocket(options.url, { headers: options.headers });
 		socket = remote;
-		connectDeadline = setTimeout(() => remote.close(), 10_000);
+		closePath = "peer";
+		connectDeadline = setTimeout(() => closeRemote(remote, 4001, "connect timeout", "connect_timeout"), 10_000);
 		remote.onopen = () => {
 			clearTimeout(connectDeadline);
-			backoff = 1_000;
+			openedAt = Date.now();
 			lastSeen = Date.now();
 			void refresh();
 		};
@@ -223,18 +296,27 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 						else attachment.pending.push(frame.line);
 					}
 				}
-			} catch {
-				remote.close(1008, "invalid gateway message");
+			} catch (cause) {
+				logger.warn("Invalid sessions gateway message", { cause: sanitizeDiagnostic(cause) });
+				closeRemote(remote, 1008, "invalid gateway message", "gateway_message");
 			}
 		};
 		remote.onerror = () => {
 			logger.warn("Sessions gateway connection failed");
-			remote.close();
+			closeRemote(remote, 1011, "transport error", "transport_error");
 		};
-		remote.onclose = () => {
+		remote.onclose = event => {
+			logger.info("Sessions gateway closed", {
+				code: event.code,
+				reason: sanitizeDiagnostic(event.reason),
+				path: closePath,
+			});
+			if (event.code === 4009) logger.warn("Sessions bridge conflict", { code: event.code, retryMs: backoff });
 			clearTimeout(connectDeadline);
 			if (socket !== remote) return;
 			socket = undefined;
+			openedAt = 0;
+			closed.clear();
 			for (const conn of attachments.keys()) detach(conn);
 			if (!stopped) {
 				retry = setTimeout(connect, backoff);
@@ -244,11 +326,23 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 	};
 	watch();
 	connect();
+	const snapshots = setInterval(() => {
+		if (refreshing) publish();
+		else void refresh();
+	}, SNAPSHOT_MS);
+	const drain = setInterval(() => {
+		if (socket?.readyState !== WebSocket.OPEN) return;
+		for (const [conn, code] of closed) {
+			if (!send({ t: "closed", conn, code })) break;
+			closed.delete(conn);
+		}
+		for (const [conn, attachment] of attachments) flush(conn, attachment);
+	}, 25);
 	const heartbeat = setInterval(() => {
 		watch();
-		void refresh();
+		if (openedAt && Date.now() - openedAt >= HEARTBEAT_MS && Date.now() - lastSeen < IDLE_MS) backoff = 1_000;
 		if (socket?.readyState === WebSocket.OPEN) {
-			if (Date.now() - lastSeen >= IDLE_MS) socket.close(4001, "gateway silent");
+			if (Date.now() - lastSeen >= IDLE_MS) closeRemote(socket, 4001, "gateway silent", "idle_timeout");
 			else socket.ping();
 		}
 	}, options.heartbeatMs ?? HEARTBEAT_MS);
@@ -257,16 +351,19 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			if (stopped) return;
 			stopped = true;
 			clearInterval(heartbeat);
+			clearInterval(snapshots);
+			clearInterval(drain);
 			clearTimeout(retry);
 			clearTimeout(connectDeadline);
 			watcher?.close();
 			for (const conn of attachments.keys()) detach(conn);
-			socket?.close(1000, "bridge stopped");
+			if (socket) closeRemote(socket, 1000, "bridge stopped", "bridge_stop");
 		},
 	};
 }
 
 if (import.meta.main) {
+	logger.setTransports({ console: true, file: false });
 	const bridge = startBridge({
 		url: `${PUBLIC_ORIGIN.replace("https:", "wss:")}/ws/bridge`,
 		headers: await readBridgeHeaders(),

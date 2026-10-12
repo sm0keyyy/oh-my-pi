@@ -5,6 +5,7 @@ const pair = generateKeyPair("RS256");
 export interface AccessFixture {
 	certsUrl: URL;
 	headers: Record<string, string>;
+	serviceHeaders: Record<string, string>;
 	sign(overrides?: JWTPayload): Promise<string>;
 	fetch(url: string, init?: RequestInit): Promise<Response>;
 	stop(): void;
@@ -18,14 +19,23 @@ export async function createAccessFixture(): Promise<AccessFixture> {
 			aud: [ACCESS_AUDIENCE],
 			iss: ACCESS_ISSUER,
 			exp: Math.floor(Date.now() / 1000) + 3600,
+			email: "operator@example.test",
 			...overrides,
 		})
 			.setProtectedHeader({ alg: "RS256", kid: "test" })
 			.sign(keys.privateKey);
 	const headers = { "cf-access-jwt-assertion": await sign() };
+	const serviceHeaders = {
+		"cf-access-jwt-assertion": await sign({
+			email: undefined,
+			common_name: "fixture-service.access",
+			sub: "service-id",
+		}),
+	};
 	return {
 		certsUrl: new URL(`http://127.0.0.1:${certs.port}/certs`),
 		headers,
+		serviceHeaders,
 		sign,
 		fetch(url, init = {}) {
 			return fetch(url, { ...init, headers: { ...headers, ...init.headers } });

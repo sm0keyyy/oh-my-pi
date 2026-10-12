@@ -8,7 +8,7 @@
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; export PATH; exec bun "$HOME/Developer/omp-fork-18.9.2/packages/sessions-bridge/src/bridge.ts"</string>
+		<string>PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"; export PATH; umask 077; mkdir -p "$HOME/Library/Logs/omp"; exec &gt;&gt;"$HOME/Library/Logs/omp/sessions-bridge.stderr.log" 2&gt;&amp;1; exec bun "$HOME/Developer/omp-fork-18.9.2/packages/sessions-bridge/src/bridge.ts"</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

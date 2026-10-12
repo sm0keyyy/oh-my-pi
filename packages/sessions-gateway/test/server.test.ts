@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
 import { PUBLIC_ORIGIN } from "../src/protocol";
 import { startGateway, type SessionsGateway } from "../src/server";
@@ -39,7 +40,7 @@ async function publish(bridge: Peer, sessions: RpcSessionSnapshot[] = [snapshot]
 	expect(body).toEqual({ sessions });
 }
 async function attach(): Promise<{ bridge: Peer; browser: Peer; conn: string }> {
-	const bridge = peer("/ws/bridge", { ...access.headers, authorization: `Bearer ${token}` });
+	const bridge = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
 	await bridge.opened.promise;
 	await publish(bridge);
 	const browser = peer(`/ws/session/${snapshot.instanceId}`, { ...access.headers, origin: PUBLIC_ORIGIN });
@@ -68,7 +69,7 @@ afterEach(async () => {
 });
 
 test("publishes real pending question text through S2 and clears it with the next snapshot", async () => {
-	const bridge = peer("/ws/bridge", { ...access.headers, authorization: `Bearer ${token}` });
+	const bridge = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
 	await bridge.opened.promise;
 	await publish(bridge, [{ ...snapshot, inputRequired: true, questionText: "Which transport?\nWhich viewport?" }]);
 	await publish(bridge);
@@ -101,6 +102,47 @@ test("denies missing and invalid Access JWTs on requests and both upgrades", asy
 	}
 });
 
+test("denies a service-principal Access assertion on every browser route", async () => {
+	const assertion = await access.sign({
+		email: undefined,
+		type: "app",
+		common_name: "fixture-service.access",
+		sub: "service-id",
+	});
+	for (const route of [
+		"/",
+		"/site.js",
+		"/session/0123456789abcdef",
+		"/api/sessions",
+		`/ws/session/${snapshot.instanceId}`,
+	]) {
+		const response = await fetch(gateway.url + route, {
+			headers: { "cf-access-jwt-assertion": assertion, origin: PUBLIC_ORIGIN },
+		});
+		expect(response.status).toBe(403);
+	}
+});
+
+test("denies user and unidentified assertions on the bridge route even with its bearer", async () => {
+	for (const assertion of [
+		access.headers["cf-access-jwt-assertion"]!,
+		await access.sign({ email: undefined }),
+		await access.sign({ email: "", common_name: "fixture-service.access" }),
+	]) {
+		expect(
+			(
+				await fetch(`${gateway.url}/ws/bridge`, {
+					headers: { "cf-access-jwt-assertion": assertion, authorization: `Bearer ${token}` },
+				})
+			).status,
+		).toBe(403);
+	}
+	const response = await fetch(`${gateway.url}/ws/bridge`, {
+		headers: { ...access.serviceHeaders, authorization: `Bearer ${token}` },
+	});
+	expect(response.status).toBe(426);
+});
+
 test("denies browser upgrades without the exact public Origin", async () => {
 	for (const origin of ["", "https://foreign.example", `${PUBLIC_ORIGIN}.evil.example`]) {
 		expect(
@@ -111,10 +153,13 @@ test("denies browser upgrades without the exact public Origin", async () => {
 
 test("denies a bad bridge bearer and closes a second bridge with 4009", async () => {
 	for (const authorization of ["", "Bearer wrong", `Bearer ${token.slice(0, -1)}!`]) {
-		expect((await access.fetch(`${gateway.url}/ws/bridge`, { headers: { authorization } })).status).toBe(401);
+		expect(
+			(await access.fetch(`${gateway.url}/ws/bridge`, { headers: { ...access.serviceHeaders, authorization } }))
+				.status,
+		).toBe(401);
 	}
 	const { bridge, browser, conn } = await attach();
-	const duplicate = peer("/ws/bridge", { ...access.headers, authorization: `Bearer ${token}` });
+	const duplicate = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
 	expect((await duplicate.closed.promise).code).toBe(4009);
 	browser.ws.send('{"type":"get_state"}');
 	expect(JSON.parse(await bridge.next())).toEqual({ t: "frame", conn, line: '{"type":"get_state"}' });
@@ -151,7 +196,7 @@ test("announces bridge_offline to every browser and clears discovery on disconne
 		expect((await socket.closed.promise).reason).toBe("bridge_offline");
 	}
 	expect(await (await access.fetch(`${gateway.url}/api/sessions`)).json()).toEqual({ sessions: [] });
-	const replacement = peer("/ws/bridge", { ...access.headers, authorization: `Bearer ${token}` });
+	const replacement = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
 	await replacement.opened.promise;
 	await publish(replacement);
 });
@@ -159,16 +204,58 @@ test("announces bridge_offline to every browser and clears discovery on disconne
 test("announces session_gone for a missing session, a local exit, and discovery removal", async () => {
 	const { bridge, browser, conn } = await attach();
 	const missing = peer("/ws/session/ffffffffffffffff", { ...access.headers, origin: PUBLIC_ORIGIN });
-	expect(JSON.parse(await missing.next())).toEqual({ type: "gateway", event: "session_gone" });
+	expect(JSON.parse(await missing.next()).event).toBe("attached");
+	const missingAttach = JSON.parse(await bridge.next());
+	bridge.ws.send(JSON.stringify({ t: "closed", conn: missingAttach.conn, code: "not_found" }));
+	expect(JSON.parse(await missing.next()).event).toBe("session_gone");
+	await bridge.next();
 	bridge.ws.send(JSON.stringify({ t: "closed", conn, code: "tui_exited" }));
 	expect(JSON.parse(await browser.next())).toEqual({ type: "gateway", event: "session_gone" });
+	await bridge.next();
 	const next = peer(`/ws/session/${snapshot.instanceId}`, { ...access.headers, origin: PUBLIC_ORIGIN });
 	await next.opened.promise;
 	await next.next();
 	const attached = JSON.parse(await bridge.next());
-	await publish(bridge, []);
+	bridge.ws.send(JSON.stringify({ t: "sessions", sessions: [], gone: [snapshot.instanceId] }));
 	expect(JSON.parse(await next.next())).toEqual({ type: "gateway", event: "session_gone" });
 	expect(JSON.parse(await bridge.next())).toEqual({ t: "detach", conn: attached.conn });
+});
+
+test("keeps a known session and attachment when discovery temporarily omits it", async () => {
+	const { bridge, browser, conn } = await attach();
+	bridge.ws.send(JSON.stringify({ t: "sessions", sessions: [] }));
+	expect(await (await access.fetch(`${gateway.url}/api/sessions`)).json()).toEqual({ sessions: [snapshot] });
+	browser.ws.send('{"type":"get_state"}');
+	expect(JSON.parse(await bridge.next())).toEqual({ t: "frame", conn, line: '{"type":"get_state"}' });
+});
+
+test("retries temporary attachment failures instead of declaring the TUI gone", async () => {
+	const { bridge, browser, conn } = await attach();
+	bridge.ws.send(JSON.stringify({ t: "closed", conn, code: "unreachable" }));
+	expect(JSON.parse(await browser.next())).toEqual({ type: "gateway", event: "session_unavailable" });
+	expect((await browser.closed.promise).reason).toBe("session_unavailable");
+	expect(await (await access.fetch(`${gateway.url}/api/sessions`)).json()).toEqual({ sessions: [snapshot] });
+	expect(JSON.parse(await bridge.next())).toEqual({ t: "detach", conn });
+	const replacement = peer(`/ws/session/${snapshot.instanceId}`, { ...access.headers, origin: PUBLIC_ORIGIN });
+	expect(JSON.parse(await replacement.next()).event).toBe("attached");
+	expect(JSON.parse(await bridge.next()).t).toBe("attach");
+});
+
+test("records close codes and redacts untrusted close reasons", async () => {
+	const logs = spyOn(logger, "info").mockImplementation(() => {});
+	const { bridge, browser } = await attach();
+	bridge.ws.close(4008, "Bearer private-fixture-token");
+	await browser.closed.promise;
+	expect(
+		logs.mock.calls.some(
+			([message, details]) =>
+				message === "Sessions socket closed" &&
+				details?.code === 4008 &&
+				details?.reason === "redacted" &&
+				details?.role === "bridge",
+		),
+	).toBe(true);
+	expect(JSON.stringify(logs.mock.calls)).not.toContain("private-fixture-token");
 });
 
 test("serves the web client with SPA fallback and strict CSP without path escape", async () => {

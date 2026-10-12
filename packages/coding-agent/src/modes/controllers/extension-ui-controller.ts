@@ -48,6 +48,7 @@ import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { launchTerminal } from "../../subprocess/terminal-launch";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 import type { RpcSocketServer } from "../rpc/rpc-socket";
+import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 
 const MAX_WIDGET_LINES = 10;
 /** Approval answers, as a collab guest's select shows them. */
@@ -134,15 +135,27 @@ export class ExtensionUiController {
 	 */
 	#toolUIContext: ExtensionUIContext | undefined;
 	#rpcSocketServer: RpcSocketServer | undefined;
+	#rpcStatuses = new Map<string, string>();
+	#rpcWidgets = new Map<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>();
 
 	setRpcSocketServer(server: RpcSocketServer | undefined): void {
 		this.#rpcSocketServer = server;
 	}
 
+	getRpcUiSnapshot(): RpcExtensionUIRequest {
+		return {
+			type: "extension_ui_request",
+			id: Snowflake.next() as string,
+			method: "snapshot",
+			statuses: Object.fromEntries(this.#rpcStatuses),
+			widgets: Object.fromEntries(this.#rpcWidgets),
+		};
+	}
+
 	#raceRpcDialog<T>(
 		questionText: string,
 		local: (signal: AbortSignal | undefined) => Promise<T>,
-		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
+		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T> | undefined,
 		options?: ExtensionUIDialogOptions,
 	): Promise<T> {
 		return this.#rpcSocketServer
@@ -384,16 +397,19 @@ export class ExtensionUiController {
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
-		if (content === undefined || Array.isArray(content)) {
-			this.#rpcSocketServer?.broadcast({
-				type: "extension_ui_request",
-				id: Snowflake.next() as string,
-				method: "setWidget",
-				widgetKey: key,
-				widgetLines: content,
-				widgetPlacement: options?.placement,
-			});
+		if (Array.isArray(content)) {
+			this.#rpcWidgets.set(key, { lines: [...content], placement: options?.placement ?? "aboveEditor" });
+		} else {
+			this.#rpcWidgets.delete(key);
 		}
+		this.#rpcSocketServer?.broadcast({
+			type: "extension_ui_request",
+			id: Snowflake.next() as string,
+			method: "setWidget",
+			widgetKey: key,
+			widgetLines: Array.isArray(content) ? content : undefined,
+			widgetPlacement: options?.placement,
+		});
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
@@ -642,6 +658,8 @@ export class ExtensionUiController {
 	 * Set hook status text in the footer.
 	 */
 	setHookStatus(key: string, text: string | undefined): void {
+		if (text === undefined) this.#rpcStatuses.delete(key);
+		else this.#rpcStatuses.set(key, text);
 		this.#rpcSocketServer?.broadcast({
 			type: "extension_ui_request",
 			id: Snowflake.next() as string,
@@ -801,7 +819,7 @@ export class ExtensionUiController {
 		return this.#raceRpcDialog(
 			normalized.map(question => question.question).join("\n"),
 			signal => this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
-			(ui, signal) => ui.askDialog!(normalized, { ...dialogOptions, signal }),
+			(ui, signal) => ui.askDialog?.(normalized, { ...dialogOptions, signal }),
 			dialogOptions,
 		);
 	}
@@ -1444,6 +1462,16 @@ export class ExtensionUiController {
 	}
 
 	clearHookWidgets(): void {
+		for (const key of this.#rpcWidgets.keys()) {
+			this.#rpcSocketServer?.broadcast({
+				type: "extension_ui_request",
+				id: Snowflake.next() as string,
+				method: "setWidget",
+				widgetKey: key,
+				widgetLines: undefined,
+			});
+		}
+		this.#rpcWidgets.clear();
 		for (const widget of this.#hookWidgetsAbove.values()) {
 			widget.dispose?.();
 		}

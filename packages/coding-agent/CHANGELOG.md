@@ -392,6 +392,10 @@
 
 ### Fixed
 
+- Fixed live session discovery after temporary socket failures.
+- Fixed RPC client teardown, dialog races, and the subagent roster after reconnection.
+- Fixed session model selection and restored extension status and widget state on socket attachment.
+- Fixed socket publication and queued RPC commands during collab guest transitions.
 - Fixed session socket startup importing ACP command metadata before the builtin registry was initialized.
 - Fixed the sessions bridge launch agent path for the 18.9.2 fork.
 - Fixed sessions gateway image builds with the repository's hoisted dependency layout.

@@ -288,10 +288,12 @@ export class CollabGuestLink {
 		this.#roomId = parsed.roomId;
 		this.#writeToken = parsed.writeToken ? Buffer.from(parsed.writeToken).toString("base64url") : undefined;
 		this.#returnSessionFile = this.#ctx.sessionManager.getSessionFile() ?? null;
+		const withdrawn = this.#ctx.suspendRpcSocket?.();
 		// Claim the process before any async setup or replica session transition.
 		this.#ctx.collabGuest = this;
 		let key: CryptoKey;
 		try {
+			await withdrawn;
 			key = await importRoomKey(parsed.key);
 			if (this.#left) throw new Error("Collab join cancelled");
 		} catch (err) {
@@ -918,6 +920,7 @@ export class CollabGuestLink {
 		}
 		if (this.#ctx.collabGuest !== this) return false;
 		this.#ctx.collabGuest = undefined;
+		await this.#ctx.resumeRpcSocket?.();
 		this.#ctx.syncRunningSubagentBadge();
 		return this.#replicaActivated;
 	}

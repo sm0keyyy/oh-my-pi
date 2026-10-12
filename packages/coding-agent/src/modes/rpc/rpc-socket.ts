@@ -40,7 +40,7 @@ export interface RpcSocketServer {
 	broadcast(frame: object): void;
 	raceDialog<T>(
 		local: (signal: AbortSignal) => Promise<T>,
-		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
+		remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T> | undefined,
 		options?: ExtensionUIDialogOptions,
 		questionText?: string,
 	): Promise<T>;
@@ -74,7 +74,7 @@ export async function startRpcSocketServer(
 		sessionId: session.sessionId,
 		sessionName: session.sessionManager.getSessionName(),
 		cwd: session.sessionManager.getCwd(),
-		model: session.model,
+		model: session.model && { id: session.model.id, provider: session.model.provider, api: session.model.api },
 		busy: session.isBusyForSnapshot,
 		inputRequired: races.size > 0,
 		questionText: races.values().next().value,
@@ -183,6 +183,8 @@ export async function startRpcSocketServer(
 						return;
 					}
 					clients.set(socket, client);
+					const uiSnapshot = host.uiSnapshot?.();
+					if (uiSnapshot) client.output(uiSnapshot);
 					for (const join of races.keys()) join(client);
 					await client.done;
 				})
@@ -209,10 +211,21 @@ export async function startRpcSocketServer(
 		if (process.platform !== "win32") await fs.promises.chmod(endpoint, 0o600);
 		const file = await fs.promises.open(tmpPath, "wx", 0o600);
 		try {
-			await file.writeFile(
-				JSON.stringify({ version: 1, instanceId, pid: process.pid, endpoint, startedAt, token }),
-				"utf8",
-			);
+			const metadata: DiscoveryMetadata = {
+				version: 1,
+				instanceId,
+				pid: process.pid,
+				endpoint,
+				startedAt,
+				token,
+				snapshot: snapshot(),
+			};
+			let text = JSON.stringify(metadata);
+			if (Buffer.byteLength(text) > 4_096) {
+				metadata.snapshot = undefined;
+				text = JSON.stringify(metadata);
+			}
+			await file.writeFile(text, "utf8");
 		} finally {
 			await file.close();
 		}
@@ -243,17 +256,21 @@ export async function startRpcSocketServer(
 		},
 		async raceDialog<T>(
 			local: (signal: AbortSignal) => Promise<T>,
-			remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T>,
+			remote: (ui: ExtensionUIContext, signal: AbortSignal) => Promise<T> | undefined,
 			dialogOptions?: ExtensionUIDialogOptions,
 			questionText?: string,
 		): Promise<T> {
 			const abort = new AbortController();
 			const signal = dialogOptions?.signal ? AbortSignal.any([dialogOptions.signal, abort.signal]) : abort.signal;
 			const winner = Promise.withResolvers<T>();
+			const withdraw = (error: unknown): void => {
+				logger.debug("RPC dialog participant withdrew", { error: String(error) });
+			};
 			const join = (client: RpcConnection): void => {
-				void remote(client.uiContext, signal).then(winner.resolve, error => {
-					logger.debug("RPC dialog participant withdrew", { error: String(error) });
-				});
+				void Promise.try(() => {
+					const participant = remote(client.uiContext, signal);
+					if (participant) void participant.then(winner.resolve, withdraw);
+				}).catch(withdraw);
 			};
 			races.set(join, questionText);
 			try {
@@ -299,6 +316,7 @@ interface DiscoveryMetadata {
 	endpoint: string;
 	startedAt: number;
 	token: string;
+	snapshot?: RpcSessionSnapshot;
 }
 
 function parseMetadata(value: unknown, name: string): DiscoveryMetadata | undefined {
@@ -318,6 +336,17 @@ function parseMetadata(value: unknown, name: string): DiscoveryMetadata | undefi
 	)
 		return undefined;
 	return value as unknown as DiscoveryMetadata;
+}
+
+const discoverySnapshots = new Map<string, RpcSessionSnapshot>();
+
+function isProcessDead(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
+	}
 }
 
 function parseSnapshot(value: unknown, meta: DiscoveryMetadata): RpcSessionSnapshot | undefined {
@@ -415,6 +444,10 @@ export async function listRpcSessions(options: RpcSessionListOptions = {}): Prom
 		if (isEnoent(error)) return [];
 		throw error;
 	}
+	const present = new Set(names.map(name => path.join(dir, name)));
+	for (const filename of discoverySnapshots.keys()) {
+		if (path.dirname(filename) === dir && !present.has(filename)) discoverySnapshots.delete(filename);
+	}
 	const snapshots: RpcSessionSnapshot[] = [];
 	let next = 0;
 	const worker = async (): Promise<void> => {
@@ -438,7 +471,8 @@ export async function listRpcSessions(options: RpcSessionListOptions = {}): Prom
 			}
 			if (!meta || meta.version !== 1) continue;
 			const result = await querySnapshot(meta, options.timeoutMs ?? 1_500);
-			if (result === "dead") {
+			if (isProcessDead(meta.pid)) {
+				discoverySnapshots.delete(filename);
 				const owned =
 					process.platform !== "win32" &&
 					(meta.endpoint === path.join(dir, `${meta.instanceId}.sock`) ||
@@ -453,7 +487,17 @@ export async function listRpcSessions(options: RpcSessionListOptions = {}): Prom
 				} catch (error) {
 					logger.debug("RPC stale entry cleanup failed", { path: filename, error: String(error) });
 				}
-			} else if (result) snapshots.push(result);
+			} else {
+				const cached = discoverySnapshots.get(filename);
+				const snapshot =
+					result && result !== "dead"
+						? result
+						: (cached && parseSnapshot(cached, meta)) || parseSnapshot(meta.snapshot, meta);
+				if (snapshot) {
+					discoverySnapshots.set(filename, snapshot);
+					snapshots.push(snapshot);
+				}
+			}
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(8, names.length) }, worker));

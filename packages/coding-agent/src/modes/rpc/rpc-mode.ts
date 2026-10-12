@@ -103,6 +103,7 @@ import type {
 	RpcRemoveQueuedMessageResult,
 	RpcResponse,
 	RpcSessionState,
+	RpcSubagentSnapshot,
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
 import type { RpcSessionSnapshot } from "./rpc-types";
@@ -963,7 +964,7 @@ async function findRpcModel(session: RpcModelLookupSession, provider: string, mo
 }
 
 /** The optional `provider`/`modelId` pair of `open_session` or `switch_session`, validated like `set_model`. */
-async function resolveRequestedRpcModel(
+export async function resolveRequestedRpcModel(
 	session: RpcModelLookupSession,
 	command: { provider?: string; modelId?: string },
 ): Promise<Model | undefined> {
@@ -1554,6 +1555,9 @@ export interface RpcHostAdapter {
 	afterCommand?(command: RpcCommand): void;
 	rpcSession?(): RpcSessionSnapshot;
 	goalTurnScheduled?(): boolean;
+	subagents?(): RpcSubagentSnapshot[];
+	uiSnapshot?(): RpcExtensionUIRequest;
+	isActive?(): boolean;
 }
 
 export interface RpcConnectionOptions {
@@ -1619,7 +1623,10 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 	const settleWatcher = new RpcSessionSettleWatcher(session, output, goalTurnScheduled);
 
 	const pendingExtensionRequests = new RpcPendingExtensionRequests();
-	const subagentRegistry = subagentEventBus ? new RpcSubagentRegistry(subagentEventBus, output) : undefined;
+	const subagentRegistry = subagentEventBus
+		? new RpcSubagentRegistry(subagentEventBus, output, host.subagents?.())
+		: undefined;
+	const unsubscribeSessionChange = session.registerSessionChangeCallback(() => subagentRegistry?.clear());
 
 	const rpcUiContext =
 		options.uiContextSource?.(pendingExtensionRequests, output) ??
@@ -1675,7 +1682,11 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		inputGate.enqueue(async () => {
 			const sessionId = session.sessionId;
 			const isCurrent = () =>
-				inputGate.isCurrent(command) && !disposed && !host.shutdownRequested && session.sessionId === sessionId;
+				inputGate.isCurrent(command) &&
+				!disposed &&
+				!host.shutdownRequested &&
+				host.isActive?.() !== false &&
+				session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
 			let text = command.message;
 			let images = command.images;
@@ -1766,8 +1777,12 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
 		const id = command.id;
+		if (host.isActive?.() === false)
+			return error(id, command.type, "The TUI no longer accepts RPC commands", "tui_owned");
 		const hostResponse = await host.handleCommand?.(command);
 		if (hostResponse) return hostResponse;
+		if (host.isActive?.() === false)
+			return error(id, command.type, "The TUI no longer accepts RPC commands", "tui_owned");
 
 		switch (command.type) {
 			case "negotiate_protocol": {
@@ -2589,20 +2604,28 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 	let cleanup: Promise<void> | undefined;
 	const dispose = (): Promise<void> => {
 		if (cleanup) return cleanup;
+		unsubscribeEvents();
+		unsubscribeCommands();
+		unsubscribeSessionChange();
+		subagentRegistry?.detach();
 		pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
 		cleanup = (async () => {
-			await host.disconnected?.();
-			await btw.close().catch(btwError => {
-				const message = toError(btwError).message;
-				logger.error(message);
-				output({ type: "notice", level: "error", message, source: "btw-history" });
-			});
-			await inputDispatcher.drain();
-			await shutdownCoordinator.drain();
-			disposed = true;
-			unsubscribeEvents();
-			unsubscribeCommands();
-			subagentRegistry?.dispose();
+			try {
+				await host.disconnected?.();
+				await btw.close().catch(btwError => {
+					const message = toError(btwError).message;
+					logger.error(message);
+					output({ type: "notice", level: "error", message, source: "btw-history" });
+				});
+			} finally {
+				try {
+					await inputDispatcher.drain();
+					await shutdownCoordinator.drain();
+				} finally {
+					disposed = true;
+					subagentRegistry?.dispose();
+				}
+			}
 		})();
 		return cleanup;
 	};

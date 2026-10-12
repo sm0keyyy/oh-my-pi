@@ -209,6 +209,17 @@ export const frameDefs = {
 		"widgetLines?": "string[]",
 		"widgetPlacement?": "WidgetPlacement",
 	},
+	SnapshotWidget: { lines: "string[]", placement: "WidgetPlacement" },
+	SnapshotUiRequest: doc(
+		{
+			type: UI,
+			id: "string",
+			method: "'snapshot'",
+			statuses: { "[string]": "string" },
+			widgets: { "[string]": "SnapshotWidget" },
+		},
+		"Replace status and serializable widget state on attachment, including empty maps.",
+	),
 	SetTitleUiRequest: { type: UI, id: "string", method: "'setTitle'", title: "string" },
 	SetEditorTextUiRequest: { type: UI, id: "string", method: "'set_editor_text'", text: "string" },
 	OpenUrlUiRequest: {
@@ -220,7 +231,7 @@ export const frameDefs = {
 		"instructions?": "string",
 	},
 	ExtensionUiRequest: doc(
-		"SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest",
+		"SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest",
 		"Extension UI request, discriminated by `method`.",
 	),
 	AskAnswer: doc(

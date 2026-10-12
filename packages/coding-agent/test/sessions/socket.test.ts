@@ -6,11 +6,18 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { Text } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { InteractiveMode } from "../../src/modes/interactive-mode";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
 import { listRpcSessions, startRpcSocketServer, type RpcSocketServer } from "../../src/modes/rpc/rpc-socket";
+import { createRpcConnection } from "../../src/modes/rpc/rpc-mode";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../../src/task";
+import { CollabGuestLink } from "../../src/collab/guest";
+import { generateRoomKey, importRoomKey, open, seal } from "../../src/collab/crypto";
+import { COLLAB_PROTO, formatCollabLink, packEnvelope, unpackEnvelope } from "../../src/collab/protocol";
+import { EventBus } from "../../src/utils/event-bus";
 import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
 import { SessionManager } from "../../src/session/session-manager";
@@ -142,7 +149,7 @@ async function attach(server: RpcSocketServer, discovery: string): Promise<Socke
 	return client;
 }
 
-async function interactiveFixture() {
+async function interactiveFixture(subagentEventBus?: EventBus) {
 	const base = await fixture();
 	await Settings.init({ inMemory: true, cwd: base.dir.path() });
 	cleanups.push(() => resetSettingsForTest());
@@ -156,6 +163,7 @@ async function interactiveFixture() {
 		undefined,
 		undefined,
 		new Composer({ terminal: term }),
+		subagentEventBus,
 	);
 	cleanups.push(async () => {
 		await mode.stopRpcSocket();
@@ -221,6 +229,75 @@ describe("A3 RPC socket", () => {
 			[first, second].map(client => client.next(frame => frame.type === "message_update")),
 		);
 		expect(updates[0]!.messageId).toBe(updates[1]!.messageId);
+	});
+
+	it("detaches event subscriptions before accepted work drains", async () => {
+		const { session } = await fixture();
+		const bus = new EventBus();
+		const accepted = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const frames: Record<string, unknown>[] = [];
+		const stream = new TransformStream<Uint8Array>();
+		const writer = stream.writable.getWriter();
+		const connection = await createRpcConnection({
+			session,
+			input: stream.readable,
+			writer: {
+				write: lines => {
+					for (const line of lines) frames.push(JSON.parse(line));
+				},
+			},
+			subagentEventBus: bus,
+			host: {
+				handleCommand: async command => {
+					if (command.type === "get_state") {
+						accepted.resolve();
+						await release.promise;
+					}
+					return undefined;
+				},
+			},
+		});
+		await writer.write(
+			new TextEncoder().encode('{"type":"set_subagent_subscription","level":"progress"}\n{"type":"get_state"}\n'),
+		);
+		await accepted.promise;
+		const teardown = connection.dispose();
+		try {
+			frames.length = 0;
+			bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: "AfterDisconnect",
+				index: 0,
+				agent: "task",
+				agentSource: "bundled",
+				status: "started",
+			});
+			await session.setModel(session.modelRegistry.find("socket-test", "socket-alt")!);
+			await session.refreshSkillsAndCommands();
+			expect(frames.filter(frame => frame.type !== "response")).toEqual([]);
+		} finally {
+			release.resolve();
+			await writer.close();
+			await teardown;
+			await connection.done;
+		}
+	});
+
+	it("treats a synchronous dialog participant failure as a withdrawal", async () => {
+		const { session, discovery } = await fixture();
+		const server = await startRpcSocketServer(session, {}, { dir: discovery });
+		cleanups.push(() => server.close());
+		const client = await attach(server, discovery);
+		await client.next(frame => frame.type === "available_commands_update");
+		const local = Promise.withResolvers<string>();
+		const answer = server.raceDialog(
+			() => local.promise,
+			() => {
+				throw new Error("participant unavailable");
+			},
+		);
+		local.resolve("local answer");
+		expect(await answer).toBe("local answer");
 	});
 });
 
@@ -310,6 +387,228 @@ describe("A4 TUI host adapter", () => {
 		expect(await client.next(frame => frame.id === "overlay")).toMatchObject({ success: false, code: "tui_only" });
 	}, 15_000);
 
+	it("skips clients without ask capability while another client answers", async () => {
+		const { mode, term, client, publication } = await interactiveFixture();
+		client.send({ id: "disable-ask", type: "set_ask_dialog", enabled: false });
+		await client.next(frame => frame.id === "disable-ask");
+		const second = new SocketClient(publication.endpoint, publication.token);
+		clients.push(second);
+		await second.next(frame => frame.type === "available_commands_update");
+		const answer = mode.getToolUIContext()!.askDialog!([
+			{ id: "q", question: "Capability race", options: [{ label: "Yes" }] },
+		]);
+		const request = await second.next(frame => frame.method === "ask");
+		second.send({ type: "extension_ui_response", id: request.id, answers: [{ id: "q", selectedOptions: ["Yes"] }] });
+		expect(await answer).toMatchObject({ kind: "submit", results: [{ selectedOptions: ["Yes"] }] });
+		await term.waitForRender(() => !screen(term).includes("Capability race"));
+	}, 15_000);
+
+	it("restores serializable UI state on attach and clears widgets on reset", async () => {
+		const { mode, publication } = await interactiveFixture();
+		const ui = mode.getToolUIContext()!;
+		ui.setStatus("persisted", "live status");
+		ui.setWidget("persisted", ["live widget"], { placement: "belowEditor" });
+		const second = new SocketClient(publication.endpoint, publication.token);
+		clients.push(second);
+		expect(await second.next(frame => frame.method === "snapshot")).toMatchObject({
+			statuses: { persisted: "live status" },
+			widgets: { persisted: { lines: ["live widget"], placement: "belowEditor" } },
+		});
+		ui.setStatus("persisted", undefined);
+		expect(await second.next(frame => frame.method === "setStatus")).not.toHaveProperty("statusText");
+		ui.setWidget("persisted", () => new Text("component widget"));
+		expect(await second.next(frame => frame.method === "setWidget")).not.toHaveProperty("widgetLines");
+		ui.setWidget("reset", ["reset widget"]);
+		await second.next(frame => frame.method === "setWidget" && frame.widgetKey === "reset");
+		mode.stop();
+		expect(
+			await second.next(frame => frame.method === "setWidget" && frame.widgetKey === "reset"),
+		).not.toHaveProperty("widgetLines");
+	}, 15_000);
+
+	it("bootstraps reconnects from the host roster and resets it on session change", async () => {
+		const bus = new EventBus();
+		const { mode, session, client, publication } = await interactiveFixture(bus);
+		client.socket.destroy();
+		bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "Existing",
+			index: 0,
+			agent: "task",
+			agentSource: "bundled",
+			status: "started",
+			sessionFile: path.join(session.sessionManager.getSessionDir(), "Existing.jsonl"),
+		});
+		const second = new SocketClient(publication.endpoint, publication.token);
+		clients.push(second);
+		await second.next(frame => frame.type === "available_commands_update");
+		second.send({ id: "roster", type: "get_subagents" });
+		expect(await second.next(frame => frame.id === "roster")).toMatchObject({
+			data: { subagents: [{ id: "Existing", status: "running" }] },
+		});
+		await mode.handleClearCommand();
+		second.send({ id: "cleared-roster", type: "get_subagents" });
+		expect(await second.next(frame => frame.id === "cleared-roster")).toMatchObject({ data: { subagents: [] } });
+	}, 15_000);
+
+	it("validates session model pairs before transitions and applies them in the TUI", async () => {
+		const { session, mode, client, term, dir } = await interactiveFixture();
+		const previous = session.sessionFile!;
+		client.send({ id: "incomplete", type: "switch_session", sessionPath: previous, provider: "socket-test" });
+		expect(await client.next(frame => frame.id === "incomplete")).toMatchObject({ success: false });
+		client.send({
+			id: "missing",
+			type: "open_session",
+			sessionDir: dir.join("unknown"),
+			provider: "socket-test",
+			modelId: "missing",
+		});
+		expect(await client.next(frame => frame.id === "missing")).toMatchObject({ success: false });
+		client.send({ id: "persist", type: "prompt", message: "saved session model" });
+		await client.next(frame => frame.type === "prompt_result" && frame.id === "persist");
+		expect(session.sessionFile).toBe(previous);
+		await mode.handleClearCommand();
+		client.send({
+			id: "switch-model",
+			type: "switch_session",
+			sessionPath: previous,
+			provider: "socket-test",
+			modelId: "socket-alt",
+		});
+		expect(await client.next(frame => frame.id === "switch-model")).toMatchObject({ success: true });
+		expect(session.model?.id).toBe("socket-alt");
+		await term.waitForRender(() => screen(term).includes("socket-alt"));
+		for (const [id, sessionDir, modelId] of [
+			["already-open", path.dirname(previous), "socket-model"],
+			["fresh", dir.join("fresh"), "socket-alt"],
+			["resumed", path.dirname(previous), "socket-model"],
+		]) {
+			client.send({ id, type: "open_session", sessionDir, provider: "socket-test", modelId });
+			expect(await client.next(frame => frame.id === id)).toMatchObject({ success: true });
+			expect(session.model?.id).toBe(modelId);
+		}
+	}, 15_000);
+
+	it("withdraws an in-flight socket publication before the guest transition proceeds", async () => {
+		const { mode, discovery } = await interactiveFixture();
+		await mode.stopRpcSocket();
+		const started = mode.startRpcSocket({ dir: discovery });
+		await mode.suspendRpcSocket();
+		await started;
+		expect(await fs.readdir(discovery)).toEqual([]);
+		await mode.resumeRpcSocket();
+		expect(await listRpcSessions({ dir: discovery })).toHaveLength(1);
+	});
+
+	it("withdraws the publication before guest activation and restores it after leave", async () => {
+		const { session, mode, client, publication, discovery } = await interactiveFixture();
+		const localFile = session.sessionFile;
+		const roomKey = generateRoomKey();
+		const key = await importRoomKey(roomKey);
+		const welcome = Promise.withResolvers<void>();
+		const allowWelcome = Promise.withResolvers<void>();
+		const relay = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request, server) =>
+				server.upgrade(request) ? undefined : new Response("Upgrade required", { status: 400 }),
+			websocket: {
+				async message(socket, data) {
+					if (typeof data === "string") return;
+					const envelope = unpackEnvelope(new Uint8Array(data));
+					if (!envelope || (await open(key, envelope.payload)).t !== "hello") return;
+					welcome.resolve();
+					await allowWelcome.promise;
+					socket.send(
+						packEnvelope(
+							0,
+							await seal(key, {
+								t: "welcome",
+								proto: COLLAB_PROTO,
+								header: {
+									type: "session",
+									id: "remote-session",
+									timestamp: "2026-10-11T00:00:00Z",
+									cwd: session.sessionManager.getCwd(),
+								},
+								state: {
+									isStreaming: false,
+									queuedMessageCount: 0,
+									cwd: session.sessionManager.getCwd(),
+									participants: [],
+								},
+								agents: [],
+								entryCount: 0,
+							}),
+						),
+					);
+				},
+			},
+		});
+		cleanups.push(() => relay.stop(true));
+		const guest = new CollabGuestLink(mode);
+		cleanups.push(() => guest.leave("test complete"));
+		const joined = guest.join(formatCollabLink(`ws://127.0.0.1:${relay.port}`, "RpcGuestRoom_123", roomKey));
+		try {
+			await welcome.promise;
+			expect(await Bun.file(path.join(discovery, `${publication.instanceId}.json`)).exists()).toBe(false);
+			expect(client.socket.destroyed).toBe(true);
+			expect(session.sessionFile).toBe(localFile);
+		} finally {
+			allowWelcome.resolve();
+			await joined;
+		}
+		await guest.leave("test leave");
+		expect(session.sessionFile).toBe(localFile);
+		const restored = await listRpcSessions({ dir: discovery });
+		expect(restored).toMatchObject([{ sessionId: session.sessionId }]);
+		expect(restored[0]!.instanceId).not.toBe(publication.instanceId);
+	}, 15_000);
+
+	it("rejects queued RPC mutations after the host withdraws its role", async () => {
+		const { session } = await fixture();
+		const accepted = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const stream = new TransformStream<Uint8Array>();
+		const writer = stream.writable.getWriter();
+		const frames: Record<string, unknown>[] = [];
+		let active = true;
+		const connection = await createRpcConnection({
+			session,
+			input: stream.readable,
+			writer: {
+				write: lines => {
+					for (const line of lines) frames.push(JSON.parse(line));
+				},
+			},
+			host: {
+				isActive: () => active,
+				handleCommand: async command => {
+					if (command.type === "get_state") {
+						accepted.resolve();
+						await release.promise;
+					}
+					return undefined;
+				},
+			},
+		});
+		await writer.write(
+			new TextEncoder().encode(
+				'{"id":"blocked","type":"get_state"}\n{"id":"queued","type":"set_model","provider":"socket-test","modelId":"socket-alt"}\n{"id":"prompt","type":"prompt","message":"must not run"}\n',
+			),
+		);
+		await accepted.promise;
+		active = false;
+		release.resolve();
+		await writer.close();
+		await connection.done;
+		expect(frames.filter(frame => frame.type === "response")).toMatchObject([
+			{ id: "blocked", success: false, code: "tui_owned" },
+			{ id: "queued", success: false, code: "tui_owned" },
+			{ id: "prompt", success: false, code: "tui_owned" },
+		]);
+		expect(session.model?.id).toBe("socket-model");
+		expect(session.messages).toEqual([]);
+	});
 	it("mirrors select, editor, input, and ask dialogs and non-dialog extension presentation", async () => {
 		const { mode, client, discovery } = await interactiveFixture();
 		const ui = mode.getToolUIContext()!;
@@ -509,6 +808,58 @@ describe("A6 local session lister", () => {
 		).toEqual([expected[1]!, expected[2]!, expected[0]!]);
 	});
 
+	it("retains live publications when discovery times out or the endpoint is temporarily unavailable", async () => {
+		const { session, discovery } = await fixture();
+		const stalled = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const server = await startRpcSocketServer(
+			session,
+			{
+				handleCommand: async command => {
+					if (command.type === "get_state") {
+						stalled.resolve();
+						await release.promise;
+					}
+					return undefined;
+				},
+			},
+			{ dir: discovery },
+		);
+		cleanups.push(() => server.close());
+		try {
+			expect(await listRpcSessions({ dir: discovery, timeoutMs: 20 })).toMatchObject([
+				{ sessionId: session.sessionId },
+			]);
+			await stalled.promise;
+		} finally {
+			release.resolve();
+		}
+		const filename = path.join(discovery, `${server.instanceId}.json`);
+		const meta = await Bun.file(filename).json();
+		await Bun.write(filename, JSON.stringify({ ...meta, endpoint: `${server.endpoint}.unavailable` }));
+		expect(await listRpcSessions({ dir: discovery, timeoutMs: 20 })).toMatchObject([
+			{ instanceId: server.instanceId },
+		]);
+		expect(await Bun.file(filename).exists()).toBe(true);
+	});
+	it("keeps discovery metadata inside the bridge limit and excludes model configuration", async () => {
+		const { session, discovery } = await fixture();
+		const server = await startRpcSocketServer(session, {}, { dir: discovery });
+		cleanups.push(() => server.close());
+		const metadata = await Bun.file(path.join(discovery, `${server.instanceId}.json`)).json();
+		expect(metadata.snapshot.model).toEqual({
+			id: session.model!.id,
+			provider: session.model!.provider,
+			api: session.model!.api,
+		});
+		await session.sessionManager.setSessionName("x".repeat(5_000));
+		const large = await startRpcSocketServer(session, {}, { dir: discovery });
+		cleanups.push(() => large.close());
+		const text = await Bun.file(path.join(discovery, `${large.instanceId}.json`)).text();
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4_096);
+		expect(JSON.parse(text)).not.toHaveProperty("snapshot");
+		expect(await listRpcSessions({ dir: discovery })).toHaveLength(2);
+	});
 	it("prunes the discovery entry and socket left by kill -9 of an isolated source-run TUI", async () => {
 		const dir = TempDir.createSync("@omp-killed-tui-");
 		cleanups.push(() => dir.remove());

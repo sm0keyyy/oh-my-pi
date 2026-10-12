@@ -2552,6 +2552,25 @@
 				"startedAt"
 			]
 		},
+		"RpcSessionModel": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"provider": {
+					"type": "string"
+				},
+				"api": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"id",
+				"provider",
+				"api"
+			]
+		},
 		"RpcSessionSnapshot": {
 			"type": "object",
 			"properties": {
@@ -2583,7 +2602,7 @@
 					"type": "string"
 				},
 				"model": {
-					"$ref": "#/$defs/ModelInfo"
+					"$ref": "#/$defs/RpcSessionModel"
 				},
 				"questionText": {
 					"type": "string",
@@ -5226,6 +5245,60 @@
 				"widgetKey"
 			]
 		},
+		"SnapshotWidget": {
+			"type": "object",
+			"properties": {
+				"lines": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"placement": {
+					"$ref": "#/$defs/WidgetPlacement"
+				}
+			},
+			"required": [
+				"lines",
+				"placement"
+			]
+		},
+		"SnapshotUiRequest": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "extension_ui_request"
+				},
+				"id": {
+					"type": "string"
+				},
+				"method": {
+					"const": "snapshot"
+				},
+				"statuses": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {
+						"type": "string"
+					}
+				},
+				"widgets": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {
+						"$ref": "#/$defs/SnapshotWidget"
+					}
+				}
+			},
+			"required": [
+				"type",
+				"id",
+				"method",
+				"statuses",
+				"widgets"
+			],
+			"description": "Replace status and serializable widget state on attachment, including empty maps."
+		},
 		"SetTitleUiRequest": {
 			"type": "object",
 			"properties": {
@@ -5330,6 +5403,9 @@
 				},
 				{
 					"$ref": "#/$defs/SetWidgetUiRequest"
+				},
+				{
+					"$ref": "#/$defs/SnapshotUiRequest"
 				},
 				{
 					"$ref": "#/$defs/SetTitleUiRequest"

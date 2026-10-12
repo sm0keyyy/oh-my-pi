@@ -3055,6 +3055,13 @@ pub struct RpcSessionHost {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RpcSessionModel {
+	pub id: String,
+	pub provider: String,
+	pub api: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RpcSessionSnapshot {
 	#[serde(rename = "instanceId")]
 	pub instance_id: String,
@@ -3072,7 +3079,7 @@ pub struct RpcSessionSnapshot {
 	#[serde(rename = "sessionName", default, skip_serializing_if = "Option::is_none")]
 	pub session_name: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub model: Option<ModelInfo>,
+	pub model: Option<RpcSessionModel>,
 	/// Real text of the first pending TUI dialog; omitted when no question is pending.
 	#[serde(rename = "questionText", default, skip_serializing_if = "Option::is_none")]
 	pub question_text: Option<String>,
@@ -4498,6 +4505,20 @@ pub struct SetWidgetUiRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotWidget {
+	pub lines: Vec<String>,
+	pub placement: WidgetPlacement,
+}
+
+/// Replace status and serializable widget state on attachment, including empty maps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotUiRequest {
+	pub id: String,
+	pub statuses: BTreeMap<String, String>,
+	pub widgets: BTreeMap<String, SnapshotWidget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SetTitleUiRequest {
 	pub id: String,
 	pub title: String,
@@ -4534,6 +4555,8 @@ pub enum ExtensionUiRequest {
 	Notify(NotifyUiRequest),
 	SetStatus(SetStatusUiRequest),
 	SetWidget(SetWidgetUiRequest),
+	/// Replace status and serializable widget state on attachment, including empty maps.
+	Snapshot(SnapshotUiRequest),
 	SetTitle(SetTitleUiRequest),
 	SetEditorText(SetEditorTextUiRequest),
 	OpenUrl(OpenUrlUiRequest),
@@ -4552,6 +4575,7 @@ impl ExtensionUiRequest {
 			Some("notify") => |value| serde_json::from_value(value).map(Self::Notify),
 			Some("setStatus") => |value| serde_json::from_value(value).map(Self::SetStatus),
 			Some("setWidget") => |value| serde_json::from_value(value).map(Self::SetWidget),
+			Some("snapshot") => |value| serde_json::from_value(value).map(Self::Snapshot),
 			Some("setTitle") => |value| serde_json::from_value(value).map(Self::SetTitle),
 			Some("set_editor_text") => |value| serde_json::from_value(value).map(Self::SetEditorText),
 			Some("open_url") => |value| serde_json::from_value(value).map(Self::OpenUrl),
@@ -4575,6 +4599,7 @@ impl Serialize for ExtensionUiRequest {
 			Self::Notify(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "notify")], serializer),
 			Self::SetStatus(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "setStatus")], serializer),
 			Self::SetWidget(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "setWidget")], serializer),
+			Self::Snapshot(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "snapshot")], serializer),
 			Self::SetTitle(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "setTitle")], serializer),
 			Self::SetEditorText(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "set_editor_text")], serializer),
 			Self::OpenUrl(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "open_url")], serializer),

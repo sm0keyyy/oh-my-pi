@@ -88,5 +88,30 @@
 		"defect": "Question browser proof timed out after creating a second tab",
 		"evidence": "runLobbyQuestionAcceptance:527 waited 30 seconds while get_state replies continued",
 		"fix": "Bring each page to the front before its DOM waits; the desktop and phone proof then passed"
+	},
+	{
+		"defect": "The hydration regression asserted queue state before its later websocket frame arrived",
+		"evidence": "First repaired client run: 9 pass, 1 fail. client.test.ts:256 received an empty queue before queue_update.",
+		"fix": "Await the observable later queue state instead of the connected phase alone"
+	},
+	{
+		"defect": "The browser regression callback lost narrowing for the BTW record",
+		"evidence": "check:types: review-acceptance.ts:175 TS18046 btw.record is unknown",
+		"fix": "Capture the checked record ID before the callback"
+	},
+	{
+		"defect": "Dialog acceptance waited for hidden notice text through innerText",
+		"evidence": "review-acceptance.ts:135 timed out; real notify receipt contained the accepted alternative",
+		"fix": "Read textContent because the existing Notices details starts collapsed"
+	},
+	{
+		"defect": "Puppeteer clipboard-write permission denied the plaintext Copy action",
+		"evidence": "Copy acceptance timed out. Live permission probe reported write denied and NotAllowedError; clipboard-sanitized-write reported granted and copied the exact result",
+		"fix": "Grant the isolated test origin plaintext clipboard permission and await the observable clipboard contents"
+	},
+	{
+		"defect": "Bun --cwd before run printed usage without executing web checks",
+		"evidence": "artifact://6209: tests passed, but check:types and build showed usage instead of script execution",
+		"fix": "Run the scripts with the package directory supplied as the tool cwd"
 	}
 ]

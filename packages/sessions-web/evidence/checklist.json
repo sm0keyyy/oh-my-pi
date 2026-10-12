@@ -1,5 +1,5 @@
 {
-	"allowed": 58,
+	"allowed": 65,
 	"rows": [
 		{
 			"command": "negotiate_protocol",
@@ -580,6 +580,104 @@
 				"packages/sessions-web/evidence/screenshots/predict_word_feedback-desktop.png",
 				"packages/sessions-web/evidence/screenshots/predict_word_feedback-phone.png"
 			]
+		},
+		{
+			"command": "abort_and_restore_queue",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/0",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/0"
+			}
+		},
+		{
+			"command": "set_slow_mode",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/1",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/1"
+			}
+		},
+		{
+			"command": "get_logout_accounts",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/2",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/2"
+			}
+		},
+		{
+			"command": "logout",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-logout-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-logout-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/3",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/3"
+			}
+		},
+		{
+			"command": "btw",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-btw-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-btw-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/4",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/4"
+			}
+		},
+		{
+			"command": "btw_cancel",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/5",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/5"
+			}
+		},
+		{
+			"command": "get_btw_history",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "transport",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-desktop.png",
+				"packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-phone.png"
+			],
+			"receipts": {
+				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/6",
+				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/6"
+			}
 		}
 	],
 	"missing": [],
@@ -618,12 +716,13 @@
 	"coverageCounts": {
 		"browser": 40,
 		"automatic": 11,
-		"transport": 7
+		"transport": 14
 	},
 	"notes": [
 		"live_start proves a real handler rejection round-trip, not voice functionality; ordinary startup timed out in native WebRTC.",
 		"login and live_mute prove structured error responses; no login or voice controls were added.",
 		"Predictor returned no suggestion; visible ghost suggestion and feedback need install checks.",
-		"Waiting-first lobby order, real question text, and clearing proved at both viewports; see packages/sessions-web/evidence/question-preview.json."
+		"Waiting-first lobby order, real question text, and clearing proved at both viewports; see packages/sessions-web/evidence/question-preview.json.",
+		"Review follow-up: seven added commands have successful real TUI request/response receipts at 1440×1000 and 390×844. Coverage is transport only; no controls were added. F12 uses the FixRpc source CLI host snapshot."
 	]
 }

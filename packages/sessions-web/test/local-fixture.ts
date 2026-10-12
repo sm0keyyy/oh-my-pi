@@ -1,3 +1,5 @@
+import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,7 +10,18 @@ import { createAccessFixture } from "../../sessions-gateway/test/access-fixture"
 
 const root = path.resolve(import.meta.dir, "../../..");
 const widthFixture = process.env.SESSIONS_WIDTH_FIXTURE === "1";
-const config = path.join(root, widthFixture ? ".sessions-width-test-config" : ".sessions-d-test-config");
+const reviewFixture = process.env.SESSIONS_REVIEW_FIXTURE === "1";
+const prefix = widthFixture ? "mobile-width-" : reviewFixture ? "review-fixes-" : "";
+const cli = process.env.SESSIONS_FIXTURE_CLI ?? path.join(root, "packages/coding-agent/src/cli.ts");
+if (!(await Bun.file(cli).exists())) throw new Error("The source TUI entrypoint does not exist");
+const config = path.join(
+	root,
+	widthFixture
+		? ".sessions-width-test-config"
+		: reviewFixture
+			? ".sessions-review-test-config"
+			: ".sessions-d-test-config",
+);
 await fs.mkdir(config, { recursive: false, mode: 0o700 });
 const evidence = path.join(root, "packages/sessions-web/evidence");
 await fs.mkdir(path.join(evidence, "screenshots"), { recursive: true });
@@ -179,6 +192,9 @@ await Bun.write(
 	`providers:\n  fake:\n    baseUrl: http://127.0.0.1:${provider.port}/v1\n    auth: none\n    api: openai-completions\n    models:\n      - id: gpt-4.1\n        name: Local Model\n        reasoning: true\n        input: [text, image]\n        contextWindow: 128000\n        maxTokens: 8192\n      - id: gpt-4.1-2\n        name: Local Model Two\n        reasoning: true\n        input: [text, image]\n        contextWindow: 128000\n        maxTokens: 8192\n`,
 );
 const access = await createAccessFixture();
+const serviceHeaders = {
+	"cf-access-jwt-assertion": await access.sign({ common_name: "fixture-service.access", email: undefined }),
+};
 const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
 const gateway = await startGateway({
 	token,
@@ -189,7 +205,7 @@ const gateway = await startGateway({
 });
 const bridge = startBridge({
 	url: gateway.url.replace("http:", "ws:") + "/ws/bridge",
-	headers: { ...access.headers, authorization: `Bearer ${token}` },
+	headers: { ...serviceHeaders, authorization: `Bearer ${token}` },
 	dir: path.join(config, "run/rpc-sessions"),
 	heartbeatMs: 1000,
 });
@@ -209,11 +225,19 @@ const proxy = Bun.serve<{ upstream: WebSocket; queued: string[] }>({
 				return new Response("invalid or already running", { status: 409 });
 			const cwd = path.join(config, "workspaces", name);
 			await fs.mkdir(cwd, { recursive: true });
-			const writer = Bun.file(path.join(evidence, `${widthFixture ? "mobile-width-" : ""}${name}-tui.log`)).writer();
+			if (reviewFixture) {
+				const auth = await AuthStorage.create(getAgentDbPath(agentDir));
+				try {
+					await auth.credentials.set("fake", { type: "api_key", key: crypto.randomUUID() });
+				} finally {
+					auth.close();
+				}
+			}
+			const writer = Bun.file(path.join(evidence, `${prefix}${name}-tui.log`)).writer();
 			const child = Bun.spawn(
 				[
 					process.execPath,
-					path.join(root, "packages/coding-agent/src/cli.ts"),
+					cli,
 					"--model",
 					"fake/gpt-4.1",
 					"--no-skills",
@@ -304,10 +328,10 @@ const proxy = Bun.serve<{ upstream: WebSocket; queued: string[] }>({
 			upstream.onmessage = event => {
 				if (typeof event.data !== "string") return;
 				const frame = JSON.parse(event.data);
-				if (frame.type === "response") receipts.push({ direction: "response", frame, at: Date.now() });
+				receipts.push({ direction: frame.type === "response" ? "response" : "event", frame, at: Date.now() });
 				socket.send(event.data);
 			};
-			upstream.onclose = () => socket.close(4001, "gateway closed");
+			upstream.onclose = event => socket.close(event.code, event.reason);
 			upstream.onerror = () => socket.close(1011, "gateway error");
 		},
 		message(socket, message) {
@@ -337,10 +361,7 @@ const stop = async () => {
 			}
 		}),
 	);
-	await Bun.write(
-		path.join(evidence, widthFixture ? "mobile-width-rpc-receipts.json" : "rpc-receipts.json"),
-		JSON.stringify(receipts, null, 2),
-	);
+	await Bun.write(path.join(evidence, `${prefix}rpc-receipts.json`), JSON.stringify(receipts, null, 2));
 	proxy.stop(true);
 	bridge.stop();
 	gateway.stop();

@@ -1,6 +1,6 @@
 import { isRecord, shortenPath, type ToolRenderHost } from "@oh-my-pi/web-render";
 import { Moon, PanelsTopLeft, Sun } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { messageOf, number, records, SessionClient, sortSessions, strings, text, type RecordValue } from "./client";
 import { Composer } from "./composer";
 import { Modal, OperatorDialog } from "./dialogs";
@@ -208,6 +208,10 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 	const [filter, setFilter] = useState("");
 	const [error, setError] = useState("");
 	const [now, setNow] = useState(Date.now());
+	const commandResults = useRef<HTMLDetailsElement>(null);
+	useEffect(() => {
+		if (snapshot.commandOutputs.length && commandResults.current) commandResults.current.open = true;
+	}, [snapshot.commandOutputs]);
 	useEffect(() => {
 		client.connect();
 		const timer = setInterval(() => setNow(Date.now()), 10_000);
@@ -388,6 +392,31 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 									</li>
 								))}
 							</ol>
+						</details>
+					)}
+					{snapshot.commandOutputs.length > 0 && (
+						<details className="queue command-results" ref={commandResults} aria-label="Command results">
+							<summary>
+								<b>Command results</b>
+								<span>{snapshot.commandOutputs.length}</span>
+							</summary>
+							<div className="actions">
+								<button
+									type="button"
+									className="btn"
+									onClick={() => {
+										void navigator.clipboard
+											.writeText(snapshot.commandOutputs.join("\n\n"))
+											.catch(error => setError(String(error)));
+									}}
+								>
+									Copy command results
+								</button>
+								<button type="button" className="btn" onClick={() => client.clearCommandOutputs()}>
+									Clear command results
+								</button>
+							</div>
+							<pre className="result-view">{snapshot.commandOutputs.join("\n\n")}</pre>
 						</details>
 					)}
 					{snapshot.dialogs.map(frame => (

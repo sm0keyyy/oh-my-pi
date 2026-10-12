@@ -48,6 +48,10 @@ export default function fixture(pi: ExtensionAPI): void {
 					ctx.ui.notify("Local notification", "info");
 					ctx.ui.setEditorText("Local editor injection");
 					return;
+				case "clear":
+					ctx.ui.setStatus("fixture", undefined);
+					ctx.ui.setWidget("fixture", undefined);
+					return;
 				default:
 					throw new Error("Unknown local dialog");
 			}

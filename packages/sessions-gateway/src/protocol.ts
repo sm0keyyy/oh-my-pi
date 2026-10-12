@@ -4,17 +4,19 @@ import { MAX_RPC_FRAME_BYTES } from "../../coding-agent/src/modes/rpc/rpc-frame"
 
 export const PUBLIC_ORIGIN = "https://sessions.the-freed.family";
 export const HEARTBEAT_MS = 30_000;
+export const SNAPSHOT_MS = 10_000;
 export const IDLE_MS = 120_000;
 export const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 export const INSTANCE_ID = /^[a-f0-9]{16}$/;
 export const TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
 export type ClosedCode = "not_found" | "unreachable" | "tui_exited";
+export type GatewayEvent = "attached" | "bridge_offline" | "session_gone" | "session_unavailable";
 export type GatewayMessage =
 	| { t: "attach"; conn: string; instanceId: string }
 	| { t: "frame"; conn: string; line: string }
 	| { t: "detach"; conn: string };
 export type BridgeMessage =
-	| { t: "sessions"; sessions: RpcSessionSnapshot[] }
+	| { t: "sessions"; sessions: RpcSessionSnapshot[]; gone?: string[] }
 	| { t: "frame"; conn: string; line: string }
 	| { t: "closed"; conn: string; code: ClosedCode };
 
@@ -26,6 +28,51 @@ export function isRpcLine(line: unknown): line is string {
 		!line.includes("\r") &&
 		Buffer.byteLength(line) + 1 <= MAX_RPC_FRAME_BYTES
 	);
+}
+
+const SAFE_DIAGNOSTICS: Record<string, true> = {
+	"": true,
+	bridge_offline: true,
+	session_gone: true,
+	session_unavailable: true,
+	"a bridge is already connected": true,
+	"text frames required": true,
+	"invalid RPC line": true,
+	"idle timeout": true,
+	"gateway silent": true,
+	"bridge stopped": true,
+	"gateway stopped": true,
+	"connect timeout": true,
+	"transport error": true,
+	"invalid gateway message": true,
+	"invalid bridge message": true,
+	"Invalid gateway envelope": true,
+	"Invalid gateway message": true,
+	"Invalid bridge message": true,
+	"Invalid session snapshot": true,
+	"Duplicate session id": true,
+	"Invalid connection id": true,
+	"Gateway payload exceeds the limit": true,
+	"Invalid gone session ids": true,
+	"Discovery directory is not private": true,
+	"Invalid discovery file": true,
+	"Invalid discovery metadata": true,
+	"Invalid socket ready": true,
+	"RPC discovery directory is not private": true,
+};
+
+export function sanitizeDiagnostic(value: unknown): string {
+	if (value instanceof SyntaxError) return "invalid JSON";
+	if (value instanceof Error) {
+		const code = "code" in value ? value.code : undefined;
+		if (
+			typeof code === "string" &&
+			["ENOENT", "EACCES", "EPERM", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ESRCH"].includes(code)
+		)
+			return code;
+		return Object.hasOwn(SAFE_DIAGNOSTICS, value.message) ? value.message : "redacted";
+	}
+	return typeof value === "string" && Object.hasOwn(SAFE_DIAGNOSTICS, value) ? value : "redacted";
 }
 
 function parseEnvelope(text: string): Record<string, unknown> {
@@ -101,7 +148,15 @@ export function parseBridgeMessage(text: string): BridgeMessage {
 		const sessions = value.sessions.map(parseSnapshot);
 		if (new Set(sessions.map(session => session.instanceId)).size !== sessions.length)
 			throw new Error("Duplicate session id");
-		return { t: "sessions", sessions };
+		if (
+			value.gone !== undefined &&
+			(!Array.isArray(value.gone) ||
+				value.gone.some(id => typeof id !== "string" || !INSTANCE_ID.test(id)) ||
+				new Set(value.gone).size !== value.gone.length ||
+				value.gone.some(id => sessions.some(session => session.instanceId === id)))
+		)
+			throw new Error("Invalid gone session ids");
+		return { t: "sessions", sessions, ...(value.gone === undefined ? {} : { gone: value.gone as string[] }) };
 	}
 	const conn = connection(value);
 	if (value.t === "frame" && isRpcLine(value.line)) return { t: "frame", conn, line: value.line };

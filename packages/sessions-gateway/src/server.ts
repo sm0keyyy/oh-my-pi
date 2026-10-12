@@ -12,6 +12,8 @@ import {
 	MAX_PAYLOAD_BYTES,
 	parseBridgeMessage,
 	PUBLIC_ORIGIN,
+	sanitizeDiagnostic,
+	type GatewayEvent,
 	TOKEN,
 } from "./protocol";
 
@@ -20,6 +22,7 @@ interface SocketData {
 	conn: string;
 	instanceId: string;
 	lastSeen: number;
+	closePath?: string;
 }
 type Socket = Bun.ServerWebSocket<SocketData>;
 export interface GatewayOptions {
@@ -42,7 +45,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const indexPath = path.join(siteDir, "index.html");
 	if (!(await fs.stat(indexPath)).isFile()) throw new Error("Web client index is missing");
 	let bridge: Socket | undefined;
-	let sessions = new Map<string, RpcSessionSnapshot>();
+	const sessions = new Map<string, RpcSessionSnapshot>();
 	const browsers = new Map<string, Socket>();
 	const token = Buffer.from(`Bearer ${options.token}`);
 	const idleMs = options.idleMs ?? IDLE_MS;
@@ -55,15 +58,17 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
 	};
 	const error = (status: number, code: string): Response => Response.json({ error: { code } }, { status, headers });
-	const closeBrowser = (socket: Socket, event: "bridge_offline" | "session_gone"): void => {
-		browsers.delete(socket.data.conn);
+	const closeBrowser = (socket: Socket, event: Exclude<GatewayEvent, "attached">): void => {
+		if (browsers.delete(socket.data.conn)) bridge?.send(JSON.stringify({ t: "detach", conn: socket.data.conn }));
+		socket.data.closePath = event;
 		socket.send(JSON.stringify({ type: "gateway", event }));
 		socket.close(4001, event);
 	};
-	const retireBridge = (socket: Socket): void => {
+	const retireBridge = (socket: Socket, closePath: string): void => {
 		if (bridge !== socket) return;
 		bridge = undefined;
-		logger.info("Sessions bridge disconnected");
+		socket.data.closePath ??= closePath;
+		logger.info("Sessions bridge disconnected", { path: socket.data.closePath });
 		sessions.clear();
 		for (const browser of browsers.values()) closeBrowser(browser, "bridge_offline");
 		socket.close(4001, "bridge_offline");
@@ -82,7 +87,8 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					? Response.json({ ok: true }, { headers })
 					: error(405, "method_not_allowed");
 			}
-			if (!(await verifyAccess(request))) return error(403, "forbidden");
+			const principal = await verifyAccess(request);
+			if (principal !== (url.pathname === "/ws/bridge" ? "service" : "user")) return error(403, "forbidden");
 			if (url.pathname === "/ws/bridge") {
 				const supplied = Buffer.from(request.headers.get("authorization") ?? "");
 				if (supplied.length !== token.length || !timingSafeEqual(supplied, token))
@@ -139,10 +145,11 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			sendPings: false,
 			maxPayloadLength: MAX_PAYLOAD_BYTES,
 			backpressureLimit: MAX_PAYLOAD_BYTES,
-			closeOnBackpressureLimit: true,
+			closeOnBackpressureLimit: false,
 			open(socket) {
 				if (socket.data.role === "bridge") {
 					if (bridge) {
+						socket.data.closePath = "bridge_conflict";
 						socket.close(4009, "a bridge is already connected");
 						return;
 					}
@@ -154,54 +161,79 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					closeBrowser(socket, "bridge_offline");
 					return;
 				}
-				if (!sessions.has(socket.data.instanceId)) {
-					closeBrowser(socket, "session_gone");
+				browsers.set(socket.data.conn, socket);
+				if (bridge.getBufferedAmount() >= MAX_PAYLOAD_BYTES) {
+					closeBrowser(socket, "session_unavailable");
 					return;
 				}
-				browsers.set(socket.data.conn, socket);
 				bridge.send(JSON.stringify({ t: "attach", conn: socket.data.conn, instanceId: socket.data.instanceId }));
 				socket.send('{"type":"gateway","event":"attached"}');
 			},
 			message(socket, message) {
 				if (typeof message !== "string") {
+					socket.data.closePath = "binary_message";
 					socket.close(1003, "text frames required");
 					return;
 				}
 				socket.data.lastSeen = Date.now();
 				if (socket.data.role === "browser") {
 					if (!isRpcLine(message)) {
+						socket.data.closePath = "invalid_rpc";
 						socket.close(1009, "invalid RPC line");
 						return;
 					}
-					if (browsers.get(socket.data.conn) === socket && bridge)
-						bridge.send(JSON.stringify({ t: "frame", conn: socket.data.conn, line: message }));
+					if (browsers.get(socket.data.conn) === socket && bridge) {
+						const frame = JSON.stringify({ t: "frame", conn: socket.data.conn, line: message });
+						if (bridge.getBufferedAmount() + Buffer.byteLength(frame) > MAX_PAYLOAD_BYTES)
+							closeBrowser(socket, "session_unavailable");
+						else bridge.send(frame);
+					}
 					return;
 				}
 				if (bridge !== socket) return;
 				try {
 					const frame = parseBridgeMessage(message);
 					if (frame.t === "sessions") {
-						sessions = new Map(frame.sessions.map(session => [session.instanceId, session]));
-						for (const browser of browsers.values())
-							if (!sessions.has(browser.data.instanceId)) {
-								bridge.send(JSON.stringify({ t: "detach", conn: browser.data.conn }));
-								closeBrowser(browser, "session_gone");
-							}
+						for (const session of frame.sessions) sessions.set(session.instanceId, session);
+						for (const instanceId of frame.gone ?? []) {
+							sessions.delete(instanceId);
+							for (const browser of browsers.values())
+								if (browser.data.instanceId === instanceId) closeBrowser(browser, "session_gone");
+						}
 					} else {
 						const browser = browsers.get(frame.conn);
 						if (!browser) return;
-						if (frame.t === "frame") browser.send(frame.line);
-						else closeBrowser(browser, "session_gone");
+						if (frame.t === "frame") {
+							if (browser.getBufferedAmount() + Buffer.byteLength(frame.line) > MAX_PAYLOAD_BYTES)
+								closeBrowser(browser, "session_unavailable");
+							else browser.send(frame.line);
+						} else if (frame.code === "unreachable") closeBrowser(browser, "session_unavailable");
+						else {
+							sessions.delete(browser.data.instanceId);
+							for (const attached of browsers.values())
+								if (attached.data.instanceId === browser.data.instanceId)
+									closeBrowser(attached, "session_gone");
+						}
 					}
-				} catch {
-					retireBridge(socket);
+				} catch (cause) {
+					logger.warn("Invalid sessions bridge message", {
+						path: "bridge_message",
+						cause: sanitizeDiagnostic(cause),
+					});
+					retireBridge(socket, "bridge_message");
 				}
 			},
 			pong(socket) {
 				socket.data.lastSeen = Date.now();
 			},
-			close(socket) {
-				if (socket.data.role === "bridge") retireBridge(socket);
+			close(socket, code, reason) {
+				logger.info("Sessions socket closed", {
+					role: socket.data.role,
+					code,
+					reason: sanitizeDiagnostic(reason),
+					path: socket.data.closePath ?? "peer",
+				});
+				if (socket.data.role === "bridge") retireBridge(socket, "peer");
 				else if (browsers.delete(socket.data.conn))
 					bridge?.send(JSON.stringify({ t: "detach", conn: socket.data.conn }));
 			},
@@ -214,12 +246,14 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const heartbeat = setInterval(() => {
 		const now = Date.now();
 		if (bridge) {
-			if (now - bridge.data.lastSeen >= idleMs) retireBridge(bridge);
+			if (now - bridge.data.lastSeen >= idleMs) retireBridge(bridge, "idle_timeout");
 			else bridge.ping();
 		}
 		for (const browser of browsers.values()) {
-			if (now - browser.data.lastSeen >= idleMs) browser.close(4001, "idle timeout");
-			else browser.ping();
+			if (now - browser.data.lastSeen >= idleMs) {
+				browser.data.closePath = "idle_timeout";
+				browser.close(4001, "idle timeout");
+			} else browser.ping();
 		}
 	}, options.heartbeatMs ?? HEARTBEAT_MS);
 	heartbeat.unref();
@@ -230,7 +264,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			if (stopped) return;
 			stopped = true;
 			clearInterval(heartbeat);
-			if (bridge) retireBridge(bridge);
+			if (bridge) retireBridge(bridge, "gateway_stop");
 			server.stop(true);
 		},
 	};

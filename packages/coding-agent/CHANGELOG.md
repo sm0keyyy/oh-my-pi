@@ -394,6 +394,7 @@
 
 - Fixed session socket startup importing ACP command metadata before the builtin registry was initialized.
 - Fixed the sessions bridge launch agent path for the 18.9.2 fork.
+- Fixed sessions gateway image builds with the repository's hoisted dependency layout.
 
 ## [18.9.2] - 2026-10-11
 

@@ -1,480 +1,496 @@
 [
-	{
-		"viewport": [1440, 1000],
-		"tui": {
-			"pid": 76331,
-			"cwd": "/Users/jacobfreed/Developer/omp-fix-web/.sessions-review-test-config/workspaces/desktop"
-		},
-		"findings": {
-			"F8": {
-				"invalidKept": true,
-				"submitted": {
-					"type": "extension_ui_response",
-					"id": "15a2c1d651c57a5b",
-					"answers": [
-						{
-							"id": "choice",
-							"selectedOptions": [],
-							"customInput": "Alternative desktop"
-						},
-						{
-							"id": "multi",
-							"selectedOptions": ["Desktop"],
-							"customInput": ""
-						}
-					]
-				}
-			},
-			"F11": {
-				"visible": true,
-				"separate": true,
-				"copy": true,
-				"reopen": true,
-				"clear": true,
-				"output": {
-					"type": "command_output",
-					"text": "Session: 01a12dd2-0360-778d-bf0f-236cd30d7d6a\nTitle: undefined\nCWD: /Users/jacobfreed/Developer/omp-fix-web/.sessions-review-test-config/workspaces/desktop"
-				}
-			},
-			"F12": {
-				"restored": true,
-				"explicitClears": true,
-				"hostSnapshot": {
-					"type": "extension_ui_request",
-					"id": "15a2c1d6e5057a65",
-					"method": "snapshot",
-					"statuses": {
-						"fixture": "Local status"
-					},
-					"widgets": {
-						"fixture": {
-							"lines": ["Local widget", "Second line"],
-							"placement": "aboveEditor"
-						}
-					}
-				}
-			},
-			"F6": {
-				"streamingRebuilt": true
-			}
-		},
-		"commands": [
-			{
-				"command": "abort_and_restore_queue",
-				"coverage": "transport",
-				"request": {
-					"type": "abort_and_restore_queue",
-					"id": "34c2f575-12fc-4cbe-8a86-8e696308c27a"
-				},
-				"response": {
-					"id": "34c2f575-12fc-4cbe-8a86-8e696308c27a",
-					"type": "response",
-					"command": "abort_and_restore_queue",
-					"success": true,
-					"data": {
-						"steering": [],
-						"followUp": [
-							{
-								"text": "Restore this desktop queue"
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-desktop.png"
-			},
-			{
-				"command": "set_slow_mode",
-				"coverage": "transport",
-				"request": {
-					"type": "set_slow_mode",
-					"enabled": false,
-					"id": "bc998f5e-0686-424b-9be3-cc6f14c842a3"
-				},
-				"response": {
-					"id": "bc998f5e-0686-424b-9be3-cc6f14c842a3",
-					"type": "response",
-					"command": "set_slow_mode",
-					"success": true,
-					"data": {
-						"enabled": false
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-desktop.png"
-			},
-			{
-				"command": "get_logout_accounts",
-				"coverage": "transport",
-				"request": {
-					"type": "get_logout_accounts",
-					"providerId": "fake",
-					"id": "5e69b43d-b4bc-4d5d-870c-c3d11dc4e11b"
-				},
-				"response": {
-					"id": "5e69b43d-b4bc-4d5d-870c-c3d11dc4e11b",
-					"type": "response",
-					"command": "get_logout_accounts",
-					"success": true,
-					"data": {
-						"accounts": [
-							{
-								"credentialId": 5,
-								"provider": "fake",
-								"label": "API key #5",
-								"detail": "stored API key #5",
-								"type": "api_key",
-								"active": true
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-desktop.png"
-			},
-			{
-				"command": "logout",
-				"coverage": "transport",
-				"request": {
-					"type": "logout",
-					"providerId": "fake",
-					"credentialId": 5,
-					"id": "bd4d9839-ccf6-44fa-a2fe-770f8b6346ea"
-				},
-				"response": {
-					"id": "bd4d9839-ccf6-44fa-a2fe-770f8b6346ea",
-					"type": "response",
-					"command": "logout",
-					"success": true,
-					"data": {}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-logout-desktop.png"
-			},
-			{
-				"command": "btw",
-				"coverage": "transport",
-				"request": {
-					"type": "btw",
-					"question": "[slow] Side question desktop",
-					"id": "3ea75ff7-397a-45d8-8692-73d3c96e3a8e"
-				},
-				"response": {
-					"id": "3ea75ff7-397a-45d8-8692-73d3c96e3a8e",
-					"type": "response",
-					"command": "btw",
-					"success": true,
-					"data": {
-						"record": {
-							"question": "[slow] Side question desktop",
-							"answer": "",
-							"status": "running",
-							"createdAt": 1791770108285,
-							"updatedAt": 1791770108285,
-							"id": "15a2c1dc5f457a72",
-							"leafId": "e9906ec5"
-						}
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw-desktop.png"
-			},
-			{
-				"command": "btw_cancel",
-				"coverage": "transport",
-				"request": {
-					"type": "btw_cancel",
-					"recordId": "15a2c1dc5f457a72",
-					"id": "0ee8fad7-a751-4a2f-b550-6c37abc9fce7"
-				},
-				"response": {
-					"id": "0ee8fad7-a751-4a2f-b550-6c37abc9fce7",
-					"type": "response",
-					"command": "btw_cancel",
-					"success": true,
-					"data": {
-						"cancelled": true
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-desktop.png"
-			},
-			{
-				"command": "get_btw_history",
-				"coverage": "transport",
-				"request": {
-					"type": "get_btw_history",
-					"id": "5bef9b4a-70f3-4d11-8452-736f6e984059"
-				},
-				"response": {
-					"id": "5bef9b4a-70f3-4d11-8452-736f6e984059",
-					"type": "response",
-					"command": "get_btw_history",
-					"success": true,
-					"data": {
-						"records": [
-							{
-								"question": "[slow] Side question desktop",
-								"answer": "stream-0 ",
-								"status": "cancelled",
-								"createdAt": 1791770108285,
-								"updatedAt": 1791770108333,
-								"id": "15a2c1dc5f457a72",
-								"leafId": "e9906ec5"
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-desktop.png"
-			}
-		],
-		"screenshots": [
-			"packages/sessions-web/evidence/screenshots/review-fixes-F8-invalid-kept-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F8-custom-accepted-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F11-command-results-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F12-snapshot-restored-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F12-explicit-clears-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F6-stream-restored-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-logout-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-btw-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-desktop.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-desktop.png"
-		]
-	},
-	{
-		"viewport": [390, 844],
-		"tui": {
-			"pid": 76369,
-			"cwd": "/Users/jacobfreed/Developer/omp-fix-web/.sessions-review-test-config/workspaces/phone"
-		},
-		"findings": {
-			"F8": {
-				"invalidKept": true,
-				"submitted": {
-					"type": "extension_ui_response",
-					"id": "15a2c1deaa4c9914",
-					"answers": [
-						{
-							"id": "choice",
-							"selectedOptions": [],
-							"customInput": "Alternative phone"
-						},
-						{
-							"id": "multi",
-							"selectedOptions": ["Desktop"],
-							"customInput": ""
-						}
-					]
-				}
-			},
-			"F11": {
-				"visible": true,
-				"separate": true,
-				"copy": true,
-				"reopen": true,
-				"clear": true,
-				"output": {
-					"type": "command_output",
-					"text": "Session: 01a12dd2-24d3-7738-a17c-55ad0eb9d3bd\nTitle: undefined\nCWD: /Users/jacobfreed/Developer/omp-fix-web/.sessions-review-test-config/workspaces/phone"
-				}
-			},
-			"F12": {
-				"restored": true,
-				"explicitClears": true,
-				"hostSnapshot": {
-					"type": "extension_ui_request",
-					"id": "15a2c1df2ccc991d",
-					"method": "snapshot",
-					"statuses": {
-						"fixture": "Local status"
-					},
-					"widgets": {
-						"fixture": {
-							"lines": ["Local widget", "Second line"],
-							"placement": "aboveEditor"
-						}
-					}
-				}
-			},
-			"F6": {
-				"streamingRebuilt": true
-			}
-		},
-		"commands": [
-			{
-				"command": "abort_and_restore_queue",
-				"coverage": "transport",
-				"request": {
-					"type": "abort_and_restore_queue",
-					"id": "597e794d-1eca-430b-aa23-08fffc4ce5c3"
-				},
-				"response": {
-					"id": "597e794d-1eca-430b-aa23-08fffc4ce5c3",
-					"type": "response",
-					"command": "abort_and_restore_queue",
-					"success": true,
-					"data": {
-						"steering": [],
-						"followUp": [
-							{
-								"text": "Restore this phone queue"
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-phone.png"
-			},
-			{
-				"command": "set_slow_mode",
-				"coverage": "transport",
-				"request": {
-					"type": "set_slow_mode",
-					"enabled": false,
-					"id": "49e49f51-3c0e-49d4-95ae-a1cb52db36b2"
-				},
-				"response": {
-					"id": "49e49f51-3c0e-49d4-95ae-a1cb52db36b2",
-					"type": "response",
-					"command": "set_slow_mode",
-					"success": true,
-					"data": {
-						"enabled": false
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-phone.png"
-			},
-			{
-				"command": "get_logout_accounts",
-				"coverage": "transport",
-				"request": {
-					"type": "get_logout_accounts",
-					"providerId": "fake",
-					"id": "a0d90e64-9ff1-484c-801f-39e324ae353d"
-				},
-				"response": {
-					"id": "a0d90e64-9ff1-484c-801f-39e324ae353d",
-					"type": "response",
-					"command": "get_logout_accounts",
-					"success": true,
-					"data": {
-						"accounts": [
-							{
-								"credentialId": 6,
-								"provider": "fake",
-								"label": "API key #6",
-								"detail": "stored API key #6",
-								"type": "api_key",
-								"active": true
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-phone.png"
-			},
-			{
-				"command": "logout",
-				"coverage": "transport",
-				"request": {
-					"type": "logout",
-					"providerId": "fake",
-					"credentialId": 6,
-					"id": "977b6099-7305-46dc-8036-f7d48aa6e804"
-				},
-				"response": {
-					"id": "977b6099-7305-46dc-8036-f7d48aa6e804",
-					"type": "response",
-					"command": "logout",
-					"success": true,
-					"data": {}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-logout-phone.png"
-			},
-			{
-				"command": "btw",
-				"coverage": "transport",
-				"request": {
-					"type": "btw",
-					"question": "[slow] Side question phone",
-					"id": "499f8549-bf81-4e63-aecf-9c189520df55"
-				},
-				"response": {
-					"id": "499f8549-bf81-4e63-aecf-9c189520df55",
-					"type": "response",
-					"command": "btw",
-					"success": true,
-					"data": {
-						"record": {
-							"question": "[slow] Side question phone",
-							"answer": "",
-							"status": "running",
-							"createdAt": 1791770116774,
-							"updatedAt": 1791770116774,
-							"id": "15a2c1e4a98c992b",
-							"leafId": "3c4130d8"
-						}
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw-phone.png"
-			},
-			{
-				"command": "btw_cancel",
-				"coverage": "transport",
-				"request": {
-					"type": "btw_cancel",
-					"recordId": "15a2c1e4a98c992b",
-					"id": "d6a31119-f083-4db4-8258-0bb502c74e55"
-				},
-				"response": {
-					"id": "d6a31119-f083-4db4-8258-0bb502c74e55",
-					"type": "response",
-					"command": "btw_cancel",
-					"success": true,
-					"data": {
-						"cancelled": true
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-phone.png"
-			},
-			{
-				"command": "get_btw_history",
-				"coverage": "transport",
-				"request": {
-					"type": "get_btw_history",
-					"id": "c003b999-fe2b-430f-9dd8-fc675034c88a"
-				},
-				"response": {
-					"id": "c003b999-fe2b-430f-9dd8-fc675034c88a",
-					"type": "response",
-					"command": "get_btw_history",
-					"success": true,
-					"data": {
-						"records": [
-							{
-								"question": "[slow] Side question phone",
-								"answer": "stream-0 ",
-								"status": "cancelled",
-								"createdAt": 1791770116774,
-								"updatedAt": 1791770116822,
-								"id": "15a2c1e4a98c992b",
-								"leafId": "3c4130d8"
-							}
-						]
-					}
-				},
-				"screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-phone.png"
-			}
-		],
-		"screenshots": [
-			"packages/sessions-web/evidence/screenshots/review-fixes-F8-invalid-kept-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F8-custom-accepted-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F11-command-results-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F12-snapshot-restored-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F12-explicit-clears-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-F6-stream-restored-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-logout-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-btw-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-phone.png",
-			"packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-phone.png"
-		]
-	}
+  {
+    "viewport": [
+      1440,
+      1000
+    ],
+    "tui": {
+      "pid": 80584,
+      "cwd": "/Users/jacobfreed/Developer/omp-fork-18.9.2/.sessions-review-test-config/workspaces/desktop"
+    },
+    "findings": {
+      "F8": {
+        "invalidKept": true,
+        "submitted": {
+          "type": "extension_ui_response",
+          "id": "15a2c55551c9b7da",
+          "answers": [
+            {
+              "id": "choice",
+              "selectedOptions": [],
+              "customInput": "Alternative desktop"
+            },
+            {
+              "id": "multi",
+              "selectedOptions": [
+                "Desktop"
+              ],
+              "customInput": ""
+            }
+          ]
+        }
+      },
+      "F11": {
+        "visible": true,
+        "separate": true,
+        "copy": true,
+        "reopen": true,
+        "clear": true,
+        "output": {
+          "type": "command_output",
+          "text": "Session: 01a12ddf-f5bf-74d0-80c3-9752381aa6b9\nTitle: undefined\nCWD: /Users/jacobfreed/Developer/omp-fork-18.9.2/.sessions-review-test-config/workspaces/desktop"
+        }
+      },
+      "F12": {
+        "restored": true,
+        "explicitClears": true,
+        "hostSnapshot": {
+          "type": "extension_ui_request",
+          "id": "15a2c555d409b7e3",
+          "method": "snapshot",
+          "statuses": {
+            "fixture": "Local status"
+          },
+          "widgets": {
+            "fixture": {
+              "lines": [
+                "Local widget",
+                "Second line"
+              ],
+              "placement": "aboveEditor"
+            }
+          }
+        }
+      },
+      "F6": {
+        "streamingRebuilt": true
+      }
+    },
+    "commands": [
+      {
+        "command": "abort_and_restore_queue",
+        "coverage": "transport",
+        "request": {
+          "type": "abort_and_restore_queue",
+          "id": "20a48992-d5f8-486d-9c94-e4fb1aae9683"
+        },
+        "response": {
+          "id": "20a48992-d5f8-486d-9c94-e4fb1aae9683",
+          "type": "response",
+          "command": "abort_and_restore_queue",
+          "success": true,
+          "data": {
+            "steering": [],
+            "followUp": [
+              {
+                "text": "Restore this desktop queue"
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-desktop.png"
+      },
+      {
+        "command": "set_slow_mode",
+        "coverage": "transport",
+        "request": {
+          "type": "set_slow_mode",
+          "enabled": false,
+          "id": "1748ab31-adc5-4434-bb2f-eb71c3cd4368"
+        },
+        "response": {
+          "id": "1748ab31-adc5-4434-bb2f-eb71c3cd4368",
+          "type": "response",
+          "command": "set_slow_mode",
+          "success": true,
+          "data": {
+            "enabled": false
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-desktop.png"
+      },
+      {
+        "command": "get_logout_accounts",
+        "coverage": "transport",
+        "request": {
+          "type": "get_logout_accounts",
+          "providerId": "fake",
+          "id": "01537dd5-c68d-4a2d-b4b8-ec8823f4b852"
+        },
+        "response": {
+          "id": "01537dd5-c68d-4a2d-b4b8-ec8823f4b852",
+          "type": "response",
+          "command": "get_logout_accounts",
+          "success": true,
+          "data": {
+            "accounts": [
+              {
+                "credentialId": 1,
+                "provider": "fake",
+                "label": "API key #1",
+                "detail": "stored API key #1",
+                "type": "api_key",
+                "active": true
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-desktop.png"
+      },
+      {
+        "command": "logout",
+        "coverage": "transport",
+        "request": {
+          "type": "logout",
+          "providerId": "fake",
+          "credentialId": 1,
+          "id": "f78e2573-5f52-4789-9fc8-ae7d58fca3e1"
+        },
+        "response": {
+          "id": "f78e2573-5f52-4789-9fc8-ae7d58fca3e1",
+          "type": "response",
+          "command": "logout",
+          "success": true,
+          "data": {}
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-logout-desktop.png"
+      },
+      {
+        "command": "btw",
+        "coverage": "transport",
+        "request": {
+          "type": "btw",
+          "question": "[slow] Side question desktop",
+          "id": "b71aab19-8fdd-4815-8efb-27f6ace70dd4"
+        },
+        "response": {
+          "id": "b71aab19-8fdd-4815-8efb-27f6ace70dd4",
+          "type": "response",
+          "command": "btw",
+          "success": true,
+          "data": {
+            "record": {
+              "question": "[slow] Side question desktop",
+              "answer": "",
+              "status": "running",
+              "createdAt": 1791771024667,
+              "updatedAt": 1791771024667,
+              "id": "15a2c55b46c9b7ec",
+              "leafId": "4092bea3"
+            }
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw-desktop.png"
+      },
+      {
+        "command": "btw_cancel",
+        "coverage": "transport",
+        "request": {
+          "type": "btw_cancel",
+          "recordId": "15a2c55b46c9b7ec",
+          "id": "99ddb0eb-56f0-458f-a056-2590bc3d2686"
+        },
+        "response": {
+          "id": "99ddb0eb-56f0-458f-a056-2590bc3d2686",
+          "type": "response",
+          "command": "btw_cancel",
+          "success": true,
+          "data": {
+            "cancelled": true
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-desktop.png"
+      },
+      {
+        "command": "get_btw_history",
+        "coverage": "transport",
+        "request": {
+          "type": "get_btw_history",
+          "id": "ce3cce3e-2478-4b07-8333-6d2af401e6fb"
+        },
+        "response": {
+          "id": "ce3cce3e-2478-4b07-8333-6d2af401e6fb",
+          "type": "response",
+          "command": "get_btw_history",
+          "success": true,
+          "data": {
+            "records": [
+              {
+                "question": "[slow] Side question desktop",
+                "answer": "stream-0 ",
+                "status": "cancelled",
+                "createdAt": 1791771024667,
+                "updatedAt": 1791771024715,
+                "id": "15a2c55b46c9b7ec",
+                "leafId": "4092bea3"
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-desktop.png"
+      }
+    ],
+    "screenshots": [
+      "packages/sessions-web/evidence/screenshots/review-fixes-F8-invalid-kept-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F8-custom-accepted-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F11-command-results-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F12-snapshot-restored-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F12-explicit-clears-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F6-stream-restored-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-logout-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-btw-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-desktop.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-desktop.png"
+    ]
+  },
+  {
+    "viewport": [
+      390,
+      844
+    ],
+    "tui": {
+      "pid": 80629,
+      "cwd": "/Users/jacobfreed/Developer/omp-fork-18.9.2/.sessions-review-test-config/workspaces/phone"
+    },
+    "findings": {
+      "F8": {
+        "invalidKept": true,
+        "submitted": {
+          "type": "extension_ui_response",
+          "id": "15a2c55d88dc14b2",
+          "answers": [
+            {
+              "id": "choice",
+              "selectedOptions": [],
+              "customInput": "Alternative phone"
+            },
+            {
+              "id": "multi",
+              "selectedOptions": [
+                "Desktop"
+              ],
+              "customInput": ""
+            }
+          ]
+        }
+      },
+      "F11": {
+        "visible": true,
+        "separate": true,
+        "copy": true,
+        "reopen": true,
+        "clear": true,
+        "output": {
+          "type": "command_output",
+          "text": "Session: 01a12de0-2023-7534-b3ea-753c57e15fc5\nTitle: undefined\nCWD: /Users/jacobfreed/Developer/omp-fork-18.9.2/.sessions-review-test-config/workspaces/phone"
+        }
+      },
+      "F12": {
+        "restored": true,
+        "explicitClears": true,
+        "hostSnapshot": {
+          "type": "extension_ui_request",
+          "id": "15a2c55dff5c14bb",
+          "method": "snapshot",
+          "statuses": {
+            "fixture": "Local status"
+          },
+          "widgets": {
+            "fixture": {
+              "lines": [
+                "Local widget",
+                "Second line"
+              ],
+              "placement": "aboveEditor"
+            }
+          }
+        }
+      },
+      "F6": {
+        "streamingRebuilt": true
+      }
+    },
+    "commands": [
+      {
+        "command": "abort_and_restore_queue",
+        "coverage": "transport",
+        "request": {
+          "type": "abort_and_restore_queue",
+          "id": "55114b5f-989d-4025-8d41-6c440afa7b94"
+        },
+        "response": {
+          "id": "55114b5f-989d-4025-8d41-6c440afa7b94",
+          "type": "response",
+          "command": "abort_and_restore_queue",
+          "success": true,
+          "data": {
+            "steering": [],
+            "followUp": [
+              {
+                "text": "Restore this phone queue"
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-phone.png"
+      },
+      {
+        "command": "set_slow_mode",
+        "coverage": "transport",
+        "request": {
+          "type": "set_slow_mode",
+          "enabled": false,
+          "id": "fd606af4-9b42-4c82-b73c-b0bcf1b0d2c8"
+        },
+        "response": {
+          "id": "fd606af4-9b42-4c82-b73c-b0bcf1b0d2c8",
+          "type": "response",
+          "command": "set_slow_mode",
+          "success": true,
+          "data": {
+            "enabled": false
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-phone.png"
+      },
+      {
+        "command": "get_logout_accounts",
+        "coverage": "transport",
+        "request": {
+          "type": "get_logout_accounts",
+          "providerId": "fake",
+          "id": "fbdbf9a2-38ba-47b2-9ec6-ffac573c699c"
+        },
+        "response": {
+          "id": "fbdbf9a2-38ba-47b2-9ec6-ffac573c699c",
+          "type": "response",
+          "command": "get_logout_accounts",
+          "success": true,
+          "data": {
+            "accounts": [
+              {
+                "credentialId": 2,
+                "provider": "fake",
+                "label": "API key #2",
+                "detail": "stored API key #2",
+                "type": "api_key",
+                "active": true
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-phone.png"
+      },
+      {
+        "command": "logout",
+        "coverage": "transport",
+        "request": {
+          "type": "logout",
+          "providerId": "fake",
+          "credentialId": 2,
+          "id": "c35f07ab-8240-45f8-8d33-5cec7d0d45d0"
+        },
+        "response": {
+          "id": "c35f07ab-8240-45f8-8d33-5cec7d0d45d0",
+          "type": "response",
+          "command": "logout",
+          "success": true,
+          "data": {}
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-logout-phone.png"
+      },
+      {
+        "command": "btw",
+        "coverage": "transport",
+        "request": {
+          "type": "btw",
+          "question": "[slow] Side question phone",
+          "id": "fe7eefd8-f17e-4d5a-9b2b-c1fcf4de74d0"
+        },
+        "response": {
+          "id": "fe7eefd8-f17e-4d5a-9b2b-c1fcf4de74d0",
+          "type": "response",
+          "command": "btw",
+          "success": true,
+          "data": {
+            "record": {
+              "question": "[slow] Side question phone",
+              "answer": "",
+              "status": "running",
+              "createdAt": 1791771032971,
+              "updatedAt": 1791771032971,
+              "id": "15a2c56362dc14c3",
+              "leafId": "3f7cf26c"
+            }
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw-phone.png"
+      },
+      {
+        "command": "btw_cancel",
+        "coverage": "transport",
+        "request": {
+          "type": "btw_cancel",
+          "recordId": "15a2c56362dc14c3",
+          "id": "5a1c0615-501f-4cd2-9016-2058dee0687d"
+        },
+        "response": {
+          "id": "5a1c0615-501f-4cd2-9016-2058dee0687d",
+          "type": "response",
+          "command": "btw_cancel",
+          "success": true,
+          "data": {
+            "cancelled": true
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-phone.png"
+      },
+      {
+        "command": "get_btw_history",
+        "coverage": "transport",
+        "request": {
+          "type": "get_btw_history",
+          "id": "ba97cdb6-cc82-4f7d-b7d0-1ffd2004507b"
+        },
+        "response": {
+          "id": "ba97cdb6-cc82-4f7d-b7d0-1ffd2004507b",
+          "type": "response",
+          "command": "get_btw_history",
+          "success": true,
+          "data": {
+            "records": [
+              {
+                "question": "[slow] Side question phone",
+                "answer": "stream-0 ",
+                "status": "cancelled",
+                "createdAt": 1791771032971,
+                "updatedAt": 1791771033021,
+                "id": "15a2c56362dc14c3",
+                "leafId": "3f7cf26c"
+              }
+            ]
+          }
+        },
+        "screenshot": "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-phone.png"
+      }
+    ],
+    "screenshots": [
+      "packages/sessions-web/evidence/screenshots/review-fixes-F8-invalid-kept-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F8-custom-accepted-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F11-command-results-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F12-snapshot-restored-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F12-explicit-clears-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-F6-stream-restored-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-abort_and_restore_queue-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-set_slow_mode-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-get_logout_accounts-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-logout-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-btw-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-btw_cancel-phone.png",
+      "packages/sessions-web/evidence/screenshots/review-fixes-get_btw_history-phone.png"
+    ]
+  }
 ]

@@ -1,0 +1,120 @@
+{
+	"base": "a79c401d24f07e9122e98ad839f2500a70a3efa3",
+	"before": {
+		"command": "bun test test/client.test.ts",
+		"receipt": "artifact://6111",
+		"result": {
+			"pass": 4,
+			"fail": 5
+		},
+		"findings": {
+			"F6": [
+				"Expected later update, received snapshot for the same key",
+				"session_changed during hydration timed out after 5000ms"
+			],
+			"F8": "Invalid single-choice answer did not throw and reached send",
+			"F12": "Snapshot replacement left stale status visible",
+			"F2": "session_unavailable did not initiate reconnect, timed out after 5000ms"
+		},
+		"F11": {
+			"command": "bun test test/client.test.ts --test-name-pattern 'command output reaches'",
+			"result": {
+				"pass": 0,
+				"fail": 1,
+				"filtered": 9
+			},
+			"receipt": "Expected snapshot.commandOutputs to contain the emitted command_output text; property was absent."
+		}
+	},
+	"after": {
+		"sessions": {
+			"command": "env -u MNEMOPI_EMBEDDING_DIM PI_CONFIG_DIR=.sessions-web-unit-fixture bun test packages/sessions-web/test/client.test.ts packages/sessions-gateway/test/server.test.ts packages/sessions-bridge/test/bridge.test.ts packages/sessions-bridge/test/provision.test.ts",
+			"pass": 34,
+			"fail": 0,
+			"expect": 197,
+			"files": 4,
+			"receipt": "artifact://6209: 34 pass, 0 fail, 197 expect calls across 4 files; the later malformed web-script invocation is logged separately in defects.json"
+		},
+		"browser": {
+			"command": "env SESSIONS_REVIEW_FIXTURE=1 SESSIONS_FIXTURE_CLI=<FixRpc worktree>/packages/coding-agent/src/cli.ts bun test/local-fixture.ts; CHROME_BIN=<Chrome binary> bun test/review-acceptance.ts <loopback fixture URL>",
+			"receipt": "packages/sessions-web/evidence/review-fixes-browser.json",
+			"artifact": "artifact://6196",
+			"viewports": [
+				[1440, 1000],
+				[390, 844]
+			],
+			"commands": 7,
+			"successfulRoundTrips": 14,
+			"screenshots": 26
+		},
+		"checks": {
+			"webTypecheck": "pass: application and fixture projects",
+			"codingAgentTypecheck": "pass: bunx tsgo -p tsconfig.json --noEmit",
+			"webBuild": "pass",
+			"commandContract": "pass: generated contract and 65 unique checklist rows match",
+			"format": "pass: 13 files",
+			"lint": "pass: 8 TypeScript files",
+			"native": "pass: bun install --frozen-lockfile && bun run build:native; darwin-arm64 pi-shell and pi-natives"
+		}
+	},
+	"fixes": {
+		"F6": "Use get_messages and get_state synchronous response boundaries; replay later events even for existing keys; restart and generation-guard hydration on session_changed.",
+		"F8": "Expose a single-choice custom alternative; validate before send; retain invalid form values and show an error.",
+		"F11": "Open a collapsible Command results panel above the composer on new output. Copy and Clear operate on escaped plain text, separate from transcript. Keep results across reconnect to the same session; clear them on session_changed and explicit Clear, as ruled by the operator.",
+		"F12": "Apply authoritative host snapshots atomically, including empty maps; preserve host stores during hydration and apply setters/clears in stream order.",
+		"F2": "Retry session_unavailable and bridge_offline; stop only for session_gone frame or confirmed 4001/session_gone close."
+	},
+	"contracts": {
+		"defined": [],
+		"consumed": {
+			"S3": {
+				"owner": "FixBridgeGateway",
+				"transient": {
+					"type": "gateway",
+					"event": "session_unavailable",
+					"closeCode": 4001,
+					"closeReason": "session_unavailable"
+				},
+				"confirmed": {
+					"type": "gateway",
+					"event": "session_gone",
+					"closeCode": 4001,
+					"closeReason": "session_gone"
+				}
+			},
+			"hostUi": {
+				"owner": "FixRpc",
+				"frame": {
+					"type": "extension_ui_request",
+					"method": "snapshot",
+					"id": "snowflake",
+					"statuses": "Record<string,string>",
+					"widgets": "Record<string,{lines:string[],placement:aboveEditor|belowEditor}>"
+				},
+				"ordering": "snapshot on attach; explicit setter/removal deltas on transitions"
+			},
+			"bridgeAuthentication": {
+				"owner": "FixBridgeGateway",
+				"fixture": "Signed service assertion with nonempty common_name and no email; browser fixture keeps operator email"
+			}
+		}
+	},
+	"internalDetails": [
+		"Hydration request IDs carry a local generation; stale responses cannot publish state. Snapshot boundaries are applied synchronously when responses arrive, before promise continuations.",
+		"Command output uses the existing dock styling and plaintext preformatted output; only current command_output events are handled. No commands or command controls were added.",
+		"The seven added checklist rows are transport coverage, with exact same-ID request/response pairs at each viewport. Existing 58 historical rows were preserved.",
+		"A disposable fake-provider API credential enables successful logout round trips; the credential value is never recorded.",
+		"F12 browser proof uses the FixRpc source CLI read-only. All TUIs use isolated home-relative PI_CONFIG_DIR, loopback provider/gateway/bridge and the C1 JWT fixture.",
+		"Operator ruling: the active-session transition empties command results; same-session reconnect preserves them. The real SessionClient WebSocket regression covers both transitions."
+	],
+	"notRun": [
+		"Safari and 60-second phone network loss: not part of this slice assignment.",
+		"Integrated post-merge RPC regression suite: owned by Main after slice integration.",
+		"Deploy, install, launchd restart and live-service checks: explicitly prohibited."
+	],
+	"departures": [],
+	"unfixedRisks": [
+		"F2 client regression covers the agreed S3 frames with a real WebSocket fixture. The real browser fixture runs the base gateway; the new server S3 classification is owned and tested by FixBridgeGateway."
+	],
+	"repositorySteeringLines": []
+}

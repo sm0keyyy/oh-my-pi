@@ -1047,6 +1047,25 @@ a.btn {
 	padding-inline: var(--s2);
 	font-size: 12px;
 }
+.command-results {
+	flex: none;
+	border-top: 1px solid var(--border);
+}
+.command-results > summary {
+	min-height: 44px;
+}
+.command-results .actions {
+	padding-block: var(--s1) var(--s2);
+}
+.command-results pre {
+	max-height: 20dvh;
+	padding: var(--s2) var(--s3);
+	margin-bottom: var(--s2);
+	background: var(--bg-inset);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--fg-muted);
+}
 
 /* composer */
 .foot {

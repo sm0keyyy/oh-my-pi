@@ -20,6 +20,7 @@ export interface Snapshot {
 	statuses: Record<string, string>;
 	widgets: Record<string, string[]>;
 	notices: string[];
+	commandOutputs: string[];
 	stats: RecordValue;
 	error: string | null;
 	lastFrame: number;
@@ -31,6 +32,7 @@ interface Pending {
 	resolve(value: RecordValue): void;
 	reject(error: Error): void;
 	timer: number;
+	hydration?: number;
 }
 export function records(value: unknown): RecordValue[] {
 	if (!Array.isArray(value) || !value.every(isRecord)) throw new Error("Expected an object list from the TUI");
@@ -176,6 +178,7 @@ export class SessionClient {
 		widgets: {},
 		notices: [],
 		stats: {},
+		commandOutputs: [],
 		error: null,
 		lastFrame: 0,
 		revision: 0,
@@ -200,6 +203,7 @@ export class SessionClient {
 		clearTimeout(this.#retry);
 		this.#socket?.close();
 		const generation = ++this.#generation;
+		++this.#hydration;
 		this.#decoder = new FrameDecoder();
 		this.#events = [];
 		this.#publish({ phase: "connecting", dialogs: [] });
@@ -218,11 +222,15 @@ export class SessionClient {
 			}
 		};
 		socket.onerror = () => socket.close();
-		socket.onclose = () => {
+		socket.onclose = event => {
 			if (generation !== this.#generation) return;
+			++this.#hydration;
+			this.#events = null;
 			clearTimeout(this.#deadline);
 			clearInterval(this.#refresh);
 			this.#rejectPending();
+			if (event.code === 4001 && event.reason === "session_gone")
+				this.#publish({ phase: "gone", dialogs: [], error: "The Mac closed this session. Return to sessions." });
 			if (this.#stopped || this.#snapshot.phase === "gone") return;
 			this.#publish({ phase: "offline", dialogs: [], tools: {} });
 			this.#retry = window.setTimeout(this.connect, this.#backoff);
@@ -249,6 +257,9 @@ export class SessionClient {
 		this.#pending.clear();
 	}
 	request(command: RpcCommand, timeout = 120_000): Promise<RecordValue> {
+		return this.#request(command, timeout);
+	}
+	#request(command: RpcCommand, timeout: number, hydration?: number): Promise<RecordValue> {
 		const socket = this.#socket;
 		if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("The Mac is disconnected"));
 		const id = crypto.randomUUID();
@@ -260,7 +271,13 @@ export class SessionClient {
 			this.#pending.delete(id);
 			result.reject(new Error("The TUI response timed out. Check its state before retry."));
 		}, timeout);
-		this.#pending.set(id, { command: command.type, resolve: result.resolve, reject: result.reject, timer });
+		this.#pending.set(id, {
+			command: command.type,
+			resolve: result.resolve,
+			reject: result.reject,
+			timer,
+			hydration,
+		});
 		try {
 			socket.send(line);
 		} catch (error) {
@@ -273,11 +290,37 @@ export class SessionClient {
 	answer(response: RpcExtensionUIResponse): void {
 		if (this.#snapshot.phase !== "connected" || this.#socket?.readyState !== WebSocket.OPEN)
 			throw new Error("The Mac is disconnected");
+		const dialog = this.#snapshot.dialogs.find(dialog => dialog.id === response.id);
+		if (!dialog) throw new Error("This dialog is no longer open");
+		if (dialog.method === "ask" && !("cancelled" in response)) {
+			const questions = records(dialog.questions);
+			if (
+				!("answers" in response) ||
+				!Array.isArray(response.answers) ||
+				response.answers.length !== questions.length
+			)
+				throw new Error("Answer every question in this dialog");
+			for (const [index, question] of questions.entries()) {
+				const answer = response.answers[index];
+				if (!answer || answer.id !== question.id) throw new Error("The answer does not match this question");
+				const selected = strings(answer.selectedOptions);
+				const labels = records(question.options).map(option => text(option.label));
+				if (selected.some(label => !labels.includes(label)) || new Set(selected).size !== selected.length)
+					throw new Error("Choose each listed option at most once");
+				if (answer.customInput !== undefined && typeof answer.customInput !== "string")
+					throw new Error("The custom answer must be text");
+				if (!question.multi && (selected.length > 1 || (selected.length > 0 && answer.customInput?.trim())))
+					throw new Error("Choose one option or a custom answer, not both");
+			}
+		}
 		const line = JSON.stringify(response);
 		if (new TextEncoder().encode(line).byteLength + 1 > 1024 * 1024 || this.#socket.bufferedAmount > 4 * 1024 * 1024)
 			throw new Error("The answer exceeds the RPC transport limit");
 		this.#socket.send(line);
 		this.#publish({ dialogs: this.#snapshot.dialogs.filter(d => d.id !== response.id) });
+	}
+	clearCommandOutputs(): void {
+		this.#publish({ commandOutputs: [] });
 	}
 	replaceMessages(messages: Message[]): void {
 		this.#publish({ messages });
@@ -289,11 +332,13 @@ export class SessionClient {
 	}
 	async refresh(): Promise<void> {
 		const generation = this.#generation;
+		const hydration = this.#hydration;
 		const revision = this.#snapshot.revision;
 		const state = await this.request({ type: "get_state" }, 10_000);
-		if (generation === this.#generation && revision === this.#snapshot.revision) this.#setState(state);
+		if (generation !== this.#generation || hydration !== this.#hydration) return;
+		if (revision === this.#snapshot.revision) this.#setState(state);
 		const stats = await this.request({ type: "get_session_stats" }, 10_000);
-		if (generation !== this.#generation) return;
+		if (generation !== this.#generation || hydration !== this.#hydration) return;
 		this.#publish({ stats });
 	}
 	#notice(message: string): void {
@@ -302,30 +347,26 @@ export class SessionClient {
 	async #rebuild(): Promise<void> {
 		const generation = this.#generation;
 		const hydration = ++this.#hydration;
+		this.#events ??= [];
 		clearInterval(this.#refresh);
-		this.#publish({ phase: "rebuilding", tools: {}, dialogs: [], statuses: {}, widgets: {}, agentMessages: {} });
+		this.#publish({ phase: "rebuilding", tools: {}, dialogs: [], agentMessages: {} });
 		try {
 			await this.request({ type: "negotiate_protocol", protocolVersion: 2 }, 10_000);
 			await this.request({ type: "set_event_filter", events: null, messageUpdates: "full" }, 10_000);
 			await this.request({ type: "set_ask_dialog", enabled: true }, 10_000);
 			await this.request({ type: "set_subagent_subscription", level: "events" }, 10_000);
-			const result = await this.request({ type: "get_messages" }, 10_000);
-			const state = await this.request({ type: "get_state" }, 10_000);
+			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			const result = await this.#request({ type: "get_messages" }, 10_000, hydration);
+			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			const state = await this.#request({ type: "get_state" }, 10_000, hydration);
 			if (generation !== this.#generation || hydration !== this.#hydration) return;
 			const messages = records(result.messages).map((m, i) => messageOf(m, `snapshot-${i}`));
 			const events = this.#events ?? [];
 			this.#events = null;
-			this.#publish({ messages, phase: "connected", error: null });
-			for (const event of events) {
-				if (
-					["message_start", "message_update", "message_end"].includes(text(event.type)) &&
-					messages.some(message => message.key === messageOf(event.message, text(event.messageId)).key)
-				)
-					continue;
-				if (event.type === "session_changed") continue;
-				this.#apply(event);
-			}
 			this.#setState(state);
+			this.#publish({ messages });
+			for (const event of events) this.#apply(event);
+			this.#publish({ phase: "connected", error: null });
 			this.#backoff = 1000;
 			await this.loadCatalog();
 			await this.refresh();
@@ -334,20 +375,21 @@ export class SessionClient {
 					void this.refresh().catch(error => this.#publish({ error: String(error) }));
 				}, 5000);
 		} catch (error) {
-			if (generation !== this.#generation) return;
+			if (generation !== this.#generation || hydration !== this.#hydration) return;
 			this.#publish({ error: error instanceof Error ? error.message : String(error) });
 			this.#socket?.close();
 		}
 	}
 	async loadCatalog(): Promise<void> {
 		const generation = this.#generation;
+		const hydration = this.#hydration;
 		const [commands, models, levels, agents] = await Promise.all([
 			this.request({ type: "get_available_commands" }),
 			this.request({ type: "get_available_models" }),
 			this.request({ type: "get_available_thinking_levels" }),
 			this.request({ type: "get_subagents" }),
 		]);
-		if (generation === this.#generation)
+		if (generation === this.#generation && hydration === this.#hydration)
 			this.#publish({
 				commands: [...records(commands.commands), ...terminalCommands],
 				models: records(models.models),
@@ -374,7 +416,7 @@ export class SessionClient {
 			if (frame.event === "session_gone") {
 				this.#publish({ phase: "gone", dialogs: [], error: "The Mac closed this session. Return to sessions." });
 				this.#socket?.close();
-			} else if (frame.event === "bridge_offline") {
+			} else if (frame.event === "bridge_offline" || frame.event === "session_unavailable") {
 				this.#publish({ phase: "offline", dialogs: [] });
 				this.#socket?.close();
 			}
@@ -393,8 +435,29 @@ export class SessionClient {
 			if (frame.command !== pending.command) throw new Error("RPC response command mismatch");
 			clearTimeout(pending.timer);
 			this.#pending.delete(frame.id);
+			if (frame.success && this.#events && pending.hydration === this.#hydration) {
+				// The synchronous RPC response separates the snapshot from later stream events.
+				const replaced =
+					pending.command === "get_messages"
+						? ["message_start", "message_update", "message_end"]
+						: ["agent_start", "agent_end", "session_settled", "queue_update"];
+				this.#events = this.#events.filter(event => !replaced.includes(text(event.type)));
+			}
 			if (frame.success) pending.resolve(isRecord(frame.data) ? frame.data : {});
 			else pending.reject(new Error(text(frame.error) || "The TUI refused the action"));
+			return;
+		}
+		if (frame.type === "session_changed") {
+			this.#events = [];
+			this.#publish({ commandOutputs: [] });
+			void this.#rebuild();
+			return;
+		}
+		if (
+			frame.type === "extension_ui_request" &&
+			["snapshot", "setStatus", "setWidget"].includes(text(frame.method))
+		) {
+			this.#ui(frame);
 			return;
 		}
 		if (this.#events) {
@@ -425,13 +488,13 @@ export class SessionClient {
 		else if (frame.type === "agent_end" || frame.type === "session_settled") {
 			this.#publish({ state: { ...snapshot.state, isStreaming: false } });
 			void this.refresh().catch(error => this.#publish({ error: String(error) }));
-		} else if (frame.type === "session_changed") {
-			this.#events = [];
-			void this.#rebuild();
 		} else if (frame.type === "available_commands_update")
 			this.#publish({ commands: [...records(frame.commands), ...terminalCommands] });
 		else if (frame.type === "extension_ui_request") this.#ui(frame);
-		else if (text(frame.type).startsWith("subagent_")) {
+		else if (frame.type === "command_output") {
+			if (typeof frame.text !== "string") throw new Error("Invalid command output");
+			this.#publish({ commandOutputs: [...snapshot.commandOutputs, frame.text] });
+		} else if (text(frame.type).startsWith("subagent_")) {
 			if (isRecord(frame.payload)) {
 				const payload = frame.payload;
 				const progress = isRecord(payload.progress) ? payload.progress : {};
@@ -500,7 +563,21 @@ export class SessionClient {
 	}
 	#ui(frame: RecordValue): void {
 		const snapshot = this.#snapshot;
-		if (frame.method === "cancel")
+		if (frame.method === "snapshot") {
+			if (!isRecord(frame.statuses) || !isRecord(frame.widgets)) throw new Error("Invalid host UI snapshot");
+			const statuses: Record<string, string> = {};
+			const widgets: Record<string, string[]> = {};
+			for (const [key, value] of Object.entries(frame.statuses)) {
+				if (typeof value !== "string") throw new Error("Invalid host status text");
+				statuses[key] = value;
+			}
+			for (const [key, value] of Object.entries(frame.widgets)) {
+				if (!isRecord(value) || !["aboveEditor", "belowEditor"].includes(text(value.placement)))
+					throw new Error("Invalid host widget");
+				widgets[key] = strings(value.lines);
+			}
+			this.#publish({ statuses, widgets });
+		} else if (frame.method === "cancel")
 			this.#publish({ dialogs: snapshot.dialogs.filter(dialog => dialog.id !== frame.targetId) });
 		else if (frame.method === "notify") this.#notice(text(frame.message));
 		else if (frame.method === "setStatus") {

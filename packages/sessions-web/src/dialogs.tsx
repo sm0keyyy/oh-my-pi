@@ -32,6 +32,7 @@ export function Modal({
 
 export function OperatorDialog({ frame, client }: { frame: RecordValue; client: SessionClient }): ReactNode {
 	const [error, setError] = useState("");
+	const [customAnswers, setCustomAnswers] = useState<Record<string, boolean>>({});
 	const ref = useRef<HTMLFormElement>(null);
 	const method = text(frame.method);
 	const id = text(frame.id);
@@ -50,6 +51,7 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 		<form
 			className="dlg"
 			ref={ref}
+			onChange={() => setError("")}
 			onKeyDown={event => {
 				if (event.key === "Escape") {
 					event.preventDefault();
@@ -64,11 +66,21 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 						client.answer({
 							type: "extension_ui_response",
 							id,
-							answers: questions.map(question => ({
-								id: text(question.id),
-								selectedOptions: data.getAll(text(question.id)).map(String),
-								customInput: String(data.get(`${question.id}-custom`) ?? ""),
-							})),
+							answers: questions.map(question => {
+								const questionId = text(question.id);
+								const isCustom = question.multi || customAnswers[questionId];
+								const customInput = isCustom ? String(data.get(`${questionId}-custom`) ?? "").trim() : "";
+								if (!question.multi && isCustom && !customInput) {
+									const input = event.currentTarget.elements.namedItem(`${questionId}-custom`);
+									if (input instanceof HTMLElement) input.focus();
+									throw new Error("Enter a custom answer or choose a listed option");
+								}
+								return {
+									id: questionId,
+									selectedOptions: !question.multi && isCustom ? [] : data.getAll(questionId).map(String),
+									customInput,
+								};
+							}),
 						});
 					else if (method === "confirm") client.answer({ type: "extension_ui_response", id, confirmed: true });
 					else client.answer({ type: "extension_ui_response", id, value: String(data.get("value") ?? "") });
@@ -104,6 +116,9 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 												name={text(question.id)}
 												value={text(option.label)}
 												defaultChecked={question.recommended === i}
+												onChange={() =>
+													setCustomAnswers(previous => ({ ...previous, [text(question.id)]: false }))
+												}
 											/>
 											<span className="lab">
 												{text(option.label)}
@@ -115,10 +130,29 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 											{Boolean(option.preview) && <pre className="desc">{text(option.preview)}</pre>}
 										</label>
 									))}
+									{!question.multi && (
+										<label className="opt">
+											<input
+												type="radio"
+												name={text(question.id)}
+												value=""
+												onChange={() =>
+													setCustomAnswers(previous => ({ ...previous, [text(question.id)]: true }))
+												}
+											/>
+											<span className="lab">Custom answer</span>
+										</label>
+									)}
 								</div>
 								<label className="field">
-									Note to the agent
-									<input name={`${question.id}-custom`} />
+									{question.multi ? "Additional answer" : "Your custom answer"}
+									<input
+										name={`${question.id}-custom`}
+										disabled={!question.multi && !customAnswers[text(question.id)]}
+										required={!question.multi && customAnswers[text(question.id)]}
+										aria-invalid={Boolean(error)}
+										aria-describedby={error ? `${id}-answer-error` : undefined}
+									/>
 								</label>
 							</fieldset>
 						))}
@@ -152,7 +186,7 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 					)}
 				</div>
 				{error && (
-					<p role="alert" className="composer-note err">
+					<p role="alert" id={`${id}-answer-error`} className="composer-note err">
 						{error}
 					</p>
 				)}

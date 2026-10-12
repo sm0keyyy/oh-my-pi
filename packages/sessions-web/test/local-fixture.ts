@@ -7,7 +7,8 @@ import { startGateway } from "../../sessions-gateway/src/server";
 import { createAccessFixture } from "../../sessions-gateway/test/access-fixture";
 
 const root = path.resolve(import.meta.dir, "../../..");
-const config = path.join(root, ".sessions-d-test-config");
+const widthFixture = process.env.SESSIONS_WIDTH_FIXTURE === "1";
+const config = path.join(root, widthFixture ? ".sessions-width-test-config" : ".sessions-d-test-config");
 await fs.mkdir(config, { recursive: false, mode: 0o700 });
 const evidence = path.join(root, "packages/sessions-web/evidence");
 await fs.mkdir(path.join(evidence, "screenshots"), { recursive: true });
@@ -20,6 +21,20 @@ await Bun.write(
 const owned = new Map<string, Bun.Subprocess>();
 const sockets = new Set<Bun.ServerWebSocket<{ upstream: WebSocket; queued: string[] }>>();
 const receipts: unknown[] = [];
+const wideLine = Array.from({ length: 100 }, (_, i) => i.toString(36).padStart(3, "x")).join("");
+const widthTranscript = [
+	`Path: /${wideLine}`,
+	`Inline path: \`/${wideLine}\``,
+	`# ${wideLine}`,
+	`- ${wideLine}`,
+	["```text", wideLine, wideLine, "```"].join("\n"),
+	[
+		"| " + Array.from({ length: 12 }, (_, i) => `Column ${i}`).join(" | ") + " |",
+		"| " + Array.from({ length: 12 }, () => "---").join(" | ") + " |",
+		"| " + Array.from({ length: 12 }, () => wideLine).join(" | ") + " |",
+	].join("\n"),
+	"    " + wideLine,
+].join("\n\n");
 const provider = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -29,7 +44,7 @@ const provider = Bun.serve({
 			return Response.json({ object: "list", data: [{ id: "gpt-4.1" }, { id: "gpt-4.1-2" }] });
 		if (!url.pathname.endsWith("/chat/completions")) return new Response("not found", { status: 404 });
 		const body = (await request.json()) as {
-			messages: Array<{ role: string; content: unknown }>;
+			messages: Array<{ role: string; content: unknown; tool_calls?: Array<{ function: { name: string } }> }>;
 			tools?: Array<{ function: { name: string } }>;
 			stream?: boolean;
 		};
@@ -42,22 +57,40 @@ const provider = Bun.serve({
 					: "";
 		const slow = content.includes("[slow]");
 		const tools = body.tools?.map(tool => tool.function.name) ?? [];
+		const widthTool =
+			widthFixture &&
+			last?.role === "tool" &&
+			content.includes(wideLine) &&
+			!body.messages.some(message => message.tool_calls?.some(call => call.function.name === "ast_edit"))
+				? {
+						name: "ast_edit",
+						args: {
+							paths: [path.join(config, "wide.ts")],
+							ops: [{ pat: "console.log($VALUE)", out: `console.warn("${wideLine}")` }],
+						},
+					}
+				: widthFixture &&
+					  body.messages.some(message => message.tool_calls?.some(call => call.function.name === "ast_edit")) &&
+					  !body.messages.some(message => message.tool_calls?.some(call => call.function.name === "write"))
+					? { name: "write", args: { path: "xd://resolve", content: "Apply isolated width fixture rewrites." } }
+					: undefined;
 		const tool =
 			last?.role === "user" && content.includes("[tool]") && tools.includes("read")
 				? { name: "read", args: { path: path.join(config, "sample.txt") } }
-				: last?.role === "user" && content.includes("[agent]") && tools.includes("task")
-					? {
-							name: "task",
-							args: {
-								name: "BrowserAgent",
-								agent: "task",
-								task: "[slow] Local browser acceptance. Reply with local text.",
-								solutionSpace: "Only the local fixture.",
-								model: "fake/gpt-4.1",
-								tools: [],
-							},
-						}
-					: undefined;
+				: (widthTool ??
+					(last?.role === "user" && content.includes("[agent]") && tools.includes("task")
+						? {
+								name: "task",
+								args: {
+									name: "BrowserAgent",
+									agent: "task",
+									task: "[slow] Local browser acceptance. Reply with local text.",
+									solutionSpace: "Only the local fixture.",
+									model: "fake/gpt-4.1",
+									tools: [],
+								},
+							}
+						: undefined));
 		const reply = tool
 			? {
 					role: "assistant",
@@ -72,8 +105,11 @@ const provider = Bun.serve({
 				}
 			: {
 					role: "assistant",
-					content:
-						last?.role === "tool" ? `Tool result received: ${content}` : `Local answer: ${content || "summary"}`,
+					content: widthFixture
+						? widthTranscript
+						: last?.role === "tool"
+							? `Tool result received: ${content}`
+							: `Local answer: ${content || "summary"}`,
 				};
 		const usage = { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 };
 		if (!body.stream)
@@ -120,7 +156,17 @@ const provider = Bun.serve({
 		return new Response(stream, { headers: { "content-type": "text/event-stream" } });
 	},
 });
-await Bun.write(path.join(config, "sample.txt"), "Local tool-render acceptance.\n");
+await Bun.write(
+	path.join(config, "sample.txt"),
+	widthFixture
+		? Array.from({ length: 25 }, (_, i) => `${i}: ${wideLine}`).join("\n")
+		: "Local tool-render acceptance.\n",
+);
+if (widthFixture)
+	await Bun.write(
+		path.join(config, "wide.ts"),
+		Array.from({ length: 60 }, () => `console.log("${wideLine}");`).join("\n"),
+	);
 await Bun.write(
 	path.join(config, "sample.png"),
 	Buffer.from(
@@ -163,7 +209,7 @@ const proxy = Bun.serve<{ upstream: WebSocket; queued: string[] }>({
 				return new Response("invalid or already running", { status: 409 });
 			const cwd = path.join(config, "workspaces", name);
 			await fs.mkdir(cwd, { recursive: true });
-			const writer = Bun.file(path.join(evidence, `${name}-tui.log`)).writer();
+			const writer = Bun.file(path.join(evidence, `${widthFixture ? "mobile-width-" : ""}${name}-tui.log`)).writer();
 			const child = Bun.spawn(
 				[
 					process.execPath,
@@ -291,7 +337,10 @@ const stop = async () => {
 			}
 		}),
 	);
-	await Bun.write(path.join(evidence, "rpc-receipts.json"), JSON.stringify(receipts, null, 2));
+	await Bun.write(
+		path.join(evidence, widthFixture ? "mobile-width-rpc-receipts.json" : "rpc-receipts.json"),
+		JSON.stringify(receipts, null, 2),
+	);
 	proxy.stop(true);
 	bridge.stop();
 	gateway.stop();

@@ -99,11 +99,11 @@
 html {
 	height: 100%;
 	-webkit-text-size-adjust: 100%;
-	overflow-x: clip;
 }
 body {
 	min-height: 100%;
 	font: 400 13.5px/1.5 var(--font-ui);
+	overflow-wrap: anywhere;
 	background: var(--bg);
 	color: var(--fg);
 	-webkit-font-smoothing: antialiased;
@@ -141,8 +141,10 @@ kbd,
 	font-size: var(--mono-size);
 }
 pre {
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
+	max-width: 100%;
+	white-space: pre;
+	overflow-wrap: normal;
+	overflow-x: auto;
 }
 :focus-visible {
 	outline: 2px solid var(--ring);
@@ -583,6 +585,7 @@ a.btn {
 .body {
 	flex: 1;
 	min-height: 0;
+	min-width: 0;
 	display: flex;
 }
 .main {
@@ -594,6 +597,7 @@ a.btn {
 .scroll {
 	flex: 1;
 	min-height: 0;
+	min-width: 0;
 	overflow-y: auto;
 }
 .transcript {
@@ -697,7 +701,7 @@ a.btn {
 }
 .agent {
 	display: grid;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: auto minmax(0, 1fr);
 	gap: 2px var(--s2);
 	padding: var(--s2) 0;
 	border-top: 1px solid var(--border);
@@ -727,7 +731,7 @@ a.btn {
 }
 .kv {
 	display: grid;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: auto minmax(0, 1fr);
 	gap: 3px var(--s3);
 	font-size: 12.5px;
 }
@@ -756,7 +760,7 @@ a.btn {
 /* entries */
 .entry {
 	display: grid;
-	grid-template-columns: 56px 1fr;
+	grid-template-columns: 56px minmax(0, 1fr);
 	gap: var(--s3);
 	min-width: 0;
 }
@@ -1200,7 +1204,7 @@ a.btn {
 }
 .opt {
 	display: grid;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: auto minmax(0, 1fr);
 	gap: 2px var(--s2);
 	align-items: start;
 	padding: var(--s2) var(--s3);
@@ -1480,7 +1484,7 @@ a.btn {
 		z-index: calc(var(--z-sheet) - 1);
 	}
 	.entry {
-		grid-template-columns: 1fr;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 2px;
 	}
 	.entry-who {
@@ -1621,6 +1625,8 @@ a.btn {
 	display: block;
 	overflow: auto;
 	border-collapse: collapse;
+	white-space: nowrap;
+	overflow-wrap: normal;
 }
 .tr-md th,
 .tr-md td {
@@ -1634,8 +1640,14 @@ a.btn {
 .result-view {
 	max-height: 40dvh;
 	overflow: auto;
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
+	white-space: pre;
+	overflow-wrap: normal;
+}
+.app .tv-pre,
+.app .tv-partial {
+	white-space: pre;
+	overflow-wrap: normal;
+	overflow-x: auto;
 }
 .queue ol {
 	max-height: 20dvh;

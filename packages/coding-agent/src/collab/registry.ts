@@ -355,7 +355,6 @@ function handleConnection(
 	}, onClose);
 }
 
-
 /**
  * Unix files an endpoint leaves on disk: the socket and the native listener's
  * `<socket>.bind.lock`. Endpoint names are unique per publication, so no other

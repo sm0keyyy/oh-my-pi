@@ -6,6 +6,7 @@
 	"exports": {
 		".": "./src/tool-render/index.ts",
 		"./element": "./src/tool-render/element.tsx",
+		"./standalone": "./src/tool-render/standalone.tsx",
 		"./Markdown": "./src/Markdown.tsx",
 		"./escape": "./src/escape.ts"
 	},

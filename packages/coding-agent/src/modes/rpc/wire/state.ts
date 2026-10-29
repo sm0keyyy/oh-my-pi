@@ -17,7 +17,7 @@ export const stateDefs = {
 	CacheWarmingMode: "'off' | 'streaming' | 'idle'",
 	MessageUpdates: doc(
 		"'full' | 'delta'",
-		"`set_event_filter` projection: `delta` drops the accumulated snapshots from `message_update`.",
+		"`set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches.",
 	),
 	TodoStatus: "'pending' | 'in_progress' | 'completed' | 'abandoned' | 'blocked'",
 	GoalOp: "'get' | 'create' | 'resume' | 'pause' | 'drop'",
@@ -229,6 +229,14 @@ export const stateDefs = {
 	),
 	BranchMessage: { entryId: "string", text: "string" },
 	BranchResult: { text: "string", cancelled: "boolean" },
+	NavigateTreeResult: {
+		cancelled: "boolean",
+		"aborted?": doc("boolean", "Only ever `true`: `abort_branch_summary` stopped the summary; nothing moved."),
+		"editorText?": doc(
+			"string",
+			"The target was a user message: its text, for the editor; the leaf moved to its parent.",
+		),
+	},
 	TokenUsage: {
 		input: "number.integer",
 		output: "number.integer",
@@ -251,6 +259,7 @@ export const stateDefs = {
 		cost: "number",
 		"credits?": "SessionCredits",
 		"routedModels?": "Record<string, number>",
+		"editRejections?": doc("Record<string, number>", "Failed edits by the engine's `errorKind`."),
 		"contextUsage?": "ContextUsage",
 	},
 	MessagesPage: {
@@ -305,6 +314,7 @@ export const stateDefs = {
 	BtwHistoryTurn: doc(
 		{
 			question: "string",
+			"images?": doc("ImageContent[]", "Images attached to the question."),
 			answer: "string",
 			status: "BtwStatus",
 			createdAt: "number.integer",
@@ -316,6 +326,7 @@ export const stateDefs = {
 	BtwHistoryRecord: doc(
 		{
 			question: "string",
+			"images?": doc("ImageContent[]", "Images attached to the question."),
 			answer: "string",
 			status: "BtwStatus",
 			createdAt: "number.integer",

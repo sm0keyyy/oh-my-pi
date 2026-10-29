@@ -31,7 +31,8 @@ The room key never leaves the URL fragment — it is not sent to the relay or an
 
 - `src/lib/` — vendored wire codec (`codec.ts` AES-256-GCM, `link.ts` envelope + link grammar), `socket.ts` reconnecting relay socket, `client.ts` guest session store (`GuestClient` + immutable snapshots for `useSyncExternalStore`). Shared protocol shapes come from `@oh-my-pi/pi-wire`.
 - `src/components/` — `transcript/` (entries, markdown, tool cards), `agents/` (panel + transcript drawer), `shell/` (connect screen, header, composer, banners, toasts).
-- `@oh-my-pi/web-render` — neutral React tool renderers and Markdown shared with sessions-web and coding-agent HTML exports. `ToolRenderHost` connects agent-id chips to each host's sub-session view.
-- `scripts/` — local relay and offline fixtures. `build-tool-views.ts` bundles the neutral renderers and React into coding-agent's self-contained HTML exports.
+- `@oh-my-pi/web-render` — neutral React tool renderers and Markdown shared with sessions-web and coding-agent HTML exports: one view per built-in tool, common `ToolView` chrome, theme-adaptive `tv-` design tokens, and an `<omp-tool-view>` web-component wrapper. `ToolRenderHost` connects agent-id chips to each host's sub-session view (drawer here, sidebar navigation in exports).
+- `src/trace-render/` — shadow-scoped `<omp-session-trace>` viewer shared with stats, bundled into HTML exports.
+- `scripts/` — `local-relay.ts` (content-blind relay on `Bun.serve`), `mock-host.ts` + `fixture.ts` (scripted host for offline dev), `build-export-viewer.ts` (bundles the tool/trace renderers, React, export shell and styles into a content-addressed JS file under `packages/coding-agent/export-assets/`; release CI publishes it to `build.stencil.so`).
 
 The package is intentionally standalone — no dependency on `@oh-my-pi/pi-coding-agent` at runtime or type level. Wire-shape drift is prevented by consuming the same `@oh-my-pi/pi-wire` contracts as the host, with sealed-frame interop still covered by `test/codec.test.ts`.

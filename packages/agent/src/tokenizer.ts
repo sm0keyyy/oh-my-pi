@@ -1,6 +1,12 @@
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { renderDemotedThinking } from "@oh-my-pi/pi-ai/dialect/demotion";
+import { ollamaChatDropsOwnThinking } from "@oh-my-pi/pi-ai/providers/ollama";
+import { completionsDropsOwnThinking, isLiteLLMThinkingSignature } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { isColdReplayableResponsesTurn } from "@oh-my-pi/pi-ai/providers/openai-shared";
-import { shouldDropTruncatedThinkingOnlyAssistant } from "@oh-my-pi/pi-ai/providers/transform-messages";
+import {
+	isSameModelTurn,
+	shouldDropTruncatedThinkingOnlyAssistant,
+} from "@oh-my-pi/pi-ai/providers/transform-messages";
 import {
 	getOpenAIResponsesHistoryItems,
 	sanitizeOpenAIResponsesAssistantHistoryItemsForReplay,
@@ -36,7 +42,7 @@ export function tokenizerEncodingForModel(model: Pick<Model, "tokenizer"> | null
 }
 
 type TokenizerModel = Pick<Model, "tokenizer"> &
-	snapcompact.ShapeTarget & { compat?: Model["compat"]; thinking?: Model["thinking"] };
+	snapcompact.ShapeTarget & { compat?: Model["compat"]; thinking?: Model["thinking"]; reasoning?: boolean };
 
 /** The model an assistant turn's native reasoning (signed thinking, Responses history) is replayed to. */
 interface ReasoningReplayReader {
@@ -207,6 +213,8 @@ export class Tokenizer {
 	readonly #frameBilling: snapcompact.FrameBilling;
 	readonly frameBillingKey: string;
 	readonly #reasoningReader: ReasoningReplayReader | undefined;
+	readonly #dropsOllamaThinking: boolean;
+	readonly #dropsCompletionsThinking: boolean;
 	/** Claude's own API and prefix-bound hosts keep another model's signature from their deployment. */
 	readonly #readsDeploymentSignatures: boolean;
 	readonly reasoningReplayKey: string;
@@ -244,6 +252,8 @@ export class Tokenizer {
 		this.#frameBilling = snapcompact.frameBilling(model ?? undefined);
 		this.frameBillingKey = snapcompact.frameBillingKey(this.#frameBilling);
 		this.#reasoningReader = reasoningReplayReader(model);
+		this.#dropsOllamaThinking = ollamaChatDropsOwnThinking(model);
+		this.#dropsCompletionsThinking = completionsDropsOwnThinking(model);
 		const compat = model?.compat;
 		this.#readsDeploymentSignatures =
 			model?.api === "anthropic-messages" &&
@@ -415,6 +425,11 @@ export class Tokenizer {
 				// reaches the wire then (the payload items replay instead); a turn whose
 				// backend reported no reasoning tokens keeps the signature as its price.
 				const replayedReasoning = this.#replayedReasoningTokens(message);
+				const ollamaReader = this.#reasoningReader?.api === "ollama-chat" ? this.#reasoningReader : undefined;
+				const ownOllamaTurn = ollamaReader !== undefined && isSameModelTurn(message, ollamaReader);
+				const completionsReader = this.#dropsCompletionsThinking ? this.#reasoningReader : undefined;
+				const ownDroppedCompletionsTurn =
+					completionsReader !== undefined && isSameModelTurn(message, completionsReader);
 				if (typeof replayedReasoning === "number") extra += replayedReasoning;
 				const signaturesPriced = this.thinkingReplayTokens === "signature";
 				// The replay's signature rule (`transformMessages`): an aborted or
@@ -441,6 +456,15 @@ export class Tokenizer {
 					if (block.type === "text") {
 						fragments.push(block.text);
 					} else if (block.type === "thinking") {
+						// `transformMessages` drops another model's empty thinking and demotes the
+						// rest to visible text; only the reader's own thinking stays native.
+						if (ollamaReader && !ownOllamaTurn) {
+							if (block.thinking.trim()) fragments.push(renderDemotedThinking(ollamaReader.id, block.thinking));
+							continue;
+						}
+						if (this.#dropsOllamaThinking && ownOllamaTurn) continue;
+						// Chat-completions drops it unless LiteLLM replays it in `thinking_blocks`.
+						if (ownDroppedCompletionsTurn && !isLiteLLMThinkingSignature(block.thinkingSignature)) continue;
 						fragments.push(block.thinking);
 						// Providers charge for the opaque signature/reasoning payload that
 						// rides alongside the thinking text (OpenAI Responses encrypted
@@ -561,6 +585,8 @@ export class Tokenizer {
 			snapcompact.frameBillingKey(snapcompact.frameBilling(model ?? undefined)) === this.frameBillingKey &&
 			reasoningReplayKey(model) === this.reasoningReplayKey &&
 			resolveThinkingReplayTokens(model ?? {}) === this.thinkingReplayTokens &&
+			ollamaChatDropsOwnThinking(model) === this.#dropsOllamaThinking &&
+			completionsDropsOwnThinking(model) === this.#dropsCompletionsThinking &&
 			(options?.nativeHistoryReplay ?? true) === this.nativeHistoryReplay
 		);
 	}

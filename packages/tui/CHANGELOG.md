@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reduced repeated rendering work for long streamed paragraphs and open code blocks.
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

@@ -1361,13 +1361,34 @@ function fastTailSeamSafe(raw: string): boolean {
 	if (raw.lastIndexOf("(") > raw.lastIndexOf(")") || raw.lastIndexOf("<") > raw.lastIndexOf(">")) return false;
 	return true;
 }
+
+// A longer raw line is retained only while it has no pairing/block markers.
+// Its last word must fit here; otherwise a URL could start outside the seam.
+const FAST_SEAM_LENGTH = 128;
+const FAST_LONG_LINE_MARKER_RE = /[\r\n\\[`<!*_~$#&@\x1b\]()>|]/;
+
+function boundedFastTailRaw(raw: string, complete = true): string | undefined {
+	if (raw.length <= FAST_SEAM_LENGTH) return raw;
+	if (complete && (FAST_LONG_LINE_MARKER_RE.test(raw) || fastLineStartHazard(raw))) return undefined;
+	const tail = raw.slice(-FAST_SEAM_LENGTH);
+	if (!/\s/.test(tail)) return undefined;
+	return tail;
+}
+
+function fastTailRowInput(text: string, raw: string): string {
+	const spaces = / +$/.exec(raw)?.[0];
+	// Wrapping can trim source spaces off the last row. Keep them in the
+	// next wrap's input, not its published output, so word separators survive.
+	return spaces && !text.includes("\x1b") ? text.replace(/ +$/, "") + spaces : text;
+}
 // Fast-tail (B+) recipe: captured frame state for the next inert-delta splice.
 interface FastTailRecipe {
 	readonly lines: readonly string[]; // frame rows at capture
 	readonly source: string; // raw #text at capture (append-only predicate)
 	readonly width: number; // contentWidth at capture
-	rowText: string; // RENDERED last wrap-output row (re-wrap input)
-	rowRaw: string; // RAW tail source backing that row (seam scan)
+	rowText: string; // Last row's re-wrap input, including source spaces.
+	rowRaw: string; // Bounded raw seam, or the complete last source line.
+	rowRawComplete: boolean; // False only after a marker-free line exceeds the seam window.
 	rowStart: number; // result[] index of the replaced row
 	rowEnd: number; // exclusive result[] index
 	readonly signature: RenderSignature; // full render signature at capture (bgColor etc.)
@@ -2319,6 +2340,25 @@ interface StreamingHighlightCache extends RenderSignature {
 	stream: HighlightStreamSession;
 }
 
+interface StreamingFenceRender {
+	bodyStart: number;
+	lineStart: number;
+	skipOpening: boolean;
+	settledLines: number;
+	settledRows: number;
+}
+
+// Only completed body rows and the opening border survive between frames.
+// The unfinished last line and the fabricated closing border always render fresh.
+interface StreamingFenceRowsCache {
+	signature: RenderSignature;
+	tokenStart: number;
+	raw: string;
+	bodyEnd: number;
+	lineCount: number;
+	lines: string[];
+}
+
 /**
  * Split a highlight-stream push result (newline-terminated lines) into
  * per-line strings, dropping the empty tail produced by the final newline.
@@ -2427,6 +2467,7 @@ export class Markdown implements Component {
 	// only the trailing partial line stays unhighlighted.
 	#renderingStablePrefix = false;
 	#streamingHighlightCache?: StreamingHighlightCache;
+	#streamingFenceRows?: StreamingFenceRowsCache;
 	#activeRenderSignature?: RenderSignature;
 	#fastTail?: FastTailRecipe; // undefined = disarmed
 	// B+ capture plumbing: #renderContentLines records the last rendered paragraph row.
@@ -2491,9 +2532,11 @@ export class Markdown implements Component {
 			const pending = (memoized ?? "") + text.slice(this.#text.length);
 			const normalized = normalizeOsc8Terminators(pending);
 			if (normalized !== pending) {
-				// A stored byte was rewritten (ST → BEL on a crossing match): the
-				// stream-prefix lex caches self-invalidate via startsWith guards
-				// against #text, so nothing else needs clearing.
+				// A crossing OSC rewrite changes stored bytes, not just the delta.
+				this.#appendOnlySinceLastScan = false;
+				this.#dropStreamPrefix();
+				this.#fastTail = undefined;
+				this.#streamingFenceRows = undefined;
 				text = this.#text.slice(0, this.#text.length - (memoized?.length ?? 0)) + normalized;
 			}
 			this.#oscPartialEscape = trailingOsc8Partial(normalized);
@@ -2518,6 +2561,8 @@ export class Markdown implements Component {
 			// while that line starts a block of its own.
 			this.#appendOnlySinceLastScan = false;
 			this.#dropStreamPrefix();
+			this.#fastTail = undefined;
+			this.#streamingFenceRows = undefined;
 			this.#streamRewound = undefined;
 		}
 		this.#text = text;
@@ -2545,6 +2590,7 @@ export class Markdown implements Component {
 		this.invalidate();
 		this.#dropStreamPrefix();
 		this.#streamingHighlightCache = undefined;
+		this.#streamingFenceRows = undefined;
 		this.#fastTail = undefined;
 		this.#lastTailCapture = undefined;
 	}
@@ -2634,6 +2680,7 @@ export class Markdown implements Component {
 			this.#tailRowCache = undefined;
 			this.#listItemRowsCache = undefined;
 			this.#streamingHighlightCache = undefined;
+			this.#streamingFenceRows = undefined;
 			this.#streamingListCache = undefined;
 			this.#streamRewound = undefined;
 			this.#streamFenceSettledText = undefined;
@@ -3036,8 +3083,7 @@ export class Markdown implements Component {
 			this.transientRenderCache &&
 			this.#fastTail !== undefined &&
 			contentWidth === this.#fastTail.width &&
-			this.#text.length > this.#fastTail.source.length &&
-			this.#text.startsWith(this.#fastTail.source)
+			this.#text.length > this.#fastTail.source.length
 		) {
 			// Re-probe signature (pure) and require equality — a bgColor/theme
 			// change (width-constant) must not splice rows of the stale recipe.
@@ -3047,8 +3093,17 @@ export class Markdown implements Component {
 			} else {
 				const delta = this.#text.slice(recipe.source.length);
 				const deltaTabs = replaceTabs(delta);
+				const grownRaw = recipe.rowRaw + deltaTabs;
+				const nextRaw = boundedFastTailRaw(grownRaw, recipe.rowRawComplete);
 				// Seam window contains the delta, so one URL/email scan catches both.
-				const seamSafe = fastTailSeamSafe(recipe.rowRaw);
+				// Spaces preserved in the rendered row are safe to re-wrap. A
+				// wrap-trimmed suffix still falls back so no separator is lost.
+				const trailingSpaces = / +$/.exec(recipe.rowRaw)?.[0];
+				const seamSafe = fastTailSeamSafe(
+					trailingSpaces && recipe.rowText.endsWith(trailingSpaces)
+						? recipe.rowRaw.slice(0, -trailingSpaces.length)
+						: recipe.rowRaw,
+				);
 				const seamWindow =
 					recipe.rowRaw.slice(Math.max(recipe.rowRaw.lastIndexOf(" "), recipe.rowRaw.lastIndexOf("\t")) + 1) +
 					deltaTabs;
@@ -3069,7 +3124,7 @@ export class Markdown implements Component {
 				// splice keeps it. A row ending `$` (closed inline math) followed
 				// by a digit is invalidated by the anti-currency rule ($x$123 is
 				// literal, not math) — disarm.
-				const grownLastLine = recipe.rowRaw.slice(recipe.rowRaw.lastIndexOf("\n") + 1) + deltaTabs;
+				const grownLastLine = grownLine;
 				const trailingDelimiterSeamHazard =
 					(markerDelta &&
 						(deltaTabs.startsWith("_") || deltaTabs.endsWith("_")) &&
@@ -3093,6 +3148,8 @@ export class Markdown implements Component {
 						(deltaTabs.startsWith("[") && recipe.rowRaw.endsWith("!")));
 				const deltaTokens = markerDelta && !hardDelta ? lexInlineTokens(deltaTabs) : null;
 				if (
+					nextRaw !== undefined &&
+					(recipe.rowRawComplete || !markerDelta) &&
 					seamSafe &&
 					!lineStartHazard &&
 					!hardDelta &&
@@ -3148,8 +3205,9 @@ export class Markdown implements Component {
 						lines: fastResult,
 						source: this.#text,
 						width: recipe.width,
-						rowText: wrapped[wrapped.length - 1] ?? "",
-						rowRaw: recipe.rowRaw + deltaTabs,
+						rowText: fastTailRowInput(wrapped[wrapped.length - 1] ?? "", nextRaw),
+						rowRaw: nextRaw,
+						rowRawComplete: recipe.rowRawComplete && grownRaw.length <= FAST_SEAM_LENGTH,
 						rowStart: recipe.rowStart + wrapped.length - 1,
 						rowEnd: recipe.rowStart + wrapped.length,
 						signature: recipe.signature,
@@ -3261,12 +3319,18 @@ export class Markdown implements Component {
 			!this.#defaultTextStyle?.underline;
 		if (fastEligible && this.#lastTailCapture !== undefined) {
 			const capture = this.#lastTailCapture;
+			const rowRaw = boundedFastTailRaw(capture.rowRaw);
+			if (rowRaw === undefined) {
+				this.#fastTail = undefined;
+				return result;
+			}
 			this.#fastTail = {
 				lines: result,
 				source: this.#text,
 				width: contentWidth,
-				rowText: capture.rowInput,
-				rowRaw: capture.rowRaw,
+				rowText: fastTailRowInput(capture.rowInput, rowRaw),
+				rowRaw,
+				rowRawComplete: capture.rowRaw.length <= FAST_SEAM_LENGTH,
 				rowStart: signature.paddingY + contentLines.length - 1,
 				rowEnd: signature.paddingY + contentLines.length,
 				signature,
@@ -3401,6 +3465,8 @@ export class Markdown implements Component {
 	 * recorded again, so the cache trails the stream by one token.
 	 */
 	#renderStreamingTail(tokens: Token[], start: number, contentWidth: number, signature: RenderSignature): string[] {
+		const fence = this.#renderStreamingFence(tokens, start, contentWidth, signature);
+		if (fence !== undefined) return fence;
 		const out: string[] = [];
 		let spliceEnd = start;
 		const cache = this.#tailRowCache;
@@ -3460,6 +3526,56 @@ export class Markdown implements Component {
 		return result;
 	}
 
+	#renderStreamingFence(
+		tokens: Token[],
+		start: number,
+		contentWidth: number,
+		signature: RenderSignature,
+	): string[] | undefined {
+		const token = tokens[start];
+		if (
+			start !== tokens.length - 1 ||
+			token?.type !== "code" ||
+			token.lang === "mermaid" ||
+			!/^(`{3,}|~{3,})[^\n]*\n/.test(token.raw) ||
+			this.#codeTokenHasClosingFence(token)
+		) {
+			this.#streamingFenceRows = undefined;
+			return undefined;
+		}
+		const previous = this.#streamingFenceRows;
+		const cache =
+			previous &&
+			previous.tokenStart === start &&
+			this.#signatureEquals(previous.signature, signature) &&
+			token.raw.startsWith(previous.raw)
+				? previous
+				: undefined;
+		const bodyStart = cache?.bodyEnd ?? 0;
+		const bodyEnd = token.text.lastIndexOf("\n") + 1;
+		const settledLines = token.text.slice(bodyStart, bodyEnd).split("\n").length - 1;
+		const resume: StreamingFenceRender = {
+			bodyStart,
+			lineStart: cache?.lineCount ?? 0,
+			skipOpening: cache !== undefined,
+			settledLines: settledLines + (cache === undefined ? 1 : 0),
+			settledRows: 0,
+		};
+		const fresh = this.#renderContentLines(tokens, start, tokens.length, contentWidth, signature, undefined, resume);
+		const result = cache ? cache.lines.concat(fresh) : fresh;
+		const lines = cache?.lines ?? [];
+		for (let i = 0; i < resume.settledRows; i++) lines.push(fresh[i]!);
+		this.#streamingFenceRows = {
+			signature,
+			tokenStart: start,
+			raw: token.raw,
+			bodyEnd,
+			lineCount: resume.lineStart + settledLines,
+			lines,
+		};
+		return result;
+	}
+
 	// Longest cache-spliceable prefix: every cached row from `start` up to
 	// (but not including) the returned index is byte-identical to a fresh
 	// render of the same token. Stops at the first uncacheable token (rows
@@ -3498,6 +3614,7 @@ export class Markdown implements Component {
 		contentWidth: number,
 		signature: RenderSignature,
 		tailRecorder?: TailRenderRecorder,
+		fence?: StreamingFenceRender,
 	): string[] {
 		// A non-capturing final call must not serve a stale recipe, so the
 		// B+ plumbing is cleared up front; the per-token capture re-fills it.
@@ -3514,8 +3631,19 @@ export class Markdown implements Component {
 			// identical links on neighbouring rows draw distinct markers that every render repeats.
 			this.#extensionLinkBlock = i;
 			this.#extensionLinkOrdinal = 0;
-			const renderedTokenLines = this.#renderToken(token, contentWidth, nextToken?.type);
-			for (const renderedRow of renderedTokenLines) {
+			const renderedTokenLines =
+				fence && token.type === "code"
+					? [
+							...(fence.skipOpening
+								? []
+								: [renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`))]),
+							...this.#renderCodeBodyLines(token, padding(this.#codeBlockIndent), fence),
+							renderedLine(this.#theme.codeBlockBorder("```")),
+						]
+					: this.#renderToken(token, contentWidth, nextToken?.type);
+			for (let row = 0; row < renderedTokenLines.length; row++) {
+				if (fence && row === fence.settledLines) fence.settledRows = wrappedLines.length;
+				const renderedRow = renderedTokenLines[row]!;
 				// Lists wrap while their structural prefixes are still available, so
 				// continuation rows retain the correct hanging indent. Re-wrapping the
 				// flattened rows here would discard that structure.
@@ -3641,7 +3769,7 @@ export class Markdown implements Component {
 		return contentLines;
 	}
 
-	#renderCodeBodyLines(token: Token, codeIndent: string): RenderedLine[] {
+	#renderCodeBodyLines(token: Token, codeIndent: string, fence?: StreamingFenceRender): RenderedLine[] {
 		const literalCode = this.#codeBlockIndent === 0;
 		const bodyLines: RenderedLine[] = [];
 		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
@@ -3652,7 +3780,7 @@ export class Markdown implements Component {
 		};
 
 		const streaming = this.transientRenderCache && !this.#renderingStablePrefix;
-		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
+		if (this.#theme.highlightCode && (!streaming || (!fence && this.#codeTokenHasClosingFence(token)))) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
 			// uses so cached stable rows byte-match it.
@@ -3670,8 +3798,8 @@ export class Markdown implements Component {
 			const lineEnd = tokenText.lastIndexOf("\n");
 			const completedLines = lineEnd >= 0 ? this.#highlightStreamingLines(tokenText, lineEnd, lang) : null;
 			if (completedLines) {
-				for (const hlLine of completedLines) {
-					addBodyLine(hlLine);
+				for (let i = fence?.lineStart ?? 0; i < completedLines.length; i++) {
+					addBodyLine(completedLines[i]!);
 				}
 				for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
 					addBodyLine(this.#theme.codeBlock(codeLine));
@@ -3680,7 +3808,7 @@ export class Markdown implements Component {
 			}
 		}
 
-		for (const codeLine of tokenText.split("\n")) {
+		for (const codeLine of tokenText.slice(fence?.bodyStart ?? 0).split("\n")) {
 			addBodyLine(this.#theme.codeBlock(codeLine));
 		}
 		return bodyLines;

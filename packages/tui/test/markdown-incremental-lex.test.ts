@@ -126,6 +126,109 @@ const TABLE = (() => {
 })();
 
 describe("Markdown incremental streaming lex (E2)", () => {
+	const longLead = "A streamed paragraph keeps earlier wrapped rows unchanged. ".repeat(8);
+	const appendCases: Record<string, string[]> = {
+		"prose without newlines": Array(30).fill(
+			"The streamed reply keeps a short sentence so wrapping stays realistic. ",
+		),
+		"URL and email split after a long prefix": [
+			longLead,
+			"htt",
+			"ps:",
+			"//example.com/",
+			"guide ",
+			"user",
+			"@",
+			"example.com",
+		],
+		"emphasis and math split after a long prefix": [
+			longLead,
+			"*",
+			"whole span",
+			"* ",
+			"a_{3",
+			"} + b_{",
+			" x $",
+			"x$",
+			"123",
+		],
+		"CJK and emoji": [longLead, ...Array(12).fill("中文👩‍💻 e\u0301 "), "\ud83d", "\ude00", "完"],
+		"open fence growth": [
+			"Intro.\n\n```ts\n",
+			...Array(24).fill("const value = '中文👩‍💻';\n"),
+			"\n",
+			"partial",
+			"\n",
+			"``",
+			"`",
+			"\n\nTail.",
+		],
+	};
+	for (const [name, chunks] of Object.entries(appendCases)) {
+		it(`keeps ${name} byte-identical through append, rewind and resize`, () => {
+			for (const markdownTheme of [THEME, getMarkdownTheme()]) {
+				const streaming = new Markdown("", 0, 0, markdownTheme);
+				streaming.transientRenderCache = true;
+				let text = "";
+				let settled = "";
+				for (let i = 0; i < chunks.length; i++) {
+					text += chunks[i];
+					const width = i < chunks.length / 2 ? 80 : 37;
+					streaming.setText(text);
+					expect(streaming.render(width)).toEqual(renderColdTransient(text, width, markdownTheme));
+					const next = streaming.getLastRenderStableText();
+					expect(next.startsWith(settled)).toBe(true);
+					expect(text.startsWith(next)).toBe(true);
+					settled = next;
+					if (i === Math.floor(chunks.length / 2)) {
+						const rewind = text.slice(0, Math.floor(text.length / 2));
+						streaming.setText(rewind);
+						expect(streaming.render(width)).toEqual(renderColdTransient(rewind, width, markdownTheme));
+						streaming.setText(text);
+						expect(streaming.render(width)).toEqual(renderColdTransient(text, width, markdownTheme));
+					}
+				}
+				streaming.transientRenderCache = false;
+				clearRenderCache();
+				const cold = new Markdown(text, 0, 0, markdownTheme).render(37);
+				expect(streaming.render(37)).toEqual(cold);
+			}
+		});
+	}
+
+	it("does not reuse earlier rows after a longer replacement with the same append seam", () => {
+		const streaming = new Markdown("", 0, 0, THEME);
+		streaming.transientRenderCache = true;
+		const suffix = " shared unmodified prose".repeat(40);
+		for (const text of [
+			`Old heading.\n\nOld paragraph${suffix}`,
+			`Old heading.\n\nOld paragraph${suffix} more`,
+			`New heading.\n\nNew paragraph${suffix} more text`,
+		]) {
+			streaming.setText(text);
+			expect(streaming.render(60)).toEqual(renderColdTransient(text, 60));
+		}
+	});
+
+	it("reuses open-fence rows without retaining stale indentation, language or closing rows", () => {
+		for (const indent of [0, 2]) {
+			const streaming = new Markdown("", 1, 1, THEME, undefined, indent);
+			streaming.transientRenderCache = true;
+			for (const text of [
+				"~~~ts\nfirst\nsecond\n",
+				"~~~ts\nfirst\nsecond\nthird 中文👩‍💻\n",
+				"~~~ts\nfirst\nsecond\nthird 中文👩‍💻\n~~~\n\n",
+				"```diff\n+new\n-old\n",
+				"```diff\n+new\n-old\n context\n",
+			]) {
+				streaming.setText(text);
+				const cold = new Markdown(text, 1, 1, THEME, undefined, indent);
+				cold.transientRenderCache = true;
+				expect(streaming.render(22)).toEqual(cold.render(22));
+			}
+		}
+	});
+
 	it("tight list streaming tokenizes a bounded mutable suffix instead of every completed item", () => {
 		const document = Array.from(
 			{ length: 256 },

@@ -15,7 +15,15 @@ import { clearRenderCache, Markdown } from "../src/components/markdown";
 import { getMarkdownTheme, getMarkdownThemeWithLinkTargets, initTheme } from "../src/theme/theme";
 import { defaultMarkdownTheme } from "../test/test-themes";
 
-const WIDTH = 100;
+const appendKind = process.argv.find(argument => argument.startsWith("--append="))?.slice("--append=".length);
+if (appendKind !== undefined && appendKind !== "prose" && appendKind !== "fence") {
+	throw new RangeError("--append must be prose or fence");
+}
+const frames = Number(
+	process.argv.find(argument => argument.startsWith("--frames="))?.slice("--frames=".length) ?? 1000,
+);
+if (!Number.isInteger(frames) || frames < 1) throw new RangeError("--frames must be a positive integer");
+const WIDTH = appendKind === undefined ? 100 : 80;
 const deltaArgument = process.argv.find(argument => argument.startsWith("--delta="));
 const DELTA = deltaArgument === undefined ? 64 : Number(deltaArgument.slice("--delta=".length));
 if (!Number.isInteger(DELTA) || DELTA < 1) throw new RangeError("--delta must be a positive integer");
@@ -100,16 +108,45 @@ function coldOnce(text: string): number {
 	return (Bun.nanoseconds() - start) / 1e6;
 }
 
-console.log(`doc: ${DOC.length} chars, ${Math.ceil(DOC.length / DELTA)} streaming steps, width ${WIDTH}`);
-// Warmup (JIT + regex compilation)
-streamOnce(DOC.slice(0, 4096));
-
-if (!process.argv.includes("--stream-only")) {
-	const cold = coldOnce(DOC);
-	console.log(`cold full render: ${cold.toFixed(1)}ms`);
+function appendOnce(count: number, kind: string): number {
+	clearRenderCache();
+	const component = new Markdown("", 0, 0, theme);
+	component.transientRenderCache = true;
+	let text = kind === "fence" ? "```ts\n" : "";
+	const delta =
+		kind === "fence"
+			? "const value = 1;\n"
+			: "The streamed reply keeps a short sentence so wrapping stays realistic. ";
+	let rendered: readonly string[] = [];
+	const start = Bun.nanoseconds();
+	for (let i = 0; i < count; i++) {
+		text += delta;
+		component.setText(text);
+		rendered = component.render(WIDTH);
+	}
+	const elapsed = (Bun.nanoseconds() - start) / 1e6;
+	clearRenderCache();
+	const cold = new Markdown(text, 0, 0, theme).render(WIDTH);
+	if (JSON.stringify(rendered) !== JSON.stringify(cold)) throw new Error("Streaming rows differ from cold rendering");
+	return elapsed;
 }
 
-const runs: number[] = [];
-for (let i = 0; i < 3; i++) runs.push(streamOnce(DOC));
-runs.sort((a, b) => a - b);
-console.log(`streamed render (${runs.length} runs): min ${runs[0]!.toFixed(1)}ms, median ${runs[1]!.toFixed(1)}ms`);
+if (appendKind !== undefined) {
+	appendOnce(100, appendKind);
+	const ms = appendOnce(frames, appendKind);
+	console.log(JSON.stringify({ kind: appendKind, frames, ms, bun: Bun.version }));
+} else {
+	console.log(`doc: ${DOC.length} chars, ${Math.ceil(DOC.length / DELTA)} streaming steps, width ${WIDTH}`);
+	// Warmup (JIT + regex compilation)
+	streamOnce(DOC.slice(0, 4096));
+
+	if (!process.argv.includes("--stream-only")) {
+		const cold = coldOnce(DOC);
+		console.log(`cold full render: ${cold.toFixed(1)}ms`);
+	}
+
+	const runs: number[] = [];
+	for (let i = 0; i < 3; i++) runs.push(streamOnce(DOC));
+	runs.sort((a, b) => a - b);
+	console.log(`streamed render (${runs.length} runs): min ${runs[0]!.toFixed(1)}ms, median ${runs[1]!.toFixed(1)}ms`);
+}

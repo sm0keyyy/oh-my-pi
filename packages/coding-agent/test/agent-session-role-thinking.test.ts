@@ -650,9 +650,9 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(fallback);
 		expect(session.autoResolvedThinkingLevel()).toBe(fallback);
 		expect(session.agent.state.thinkingLevel).toBe(fallback);
-		expect(session.sessionManager.getEntries().filter(entry => entry.type === "thinking_level_change")).toHaveLength(
-			1,
-		);
+		// Fork contract: every classified turn journals its pick and source, changed or not.
+		const receipts = session.sessionManager.getEntries().filter(entry => entry.type === "thinking_level_change");
+		expect(receipts.at(-1)).toMatchObject({ thinkingLevel: fallback, source: "fallback", fallbackReason: "error" });
 	});
 
 	it("preserves the resolved auto level when a later classification fails", async () => {
@@ -678,9 +678,9 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(Effort.Low);
 		expect(session.autoResolvedThinkingLevel()).toBe(Effort.Low);
 		expect(session.agent.state.thinkingLevel).toBe(Effort.Low);
-		expect(session.sessionManager.getEntries().filter(entry => entry.type === "thinking_level_change")).toHaveLength(
-			receiptCount,
-		);
+		const receipts = session.sessionManager.getEntries().filter(entry => entry.type === "thinking_level_change");
+		expect(receipts).toHaveLength(receiptCount + 1);
+		expect(receipts.at(-1)).toMatchObject({ thinkingLevel: Effort.Low, source: "fallback", fallbackReason: "error" });
 	});
 
 	it("skips classification for synthetic turns", async () => {

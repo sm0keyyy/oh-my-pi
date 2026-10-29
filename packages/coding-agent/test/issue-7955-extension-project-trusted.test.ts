@@ -7,7 +7,9 @@ function createRunner(): ExtensionRunner {
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 	} as unknown as ExtensionRuntime;
-	return new ExtensionRunner([], runtime, "/tmp", { getCwd: () => "/tmp" } as never, {} as never);
+	// Fork: contexts capture the session identity at creation for model-usage journaling.
+	const sessionManager = { getCwd: () => "/tmp", getSessionId: () => "session", getLeafId: () => null };
+	return new ExtensionRunner([], runtime, "/tmp", sessionManager as never, {} as never);
 }
 
 describe("ExtensionRunner project-trust context (issue #7955)", () => {

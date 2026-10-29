@@ -126,6 +126,68 @@ const TABLE = (() => {
 })();
 
 describe("Markdown incremental streaming lex (E2)", () => {
+	it("preserves a trailing-space run longer than the hazard seam when the next word arrives", () => {
+		const streaming = new Markdown("", 0, 0, THEME);
+		streaming.transientRenderCache = true;
+		const first = "a" + " ".repeat(200);
+		streaming.setText(first);
+		expect(streaming.render(200)).toEqual(renderColdTransient(first, 200));
+		const next = first + "b";
+		streaming.setText(next);
+		const rendered = streaming.render(200);
+		expect(rendered).toEqual(renderColdTransient(next, 200));
+		expect(rendered).toHaveLength(2);
+	});
+
+	it("restyles completed fence rows after a custom codeBlock callback changes", () => {
+		let prefix = "A";
+		const markdownTheme = { ...THEME, codeBlock: (text: string) => prefix + text };
+		const streaming = new Markdown("```\none\ntwo", 0, 0, markdownTheme);
+		streaming.transientRenderCache = true;
+		streaming.render(40);
+		prefix = "B";
+		const next = "```\none\ntwo\nthree";
+		streaming.setText(next);
+		const rendered = streaming.render(40);
+		expect(rendered).toEqual(renderColdTransient(next, 40, markdownTheme));
+		expect(rendered[1]).toContain("Bone");
+	});
+
+	it("restyles completed fence rows after a managed codeBlock callback is replaced", () => {
+		const markdownTheme = getMarkdownTheme();
+		const original = markdownTheme.codeBlock;
+		const streaming = new Markdown("```\none\ntwo", 0, 0, markdownTheme);
+		streaming.transientRenderCache = true;
+		streaming.render(40);
+		try {
+			markdownTheme.codeBlock = (text: string) => `B${text}`;
+			const next = "```\none\ntwo\nthree";
+			streaming.setText(next);
+			const rendered = streaming.render(40);
+			expect(rendered).toEqual(renderColdTransient(next, 40, markdownTheme));
+			expect(rendered[1]).toContain("Bone");
+		} finally {
+			markdownTheme.codeBlock = original;
+		}
+	});
+
+	it("benchmarks unfinished highlighted fences against transient and finalized cold renders", () => {
+		const result = Bun.spawnSync(
+			[
+				process.execPath,
+				`${import.meta.dir}/../bench/markdown-stream.ts`,
+				"--append=fence",
+				"--frames=2",
+				"--production-theme",
+			],
+			{ stdout: "pipe", stderr: "pipe", timeout: 10_000 },
+		);
+		expect(result.exitCode, result.stderr.toString()).toBe(0);
+		const output = JSON.parse(result.stdout.toString());
+		expect(output.kind).toBe("fence");
+		expect(output.frames).toBe(2);
+	});
+
 	const longLead = "A streamed paragraph keeps earlier wrapped rows unchanged. ".repeat(8);
 	const appendCases: Record<string, string[]> = {
 		"prose without newlines": Array(30).fill(

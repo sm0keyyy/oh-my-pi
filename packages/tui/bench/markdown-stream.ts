@@ -126,8 +126,17 @@ function appendOnce(count: number, kind: string): number {
 	}
 	const elapsed = (Bun.nanoseconds() - start) / 1e6;
 	clearRenderCache();
-	const cold = new Markdown(text, 0, 0, theme).render(WIDTH);
-	if (JSON.stringify(rendered) !== JSON.stringify(cold)) throw new Error("Streaming rows differ from cold rendering");
+	const cold = new Markdown(text, 0, 0, theme);
+	cold.transientRenderCache = true;
+	if (JSON.stringify(rendered) !== JSON.stringify(cold.render(WIDTH))) {
+		throw new Error("Streaming rows differ from cold transient rendering");
+	}
+	component.transientRenderCache = false;
+	const finalized = component.render(WIDTH);
+	clearRenderCache();
+	if (JSON.stringify(finalized) !== JSON.stringify(new Markdown(text, 0, 0, theme).render(WIDTH))) {
+		throw new Error("Finalized rows differ from cold rendering");
+	}
 	return elapsed;
 }
 

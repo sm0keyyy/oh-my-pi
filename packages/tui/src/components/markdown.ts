@@ -1371,7 +1371,9 @@ function boundedFastTailRaw(raw: string, complete = true): string | undefined {
 	if (raw.length <= FAST_SEAM_LENGTH) return raw;
 	if (complete && (FAST_LONG_LINE_MARKER_RE.test(raw) || fastLineStartHazard(raw))) return undefined;
 	const tail = raw.slice(-FAST_SEAM_LENGTH);
-	if (!/\s/.test(tail)) return undefined;
+	// A truncated all-space suffix loses the exact separator run needed by
+	// fastTailRowInput. Re-lex it instead of reconstructing a shorter run.
+	if (!/\s/.test(tail) || /^ +$/.test(tail)) return undefined;
 	return tail;
 }
 
@@ -2352,6 +2354,7 @@ interface StreamingFenceRender {
 // The unfinished last line and the fabricated closing border always render fresh.
 interface StreamingFenceRowsCache {
 	signature: RenderSignature;
+	themeEpoch: number;
 	tokenStart: number;
 	raw: string;
 	bodyEnd: number;
@@ -3534,6 +3537,8 @@ export class Markdown implements Component {
 	): string[] | undefined {
 		const token = tokens[start];
 		if (
+			this.#defaultTextStyle !== undefined ||
+			!canCacheMarkdownListItems(this.#theme) ||
 			start !== tokens.length - 1 ||
 			token?.type !== "code" ||
 			token.lang === "mermaid" ||
@@ -3543,10 +3548,12 @@ export class Markdown implements Component {
 			this.#streamingFenceRows = undefined;
 			return undefined;
 		}
+		const themeEpoch = getThemeEpoch();
 		const previous = this.#streamingFenceRows;
 		const cache =
 			previous &&
 			previous.tokenStart === start &&
+			previous.themeEpoch === themeEpoch &&
 			this.#signatureEquals(previous.signature, signature) &&
 			token.raw.startsWith(previous.raw)
 				? previous
@@ -3567,6 +3574,7 @@ export class Markdown implements Component {
 		for (let i = 0; i < resume.settledRows; i++) lines.push(fresh[i]!);
 		this.#streamingFenceRows = {
 			signature,
+			themeEpoch,
 			tokenStart: start,
 			raw: token.raw,
 			bodyEnd,

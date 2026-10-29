@@ -1216,6 +1216,42 @@ describe("TranscriptContainer progressive assistant retirement", () => {
 		const live = transcript.renderViewport(WIDTH, 1000, frame);
 		expect([...retired, ...live]).toEqual([...trimBlankEdges(component.render(WIDTH))]);
 	});
+
+	it("preserves code colors and complete lines across stable fence snapshots and resize replay", () => {
+		const transcript = new TranscriptContainer();
+		const component = new AssistantMessageComponent();
+		transcript.addChild(component);
+		const lines = [
+			"```ts",
+			"/* a comment that crosses",
+			"the next line */",
+			"const template = `first line",
+			"second line`;",
+			...Array.from({ length: 12 }, (_, index) => `export const value${index} = "a long value for wrapping";`),
+		];
+		let body = "";
+		for (const line of lines) {
+			body += `${line}\n`;
+			component.updateContent({ ...finalAnswer, content: [{ type: "text", text: body }] }, { transient: true });
+			transcript.renderViewport(WIDTH, ROOM, frame);
+		}
+		const retired = retire(transcript, WIDTH);
+		const [emitted = 0] = transcript.emittedStableRows();
+		expect(Bun.stripANSI(retired.join("\n"))).toContain("the next line */");
+		const live = transcript.renderViewport(WIDTH, 1000, frame);
+		expect([...retired, ...live]).toEqual([...trimBlankEdges(component.render(WIDTH))]);
+
+		const narrow = 32;
+		const replayed = component.renderTranscriptStableRows(emitted, narrow);
+		const narrowRows = trimBlankEdges(component.render(narrow));
+		expect(replayed).toEqual(narrowRows.slice(0, replayed.length));
+		const complete = new AssistantMessageComponent();
+		complete.updateContent({ ...finalAnswer, content: [{ type: "text", text: `${body}\`\`\`` }] });
+		expect(replayed).toEqual(trimBlankEdges(complete.render(narrow)).slice(0, replayed.length));
+
+		component.updateContent({ ...finalAnswer, content: [{ type: "text", text: `${body}\`\`\`` }] });
+		expect(component.render(narrow)).toEqual(complete.render(narrow));
+	});
 });
 
 describe("TranscriptContainer viewport click spans", () => {

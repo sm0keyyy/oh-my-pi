@@ -6,6 +6,10 @@
 
 - Reduced repeated rendering work for long streamed paragraphs and open code blocks.
 
+### Fixed
+
+- Reduced CPU use during streamed code blocks while preserving completed lines in scrollback.
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

@@ -249,19 +249,6 @@ function lerpHex(from: string, to: string, t: number): string {
 }
 
 /**
- * Drop the closing border the renderer draws for a source that ends inside an
- * open fence. That row is not part of the message yet: the live block reaches
- * it only when the closer arrives, so publishing it would make the settled
- * prefix disagree with the block render and freeze mid-stream retirement.
- */
-function trimFabricatedCloser(rows: readonly string[], source: string): readonly string[] {
-	if (!endsInsideOpenFence(source)) return rows;
-	let last = rows.length;
-	while (last > 0 && rows[last - 1]!.trim() === "") last--;
-	return last > 0 ? rows.slice(0, last - 1) : rows;
-}
-
-/**
  * Renders an assistant message; streaming content remains mutable until the
  * provider finalizes it because later deltas can revise earlier Markdown.
  * The exception is the leading run of visible thinking blocks: raw thinking
@@ -1437,14 +1424,18 @@ export class AssistantMessageComponent extends Container {
 		const head = this.#stableHeadRenderer;
 		const replay = this.#stableReplayRenderer;
 		const renderer = role === "head" ? head : role === "replay" ? replay : head?.index === index ? head : replay;
-		if (renderer?.index === index && renderer.kind === kind) {
-			renderer.md.setText(trimmed);
-			return trimFabricatedCloser(renderer.md.render(width), trimmed);
-		}
-		const md = this.#createMarkdown(kind, trimmed);
+		const openFence = endsInsideOpenFence(trimmed);
+		// Mark the last code line complete for the incremental highlighter.
+		// Marked consumes one newline. The extra empty tail and fabricated
+		// closing border stay out of the published rows.
+		const source = openFence ? `${trimmed}\n\n` : trimmed;
+		const md = renderer?.index === index && renderer.kind === kind ? renderer.md : this.#createMarkdown(kind, source);
 		if (role === "head") this.#stableHeadRenderer = { index, kind, md };
 		else if (role === "replay") this.#stableReplayRenderer = { index, kind, md };
-		return trimFabricatedCloser(md.render(width), trimmed);
+		md.transientRenderCache = openFence;
+		md.setText(source);
+		const rows = md.render(width);
+		return openFence ? rows.slice(0, -2) : rows;
 	}
 
 	/** Markdown for a text or thinking block; live children and stable-row renders share it so stable rows prefix the block render. */

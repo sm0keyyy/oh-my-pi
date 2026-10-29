@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Explicit session resume avoids a redundant full transcript parse before the working-directory check.
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

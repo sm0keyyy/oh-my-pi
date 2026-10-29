@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import * as piUtils from "@oh-my-pi/pi-utils";
 
 const tempDirs: TempDir[] = [];
 
@@ -46,5 +47,26 @@ describe("SessionManager.open with throwIfMissing", () => {
 			/holds no entries/,
 		);
 		expect(await Bun.file(empty).text()).toBe("");
+	});
+
+	it("rejects a session truncated during the cwd probe without recreating it", async () => {
+		const root = makeTempDir("@pi-open-truncated-probe-");
+		const file = path.join(root, "session.jsonl");
+		await Bun.write(
+			file,
+			`${JSON.stringify({ type: "session", version: 3, id: "session", cwd: root, timestamp: new Date().toISOString() })}\n`,
+		);
+		const probe = spyOn(piUtils, "directoryIsEnterable").mockImplementationOnce(async () => {
+			await Bun.write(file, "");
+			return true;
+		});
+		try {
+			await expect(
+				SessionManager.open(file, undefined, undefined, { throwIfMissing: true, suppressBreadcrumb: true }),
+			).rejects.toThrow(/holds no entries/);
+			expect(await Bun.file(file).text()).toBe("");
+		} finally {
+			probe.mockRestore();
+		}
 	});
 });

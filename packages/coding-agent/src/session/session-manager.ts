@@ -4379,7 +4379,11 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 		options?: { initialCwd?: string; parentSession?: string; suppressBreadcrumb?: boolean; throwIfMissing?: boolean },
 	): Promise<SessionManager> {
-		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
+		// Fail-closed opens re-read after the cwd probe. Only the header is needed before it.
+		const probed = await loadSessionFile(filePath, storage, {
+			throwIfMissing: options?.throwIfMissing,
+			headerOnly: options?.throwIfMissing,
+		});
 		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		// Resume into the session's recorded cwd only when it is verifiably
 		// accessible. A deleted or permission-blocked (macOS TCC denial) project

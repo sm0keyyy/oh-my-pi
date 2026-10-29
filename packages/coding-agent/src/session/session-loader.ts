@@ -121,10 +121,12 @@ export interface VisitEntriesFromFileStreamOptions {
 	onBytesConsumed?: (bytes: number) => void;
 }
 
-/** Controls how a missing session file is handled. */
+/** Controls missing-file handling and metadata-only probes. */
 export interface LoadSessionOptions {
 	/** Propagate ENOENT instead of treating the path as a new empty session. */
 	throwIfMissing?: boolean;
+	/** For file-backed storage, stop after the header when only cwd metadata is needed. */
+	headerOnly?: boolean;
 }
 
 /** Parsed session entries plus corruption metadata needed by writable loaders. */
@@ -467,7 +469,7 @@ export async function visitEntriesFromFileStream(
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(
 	filePath: string,
-	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
+	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing" | "maxRecords">,
 ): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
@@ -482,6 +484,7 @@ export async function loadEntriesFromFileStream(
 				malformedRecords++;
 			},
 			throwIfMissing: options?.throwIfMissing,
+			maxRecords: options?.maxRecords,
 			onBytesConsumed: bytes => {
 				bytesConsumed += bytes;
 			},
@@ -507,10 +510,13 @@ async function loadWithKnownSize(
 	filePath: string,
 	storage: SessionStorage,
 	size: number,
-	options?: { throwIfMissing?: boolean },
+	options?: LoadSessionOptions,
 ): Promise<{ loaded: SessionLoadResult; sourceSize: number }> {
-	if (shouldStreamEntries(storage, size)) {
-		const loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options?.throwIfMissing });
+	if (shouldStreamEntries(storage, size) || (options?.headerOnly && storage instanceof FileSessionStorage)) {
+		const loaded = await loadEntriesFromFileStream(filePath, {
+			throwIfMissing: options?.throwIfMissing,
+			maxRecords: options?.headerOnly ? 1 : undefined,
+		});
 		const sourceSize = loaded.sourceSize ?? 0;
 		return { loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded, sourceSize };
 	}

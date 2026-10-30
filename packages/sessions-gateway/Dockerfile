@@ -16,7 +16,7 @@ FROM oven/bun:1.4.2-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33d
 WORKDIR /app
 COPY --from=build /app/server.js ./server.js
 COPY packages/sessions-web/dist/ ./site/
-COPY LICENSE THIRD-PARTY-NOTICES.txt ./
+COPY LICENSE packages/natives/THIRD-PARTY-NOTICES.txt ./
 ENV SITE_DIR=/app/site BRIDGE_TOKEN_FILE=/run/secrets/bridge-token
 USER bun
 EXPOSE 8080

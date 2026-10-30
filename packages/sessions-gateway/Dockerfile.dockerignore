@@ -2,7 +2,7 @@
 !package.json
 !bun.lock
 !LICENSE
-!THIRD-PARTY-NOTICES.txt
+!packages/natives/THIRD-PARTY-NOTICES.txt
 !patches/
 !patches/*.patch
 !packages/

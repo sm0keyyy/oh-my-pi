@@ -179,7 +179,8 @@ export async function startRpcSocketServer(
 			})
 				.then(async client => {
 					if (socket.destroyed || closing) {
-						await client.dispose();
+						// A peer that disconnects during startup can still reject `done` with its socket error.
+						await Promise.all([client.dispose(), client.done]);
 						return;
 					}
 					clients.set(socket, client);

@@ -231,6 +231,52 @@ describe("A3 RPC socket", () => {
 		expect(updates[0]!.messageId).toBe(updates[1]!.messageId);
 	});
 
+	it("keeps other clients alive after a backpressured client disconnects during startup", async () => {
+		const { session, discovery } = await fixture();
+		const failures: unknown[] = [];
+		const onUnhandled = (error: unknown) => failures.push(error);
+		process.on("unhandledRejection", onUnhandled);
+		const initialized = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const disconnected = Promise.withResolvers<void>();
+		let first = true;
+		const server = await startRpcSocketServer(
+			session,
+			{
+				async initialize(connection) {
+					if (!first) return;
+					first = false;
+					initialized.resolve();
+					await release.promise;
+					for (let index = 0; index < 64; index++)
+						connection.output({ type: "notice", message: "x".repeat(128 * 1024) });
+					// Real socket I/O must report EPIPE before startup checks the socket state.
+					await Bun.sleep(50);
+				},
+				async disconnected() {
+					disconnected.resolve();
+				},
+			},
+			{ dir: discovery },
+		);
+		cleanups.push(() => server.close());
+		try {
+			const client = await attach(server, discovery);
+			await initialized.promise;
+			await client.next(frame => frame.type === "ready");
+			client.socket.destroy();
+			release.resolve();
+			await disconnected.promise;
+			const replacement = await attach(server, discovery);
+			replacement.send({ id: "survivor", type: "get_state" });
+			expect(await replacement.next(frame => frame.id === "survivor")).toMatchObject({ success: true });
+			expect(failures).toEqual([]);
+		} finally {
+			release.resolve();
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
 	it("detaches event subscriptions before accepted work drains", async () => {
 		const { session } = await fixture();
 		const bus = new EventBus();

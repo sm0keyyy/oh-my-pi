@@ -6,6 +6,10 @@
 
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
 
+### Fixed
+
+- Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
+
 ## [18.14.0] - 2026-10-29
 
 ### Breaking Changes

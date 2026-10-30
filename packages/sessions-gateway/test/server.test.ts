@@ -31,6 +31,7 @@ function peer(route: string, headers: Record<string, string>): Peer {
 	return result;
 }
 async function publish(bridge: Peer, sessions: RpcSessionSnapshot[] = [snapshot]): Promise<void> {
+	await bridge.accepted.promise;
 	bridge.ws.send(JSON.stringify({ t: "sessions", sessions }));
 	const pong = Promise.withResolvers<Event>();
 	bridge.ws.addEventListener("pong", pong.resolve, { once: true });
@@ -138,9 +139,19 @@ test("denies user and unidentified assertions on the bridge route even with its 
 		).toBe(403);
 	}
 	const response = await fetch(`${gateway.url}/ws/bridge`, {
-		headers: { ...access.serviceHeaders, authorization: `Bearer ${token}` },
+		headers: { ...access.serviceHeaders, authorization: `Bearer ${token}`, "x-omp-bridge-id": crypto.randomUUID() },
 	});
 	expect(response.status).toBe(426);
+});
+
+test("rejects missing or invalid bridge identities after authentication", async () => {
+	for (const bridgeId of ["", "not-a-uuid", "a".repeat(4_096)]) {
+		const response = await fetch(`${gateway.url}/ws/bridge`, {
+			headers: { ...access.serviceHeaders, authorization: `Bearer ${token}`, "x-omp-bridge-id": bridgeId },
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: { code: "invalid_bridge_id" } });
+	}
 });
 
 test("denies browser upgrades without the exact public Origin", async () => {
@@ -163,6 +174,42 @@ test("denies a bad bridge bearer and closes a second bridge with 4009", async ()
 	expect((await duplicate.closed.promise).code).toBe(4009);
 	browser.ws.send('{"type":"get_state"}');
 	expect(JSON.parse(await bridge.next())).toEqual({ t: "frame", conn, line: '{"type":"get_state"}' });
+});
+
+test("replaces an unclean connection from the same bridge without waiting for idle expiry", async () => {
+	const headers = {
+		...access.serviceHeaders,
+		authorization: `Bearer ${token}`,
+		"x-omp-bridge-id": crypto.randomUUID(),
+	};
+	const previous = peer("/ws/bridge", headers);
+	await previous.opened.promise;
+	await publish(previous);
+	const replacement = peer("/ws/bridge", headers);
+	await replacement.opened.promise;
+	await Promise.race([
+		publish(replacement),
+		replacement.closed.promise.then(event => {
+			throw new Error(`Reconnect rejected: ${event.code}`);
+		}),
+	]);
+	await previous.closed.promise;
+	await publish(replacement, [{ ...snapshot, busy: true }]);
+});
+
+test("expires a stale bridge during reconnect before the heartbeat timer runs", async () => {
+	const { bridge } = await attach();
+	spyOn(Date, "now").mockReturnValue(Date.now() + 120_001);
+	const replacement = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
+	await replacement.opened.promise;
+	await Promise.race([
+		publish(replacement),
+		replacement.closed.promise.then(event => {
+			throw new Error(`Reconnect rejected: ${event.code}`);
+		}),
+	]);
+	await bridge.closed.promise;
+	await publish(replacement);
 });
 
 test("relays exact RPC lines to each connection and detaches only its local socket", async () => {

@@ -33,6 +33,7 @@ let gateway: Bun.Server<undefined>;
 let bridge: SessionsBridge;
 let remote: Bun.ServerWebSocket<undefined> | undefined;
 const locals = new Set<net.Socket>();
+const commandSockets = new Map<string, net.Socket>();
 let messages: BridgeMessage[];
 let waiters: Array<(message: BridgeMessage) => void>;
 let observedHeaders: Headers;
@@ -56,6 +57,7 @@ function startFakeGateway(port = 0): Bun.Server<undefined> {
 					return;
 				}
 				remote = socket;
+				socket.send('{"t":"ready"}');
 			},
 			close() {
 				disconnected?.();
@@ -86,6 +88,7 @@ function send(value: object): void {
 beforeEach(async () => {
 	messages = [];
 	waiters = [];
+	commandSockets.clear();
 	rejectBridge = false;
 	disconnected = undefined;
 	root = await fs.mkdtemp("/tmp/omp-sessions-bridge-test-");
@@ -112,6 +115,7 @@ beforeEach(async () => {
 					authenticated = true;
 					socket.write(`${JSON.stringify({ type: "ready", host: { instanceId } })}\n`);
 				} else if (command.type === "get_state") {
+					commandSockets.set(command.id, socket);
 					socket.write(
 						`${JSON.stringify({ type: "response", command: "get_state", id: command.id, success: true, data: { sessionId: "session", rpcSession: snapshot } })}\n`,
 					);
@@ -288,6 +292,7 @@ test("caps conflict backoff until the bridge stays healthy", async () => {
 	bridge.stop();
 	rejectBridge = true;
 	vi.useFakeTimers();
+	spyOn(Math, "random").mockReturnValue(0.5);
 	let now = 1_000;
 	spyOn(Date, "now").mockImplementation(() => now);
 	let observed = Promise.withResolvers<number>();
@@ -296,22 +301,91 @@ test("caps conflict backoff until the bridge stays healthy", async () => {
 			observed.resolve(details.retryMs);
 	});
 	bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
-	for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+	for (const delay of [875, 1_750, 3_500, 7_000, 14_000, 26_250, 26_250]) {
 		expect(await observed.promise).toBe(delay);
 		observed = Promise.withResolvers<number>();
 		now += delay;
 		vi.advanceTimersByTime(delay);
 	}
-	expect(await observed.promise).toBe(30_000);
+	expect(await observed.promise).toBe(26_250);
 	rejectBridge = false;
-	now += 30_000;
-	vi.advanceTimersByTime(30_000);
+	now += 26_250;
+	vi.advanceTimersByTime(26_250);
 	await next("sessions");
 	now += 30_000;
 	vi.advanceTimersByTime(30_000);
 	observed = Promise.withResolvers<number>();
 	remote!.close(4009, "a bridge is already connected");
-	expect(await observed.promise).toBe(1_000);
+	expect(await observed.promise).toBe(875);
+});
+
+test("keeps local RPC clients through repeated 4009 retries and retires them only after acceptance", async () => {
+	await next("sessions");
+	const bridgeId = observedHeaders.get("x-omp-bridge-id");
+	send({ t: "attach", conn: "retained", instanceId });
+	await next("frame");
+	send({ t: "frame", conn: "retained", line: '{"id":"before-conflict","type":"get_state"}' });
+	await next("frame");
+	const attached = commandSockets.get("before-conflict")!;
+	expect(attached).toBeDefined();
+	let localClosed = false;
+	attached.once("close", () => {
+		localClosed = true;
+	});
+	vi.useFakeTimers();
+	spyOn(Math, "random").mockReturnValue(1);
+	let conflict = Promise.withResolvers<number>();
+	spyOn(logger, "warn").mockImplementation((message, details) => {
+		if (message === "Sessions bridge conflict" && typeof details?.retryMs === "number")
+			conflict.resolve(details.retryMs);
+	});
+	rejectBridge = true;
+	remote!.close(4009, "a bridge is already connected");
+	for (const delay of [1_000, 2_000, 4_000]) {
+		expect(await conflict.promise).toBe(delay);
+		expect(observedHeaders.get("x-omp-bridge-id")).toBe(bridgeId);
+		expect(localClosed).toBe(false);
+		expect(attached.destroyed).toBe(false);
+		conflict = Promise.withResolvers<number>();
+		vi.advanceTimersByTime(delay);
+	}
+	expect(await conflict.promise).toBe(8_000);
+	expect(localClosed).toBe(false);
+	const closed = Promise.withResolvers<void>();
+	attached.once("close", closed.resolve);
+	rejectBridge = false;
+	vi.advanceTimersByTime(8_000);
+	await next("sessions");
+	await closed.promise;
+	expect(localClosed).toBe(true);
+	send({ t: "attach", conn: "replacement", instanceId });
+	await next("frame");
+	send({ t: "frame", conn: "replacement", line: '{"id":"after-conflict","type":"get_state"}' });
+	const reply = await next("frame");
+	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("after-conflict");
+});
+
+test("bounds retained RPC clients when the upstream never accepts a reconnect", async () => {
+	await next("sessions");
+	send({ t: "attach", conn: "retained", instanceId });
+	await next("frame");
+	send({ t: "frame", conn: "retained", line: '{"id":"before-timeout","type":"get_state"}' });
+	await next("frame");
+	const attached = commandSockets.get("before-timeout")!;
+	const closed = Promise.withResolvers<void>();
+	attached.once("close", closed.resolve);
+	vi.useFakeTimers();
+	const conflict = Promise.withResolvers<void>();
+	spyOn(logger, "warn").mockImplementation(message => {
+		if (message === "Sessions bridge conflict") conflict.resolve();
+	});
+	rejectBridge = true;
+	remote!.close(4009, "a bridge is already connected");
+	await conflict.promise;
+	expect(attached.destroyed).toBe(false);
+	vi.advanceTimersByTime(120_000);
+	await closed.promise;
+	expect(attached.destroyed).toBe(true);
 });
 
 test("pauses a large transcript on a throttled bridge without losing other attachments", async () => {

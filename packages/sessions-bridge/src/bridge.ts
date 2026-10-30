@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
@@ -49,6 +50,7 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		throw new Error("The bridge requires WSS outside loopback");
 	}
 	const dir = options.dir ?? rpcSessionsRuntimeDir();
+	const bridgeId = randomUUID();
 	const attachments = new Map<string, Attachment>();
 	const sessions = new Map<string, RpcSessionSnapshot>();
 	const gone = new Set<string>();
@@ -57,6 +59,8 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 	let watcher: fs.FSWatcher | undefined;
 	let retry: Timer | undefined;
 	let connectDeadline: Timer | undefined;
+	let retainDeadline: Timer | undefined;
+	let upstreamReady = false;
 	let backoff = 1_000;
 	let lastSeen = Date.now();
 	let openedAt = 0;
@@ -65,7 +69,8 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 	let refreshing = false;
 	let dirty = false;
 	const send = (frame: BridgeMessage): boolean => {
-		if (socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount >= MAX_PAYLOAD_BYTES) return false;
+		if (!upstreamReady || socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount >= MAX_PAYLOAD_BYTES)
+			return false;
 		const text = JSON.stringify(frame);
 		if (socket.bufferedAmount + Buffer.byteLength(text) > MAX_PAYLOAD_BYTES) return false;
 		socket.send(text);
@@ -261,16 +266,13 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 	};
 	const connect = (): void => {
 		if (stopped) return;
-		const remote = new WebSocket(options.url, { headers: options.headers });
+		const remote = new WebSocket(options.url, {
+			headers: { ...options.headers, "x-omp-bridge-id": bridgeId },
+		});
 		socket = remote;
+		upstreamReady = false;
 		closePath = "peer";
 		connectDeadline = setTimeout(() => closeRemote(remote, 4001, "connect timeout", "connect_timeout"), 10_000);
-		remote.onopen = () => {
-			clearTimeout(connectDeadline);
-			openedAt = Date.now();
-			lastSeen = Date.now();
-			void refresh();
-		};
 		remote.addEventListener("pong", () => {
 			lastSeen = Date.now();
 		});
@@ -278,10 +280,24 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			lastSeen = Date.now();
 		});
 		remote.onmessage = event => {
+			if (socket !== remote || stopped) return;
 			lastSeen = Date.now();
 			try {
 				if (typeof event.data !== "string") throw new Error("Text frames required");
 				const frame = parseGatewayMessage(event.data);
+				if (frame.t === "ready") {
+					if (upstreamReady) throw new Error("Invalid gateway message");
+					upstreamReady = true;
+					clearTimeout(connectDeadline);
+					clearTimeout(retainDeadline);
+					retainDeadline = undefined;
+					closed.clear();
+					for (const conn of attachments.keys()) detach(conn);
+					openedAt = Date.now();
+					void refresh();
+					return;
+				}
+				if (!upstreamReady) throw new Error("Invalid gateway message");
 				if (frame.t === "attach") void attach(frame.conn, frame.instanceId);
 				else if (frame.t === "detach") detach(frame.conn);
 				else {
@@ -311,15 +327,23 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 				reason: sanitizeDiagnostic(event.reason),
 				path: closePath,
 			});
-			if (event.code === 4009) logger.warn("Sessions bridge conflict", { code: event.code, retryMs: backoff });
 			clearTimeout(connectDeadline);
 			if (socket !== remote) return;
 			socket = undefined;
+			upstreamReady = false;
 			openedAt = 0;
 			closed.clear();
-			for (const conn of attachments.keys()) detach(conn);
+			for (const attachment of attachments.values()) attachment.socket?.pause();
+			if (attachments.size && !retainDeadline) {
+				retainDeadline = setTimeout(() => {
+					retainDeadline = undefined;
+					for (const conn of attachments.keys()) detach(conn);
+				}, IDLE_MS);
+			}
 			if (!stopped) {
-				retry = setTimeout(connect, backoff);
+				const retryMs = Math.round(backoff * (0.75 + Math.random() * 0.25));
+				if (event.code === 4009) logger.warn("Sessions bridge conflict", { code: event.code, retryMs });
+				retry = setTimeout(connect, retryMs);
 				backoff = Math.min(backoff * 2, 30_000);
 			}
 		};
@@ -355,6 +379,7 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			clearInterval(drain);
 			clearTimeout(retry);
 			clearTimeout(connectDeadline);
+			clearTimeout(retainDeadline);
 			watcher?.close();
 			for (const conn of attachments.keys()) detach(conn);
 			if (socket) closeRemote(socket, 1000, "bridge stopped", "bridge_stop");

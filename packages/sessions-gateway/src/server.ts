@@ -22,6 +22,7 @@ interface SocketData {
 	conn: string;
 	instanceId: string;
 	lastSeen: number;
+	bridgeId: string;
 	closePath?: string;
 }
 type Socket = Bun.ServerWebSocket<SocketData>;
@@ -94,7 +95,14 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 				if (supplied.length !== token.length || !timingSafeEqual(supplied, token))
 					return error(401, "unauthorized");
 				if (request.method !== "GET") return error(405, "method_not_allowed");
-				if (srv.upgrade(request, { data: { role: "bridge", conn: "", instanceId: "", lastSeen: Date.now() } }))
+				const bridgeId = request.headers.get("x-omp-bridge-id") ?? "";
+				if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(bridgeId))
+					return error(400, "invalid_bridge_id");
+				if (
+					srv.upgrade(request, {
+						data: { role: "bridge", conn: "", instanceId: "", lastSeen: Date.now(), bridgeId },
+					})
+				)
 					return;
 				return error(426, "websocket_upgrade_required");
 			}
@@ -104,7 +112,13 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 				if (request.method !== "GET") return error(405, "method_not_allowed");
 				if (
 					srv.upgrade(request, {
-						data: { role: "browser", conn: randomUUID(), instanceId: match[1]!, lastSeen: Date.now() },
+						data: {
+							role: "browser",
+							conn: randomUUID(),
+							instanceId: match[1]!,
+							lastSeen: Date.now(),
+							bridgeId: "",
+						},
 					})
 				)
 					return;
@@ -149,12 +163,17 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			open(socket) {
 				if (socket.data.role === "bridge") {
 					if (bridge) {
-						socket.data.closePath = "bridge_conflict";
-						socket.close(4009, "a bridge is already connected");
-						return;
+						const stale = Date.now() - bridge.data.lastSeen >= idleMs;
+						if (!stale && bridge.data.bridgeId !== socket.data.bridgeId) {
+							socket.data.closePath = "bridge_conflict";
+							socket.close(4009, "a bridge is already connected");
+							return;
+						}
+						retireBridge(bridge, stale ? "idle_timeout" : "bridge_replaced");
 					}
 					bridge = socket;
 					logger.info("Sessions bridge connected");
+					socket.send('{"t":"ready"}');
 					return;
 				}
 				if (!bridge) {

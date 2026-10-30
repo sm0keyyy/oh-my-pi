@@ -5,9 +5,16 @@ The gateway lifecycle and principal rules appear in `../sessions-gateway/README.
 
 The bridge pauses local RPC reads when the shared WebSocket buffer reaches its bound. It resumes reads after the buffer drains.
 An attachment limit or local-socket failure affects only that attachment. The bridge does not replay browser mutations after reconnect.
+During an upstream outage, the bridge pauses local RPC clients instead of closing them on each retry.
+It closes obsolete clients only after the gateway accepts a replacement connection, after 120 s without acceptance, or at bridge stop.
 
-A duplicate bridge receives close code `4009`. The bridge reports a conflict and retains exponential backoff from 1 s to 30 s.
-The bridge resets backoff only after a healthy connection lasts at least 30 s.
+Each bridge process sends a stable, random `X-Omp-Bridge-Id` UUID. The gateway can replace an old transport from that process immediately.
+A different active bridge receives close code `4009`. The bridge reports the conflict and retries with exponential backoff.
+The delay uses 75 to 100 percent of the backoff ceiling, which grows from 1 s to 30 s.
+The bridge resets backoff only after an accepted, healthy connection lasts at least 30 s.
+
+The bridge waits for the gateway's `{ "t": "ready" }` frame before it publishes or retires obsolete clients.
+Deploy the gateway and bridge from the same revision. Older gateways do not send this acceptance frame.
 
 ## Supervision
 

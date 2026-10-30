@@ -12,6 +12,7 @@ export const TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
 export type ClosedCode = "not_found" | "unreachable" | "tui_exited";
 export type GatewayEvent = "attached" | "bridge_offline" | "session_gone" | "session_unavailable";
 export type GatewayMessage =
+	| { t: "ready" }
 	| { t: "attach"; conn: string; instanceId: string }
 	| { t: "frame"; conn: string; line: string }
 	| { t: "detach"; conn: string };
@@ -133,6 +134,7 @@ function connection(value: Record<string, unknown>): string {
 
 export function parseGatewayMessage(text: string): GatewayMessage {
 	const value = parseEnvelope(text);
+	if (value.t === "ready") return { t: "ready" };
 	const conn = connection(value);
 	if (value.t === "attach" && typeof value.instanceId === "string" && INSTANCE_ID.test(value.instanceId)) {
 		return { t: "attach", conn, instanceId: value.instanceId };

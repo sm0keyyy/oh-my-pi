@@ -327,6 +327,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#chromeFloor: number | undefined;
 	// Settled idle chrome has retired rows; contraction must preserve native history.
 	#chromeFloorPromoted = false;
+	// A streaming block has billed self-clearing chrome. Hold that bill through
+	// finalize so the rows it covered are retired, not sliced, after the block settles.
+	#billSelfClearing = false;
 	#runActive = false;
 	#transientChrome: ReadonlySet<Component> = new Set();
 	#selfClearingChrome: ReadonlySet<Component> = new Set();
@@ -480,8 +483,19 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const eligibleChrome = after.length - (transientRows - transientFloor) - selfClearingRows;
 		const promotedChromeContracted = this.#chromeFloorPromoted && eligibleChrome < (this.#chromeFloor ?? 0);
 		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
-		this.#rebaselineChromeFloor(this.#runActive || transcript.hasActiveBlock(), eligibleChrome);
+		const streaming = transcript.hasActiveBlock();
+		this.#rebaselineChromeFloor(this.#runActive || streaming, eligibleChrome);
 		const belowFloor = this.#preferences.completeScrollback ? after.length : this.#chromeFloor;
+		// A streaming block beside self-clearing chrome (the sticky todo HUD) used
+		// to be billed against the floor only. `drop` then sliced the overflow,
+		// so those rows never reached scrollback and the previous HUD paint stayed
+		// in their cells. Hold the bill through finalize. A settled shrink that
+		// never streamed keeps its rows live so clearing the HUD can refill.
+		if (streaming && selfClearingRows > 0) this.#billSelfClearing = true;
+		if (selfClearingRows === 0) this.#billSelfClearing = false;
+		const paintedBelow = this.#preferences.completeScrollback
+			? after.length
+			: belowFloor + (streaming || this.#billSelfClearing ? selfClearingRows : 0);
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
@@ -491,17 +505,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// Retirement measures the same live blocks the viewport lays out below;
 		// one open frame renders each of them once for both.
 		transcript.beginFrame(frame);
-		const history = this.#offerHistory(transcript, width, rows, preRoots.length + belowFloor);
+		const history = this.#offerHistory(transcript, width, rows, preRoots.length + paintedBelow);
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
 		// The live tail is laid out against the same baseline retirement is
 		// billed against, so its compaction allocator (one row per block, no
 		// inter-block blanks) engages only when a block genuinely cannot retire.
-		// Rows the chrome above its floor displaces are clipped from the top by
-		// the `drop` slice below; they stay live until the chrome shrinks. With
-		// `completeScrollback` none are held back.
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
+		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - paintedBelow), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
@@ -1257,6 +1268,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		if (this.#stopped) return;
 		this.#chromeFloor = undefined;
 		this.#chromeFloorPromoted = false;
+		this.#billSelfClearing = false;
 		this.#resetIdleChrome();
 		this.#nativeDock = options.nativeDock;
 		this.#transientChrome = new Set(options.transientChrome);

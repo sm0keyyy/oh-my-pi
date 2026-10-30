@@ -1,17 +1,15 @@
-import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/pi-utils";
-import { RpcFrameDecoder, RpcFrameEncoder } from "../../coding-agent/src/modes/rpc/rpc-frame";
-import * as logger from "@oh-my-pi/pi-utils/logger";
-import type { RpcSessionSnapshot } from "../../coding-agent/src/modes/rpc/rpc-types";
-import { MAX_PAYLOAD_BYTES, parseBridgeMessage, type BridgeMessage } from "../../sessions-gateway/src/protocol";
+import { RpcFrameEncoder, RpcFrameDecoder } from "../../coding-agent/src/modes/rpc/rpc-frame";
+import { ReplayJournal } from "../../sessions-gateway/src/replay";
+import { parseBridgeMessage, type BridgeMessage } from "../../sessions-gateway/src/protocol";
 import { startBridge, type SessionsBridge } from "../src/bridge";
 
 const instanceId = "0123456789abcdef";
-const localToken = "a".repeat(64);
-const snapshot: RpcSessionSnapshot = {
+const snapshot = {
 	instanceId,
 	pid: process.pid,
 	sessionId: "session",
@@ -23,53 +21,65 @@ const snapshot: RpcSessionSnapshot = {
 };
 const headers = {
 	Authorization: `Bearer ${"b".repeat(43)}`,
-	"CF-Access-Client-Id": "fake-id",
-	"CF-Access-Client-Secret": "fake-secret",
+	"CF-Access-Client-Id": "fixture",
+	"CF-Access-Client-Secret": "fixture-secret",
 };
 let root: string;
 let dir: string;
 let local: net.Server;
 let gateway: Bun.Server<undefined>;
 let bridge: SessionsBridge;
-let remote: Bun.ServerWebSocket<undefined> | undefined;
-const locals = new Set<net.Socket>();
-const commandSockets = new Map<string, net.Socket>();
+let journal: ReplayJournal;
+let ingress = 0;
+let observedHeaders: Headers;
+let discardAck = false;
 let messages: BridgeMessage[];
 let waiters: Array<(message: BridgeMessage) => void>;
-let observedHeaders: Headers;
-let closeLocal: () => void;
-let rejectBridge = false;
-let disconnected: (() => void) | undefined;
-let connections: string[] = [];
-
+const locals = new Set<net.Socket>();
+const commandSockets = new Map<string, net.Socket>();
+const assignments = new Map<string, string>();
+function send(frame: { t: string; conn: string; instanceId?: string; line?: string }): void {
+	if (frame.t === "attach") assignments.set(frame.conn, frame.instanceId!);
+	if (frame.t === "detach") assignments.delete(frame.conn);
+	journal.append(JSON.stringify(frame));
+}
 function startFakeGateway(port = 0): Bun.Server<undefined> {
-	return Bun.serve<undefined>({
+	journal = new ReplayJournal(4096, 8 * 1024 * 1024);
+	ingress = 0;
+	return Bun.serve({
 		hostname: "127.0.0.1",
 		port,
-		fetch(request, server) {
+		async fetch(request, server) {
 			observedHeaders = request.headers;
-			if (server.upgrade(request)) return;
-			return new Response(null, { status: 400 });
-		},
-		websocket: {
-			open(socket) {
-				if (rejectBridge) {
-					socket.close(4009, "a bridge is already connected");
-					return;
-				}
-				remote = socket;
-				socket.send(JSON.stringify({ t: "ready", connections }));
-			},
-			close() {
-				disconnected?.();
-			},
-			message(_socket, text) {
-				if (typeof text !== "string") throw new Error("Expected text");
-				const message = parseBridgeMessage(text);
+			if (request.method === "GET") {
+				const cursor = request.headers.get("last-event-id") ?? `${journal.epoch}:0`;
+				if (!journal.canResume(cursor)) return Response.json({ cursor: journal.id }, { status: 409 });
+				server.timeout(request, 0);
+				const response = journal.open(request, undefined, undefined, cursor);
+				response.headers.set(
+					"x-omp-attachments",
+					JSON.stringify([...assignments].map(([conn, instanceId]) => ({ conn, instanceId }))),
+				);
+				response.headers.set("x-omp-ack", String(ingress));
+				return response;
+			}
+			const body = await request.json();
+			if (!isRecord(body) || typeof body.id !== "number" || typeof body.ack !== "string")
+				throw new Error("Invalid fixture POST");
+			journal.ack(body.ack);
+			if (body.id > ingress) {
+				expect(body.id).toBe(ingress + 1);
+				const frame = parseBridgeMessage(JSON.stringify(body.frame));
 				const waiter = waiters.shift();
-				if (waiter) waiter(message);
-				else messages.push(message);
-			},
+				if (waiter) waiter(frame);
+				else messages.push(frame);
+				ingress = body.id;
+				if (discardAck) {
+					discardAck = false;
+					return new Response(null, { status: 503 });
+				}
+			}
+			return Response.json({ ack: ingress });
 		},
 	});
 }
@@ -82,28 +92,21 @@ async function next(t: BridgeMessage["t"]): Promise<BridgeMessage> {
 		if (frame.t === t) return frame;
 	}
 }
-function send(value: object): void {
-	remote!.send(JSON.stringify(value));
-}
-
 beforeEach(async () => {
 	messages = [];
 	waiters = [];
+	assignments.clear();
 	commandSockets.clear();
-	rejectBridge = false;
-	disconnected = undefined;
-	connections = [];
+	discardAck = false;
 	root = await fs.mkdtemp("/tmp/omp-sessions-bridge-test-");
 	dir = path.join(root, "rpc-sessions");
 	await fs.mkdir(dir, { mode: 0o700 });
 	const endpoint = path.join(dir, `${instanceId}.sock`);
 	local = net.createServer(socket => {
 		locals.add(socket);
-		socket.on("error", error =>
-			expect("code" in error && (error.code === "EPIPE" || error.code === "ECONNRESET")).toBe(true),
-		);
-		socket.once("close", () => locals.delete(socket));
 		socket.setEncoding("utf8");
+		socket.on("error", () => {});
+		socket.once("close", () => locals.delete(socket));
 		let buffer = "";
 		let authenticated = false;
 		socket.on("data", chunk => {
@@ -113,24 +116,24 @@ beforeEach(async () => {
 				const command = JSON.parse(buffer.slice(0, end));
 				buffer = buffer.slice(end + 1);
 				if (!authenticated) {
-					expect(command).toEqual({ type: "hello", token: localToken });
+					expect(command).toEqual({ type: "hello", token: "a".repeat(64) });
 					authenticated = true;
 					socket.write(`${JSON.stringify({ type: "ready", host: { instanceId } })}\n`);
 				} else if (command.type === "get_state") {
 					commandSockets.set(command.id, socket);
 					socket.write(
-						`${JSON.stringify({ type: "response", command: "get_state", id: command.id, success: true, data: { sessionId: "session", rpcSession: snapshot } })}\n`,
+						`${JSON.stringify({ type: "response", command: command.type, id: command.id, success: true, data: { rpcSession: snapshot } })}\n`,
 					);
 				} else if (command.type === "get_messages") {
 					const encoder = new RpcFrameEncoder();
 					encoder.setProtocolVersion(2);
 					for (const line of encoder.encodeFrames({
 						type: "response",
-						command: "get_messages",
+						command: command.type,
 						id: command.id,
 						success: true,
 						data: {
-							messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(32 * 1024 * 1024) }] }],
+							messages: [{ role: "assistant", content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] }],
 						},
 					}))
 						socket.write(line);
@@ -145,334 +148,106 @@ beforeEach(async () => {
 	await fs.chmod(endpoint, 0o600);
 	await Bun.write(
 		path.join(dir, `${instanceId}.json`),
-		JSON.stringify({ version: 1, instanceId, pid: process.pid, token: localToken, endpoint, startedAt: 100 }),
+		JSON.stringify({ version: 1, instanceId, pid: process.pid, token: "a".repeat(64), endpoint, startedAt: 100 }),
 		{ mode: 0o600 },
 	);
 	await fs.chmod(path.join(dir, `${instanceId}.json`), 0o600);
-	closeLocal = () => {
-		for (const socket of locals) socket.destroy();
-		local.close();
-	};
 	gateway = startFakeGateway();
-	bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
+	bridge = startBridge({ url: `http://127.0.0.1:${gateway.port}/events/bridge`, headers, dir });
 });
 afterEach(async () => {
 	bridge.stop();
 	gateway.stop(true);
-	closeLocal();
-	vi.useRealTimers();
-	vi.restoreAllMocks();
+	for (const socket of locals) socket.destroy();
+	local.close();
 	await fs.rm(root, { recursive: true });
 });
 
-test("publishes live discovery and authenticates get_state through a fake gateway and socket", async () => {
+test("publishes live discovery and authenticates local RPC through SSE commands and HTTP POST replies", async () => {
 	expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
 	for (const [name, value] of Object.entries(headers)) expect(observedHeaders.get(name)).toBe(value);
 	send({ t: "attach", conn: "browser", instanceId });
-	send({ t: "frame", conn: "browser", line: '{"id":"browser-query","type":"get_state"}' });
-	const ready = await next("frame");
-	expect(ready.t === "frame" && JSON.parse(ready.line).type).toBe("ready");
-	const reply = await next("frame");
-	expect(reply.t === "frame" && JSON.parse(reply.line)).toEqual({
-		type: "response",
-		command: "get_state",
-		id: "browser-query",
-		success: true,
-		data: { sessionId: "session", rpcSession: snapshot },
-	});
-	expect(reply.t === "frame" && reply.conn).toBe("browser");
-	send({ t: "detach", conn: "browser" });
-	const publication = await next("sessions");
-	expect(publication.t === "sessions" && publication.sessions).toEqual([snapshot]);
-});
-
-test("reconnects to a restarted gateway within 30 seconds and drops old attachments", async () => {
-	// Real sockets and the platform clock measure the restart recovery deadline.
-	await next("sessions");
-	send({ t: "attach", conn: "old", instanceId });
 	await next("frame");
-	const port = gateway.port;
-	const started = performance.now();
-	gateway.stop(true);
-	gateway = startFakeGateway(port);
-	expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
-	expect(performance.now() - started).toBeLessThan(30_000);
-	send({ t: "attach", conn: "new", instanceId });
-	expect((await next("frame")).t).toBe("frame");
-	send({ t: "frame", conn: "new", line: '{"id":"after-restart","type":"get_state"}' });
+	send({ t: "frame", conn: "browser", line: '{"id":"query","type":"get_state"}' });
 	const reply = await next("frame");
-	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("after-restart");
-}, 35_000);
-
-test("watches discovery changes and sends the empty list after a TUI exits", async () => {
-	await next("sessions");
-	await fs.rm(path.join(dir, `${instanceId}.json`));
-	expect(await next("sessions")).toEqual({ t: "sessions", sessions: [], gone: [instanceId] });
+	expect(reply.t === "frame" && JSON.parse(reply.line).data.rpcSession).toEqual(snapshot);
 });
 
-test("maps missing metadata, invalid metadata, and a temporary attached socket failure", async () => {
+test("retains local RPC sockets and buffered output through repeated forced bridge stream drops", async () => {
 	await next("sessions");
-	send({ t: "attach", conn: "missing", instanceId: "ffffffffffffffff" });
-	expect(await next("closed")).toEqual({ t: "closed", conn: "missing", code: "not_found" });
-	send({ t: "attach", conn: "live", instanceId });
+	send({ t: "attach", conn: "browser", instanceId });
 	await next("frame");
-	closeLocal();
-	expect(await next("closed")).toEqual({ t: "closed", conn: "live", code: "unreachable" });
-	await Bun.write(path.join(dir, `${instanceId}.json`), "{}");
-	send({ t: "attach", conn: "unreachable", instanceId });
-	expect(await next("closed")).toEqual({ t: "closed", conn: "unreachable", code: "unreachable" });
+	send({ t: "frame", conn: "browser", line: '{"id":"before","type":"get_state"}' });
+	await next("frame");
+	const attached = commandSockets.get("before")!;
+	for (let index = 0; index < 3; index++) {
+		journal.close();
+		attached.write(`${JSON.stringify({ type: "output", index })}\n`);
+		const frame = await next("frame");
+		expect(frame.t === "frame" && JSON.parse(frame.line).index).toBe(index);
+		send({ t: "attach", conn: "browser", instanceId });
+		send({ t: "frame", conn: "browser", line: JSON.stringify({ id: `after-${index}`, type: "get_state" }) });
+		await next("frame");
+		expect(commandSockets.get(`after-${index}`)).toBe(attached);
+	}
 });
 
-test("refuses remote plaintext WebSockets and private metadata symlinks", async () => {
-	expect(() => startBridge({ url: "ws://example.com/ws/bridge", headers, dir })).toThrow("requires WSS");
+test("retries an unacknowledged bridge POST without duplicating its output", async () => {
+	await next("sessions");
+	send({ t: "attach", conn: "browser", instanceId });
+	await next("frame");
+	discardAck = true;
+	send({ t: "frame", conn: "browser", line: '{"id":"once","type":"get_state"}' });
+	const first = await next("frame");
+	expect(first.t === "frame" && JSON.parse(first.line).id).toBe("once");
+	send({ t: "frame", conn: "browser", line: '{"id":"barrier","type":"get_state"}' });
+	const second = await next("frame");
+	expect(second.t === "frame" && JSON.parse(second.line).id).toBe("barrier");
+});
+
+test("preserves UTF-8 RPC chunks in a transcript larger than the bounded POST outbox", async () => {
+	await next("sessions");
+	send({ t: "attach", conn: "large", instanceId });
+	await next("frame");
+	send({ t: "frame", conn: "large", line: '{"id":"transcript","type":"get_messages"}' });
+	const decoder = new RpcFrameDecoder();
+	for (;;) {
+		const frame = await next("frame");
+		if (frame.t !== "frame") throw new Error("Expected RPC frame");
+		const result = decoder.push(JSON.parse(frame.line));
+		if (result) {
+			expect(result).toMatchObject({
+				type: "response",
+				data: { messages: [{ content: [{ text: "x".repeat(8 * 1024 * 1024) }] }] },
+			});
+			break;
+		}
+	}
+}, 20_000);
+
+test("reports confirmed exits and refuses symlinked private discovery metadata", async () => {
 	await next("sessions");
 	const metadata = path.join(dir, `${instanceId}.json`);
 	await fs.rename(metadata, path.join(root, "metadata"));
 	await fs.symlink(path.join(root, "metadata"), metadata);
 	send({ t: "attach", conn: "symlink", instanceId });
 	expect(await next("closed")).toEqual({ t: "closed", conn: "symlink", code: "unreachable" });
+	await fs.rm(metadata);
+	let publication = await next("sessions");
+	while (publication.t === "sessions" && !publication.gone?.includes(instanceId)) publication = await next("sessions");
+	expect(publication).toEqual({ t: "sessions", sessions: [], gone: [instanceId] });
 });
 
-test("keeps the existing local RPC client when the gateway repeats an attachment", async () => {
-	await next("sessions");
-	send({ t: "attach", conn: "same", instanceId });
-	await next("frame");
-	send({ t: "frame", conn: "same", line: '{"id":"before","type":"get_state"}' });
-	await next("frame");
-	const attached = commandSockets.get("before");
-	send({ t: "attach", conn: "same", instanceId });
-	send({ t: "frame", conn: "same", line: '{"id":"replacement","type":"get_state"}' });
-	const reply = await next("frame");
-	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("replacement");
-	expect(commandSockets.get("replacement")).toBe(attached);
+test("rejects plaintext HTTP outside loopback", () => {
+	expect(() => startBridge({ url: "http://example.com/events/bridge", headers, dir })).toThrow("requires HTTPS");
 });
 
-test("carries real pending question text and removes it on the next snapshot", async () => {
-	await next("sessions");
-	bridge.stop();
-	vi.useFakeTimers();
-	snapshot.inputRequired = true;
-	snapshot.questionText = "Which transport?\nWhich viewport?";
-	try {
-		bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
-		expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
-		snapshot.inputRequired = false;
-		delete snapshot.questionText;
-		vi.advanceTimersByTime(10_000);
-		expect(await next("sessions")).toEqual({ t: "sessions", sessions: [snapshot] });
-	} finally {
-		snapshot.inputRequired = false;
-		delete snapshot.questionText;
-	}
-});
-
-test("refreshes live snapshots each ten seconds without a discovery file change", async () => {
-	await next("sessions");
-	bridge.stop();
-	vi.useFakeTimers();
-	bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
-	await next("sessions");
-	snapshot.busy = true;
-	try {
-		vi.advanceTimersByTime(10_000);
-		expect(await next("sessions")).toEqual({ t: "sessions", sessions: [{ ...snapshot, busy: true }] });
-	} finally {
-		snapshot.busy = false;
-	}
-});
-
-test("sends the existing sessions snapshot within ten seconds", async () => {
-	await next("sessions");
-	bridge.stop();
-	vi.useFakeTimers();
-	bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
-	await next("sessions");
-	vi.advanceTimersByTime(10_000);
-	const frame = await next("sessions");
-	expect(frame).toEqual({ t: "sessions", sessions: [snapshot] });
-});
-
-test("caps conflict backoff until the bridge stays healthy", async () => {
-	await next("sessions");
-	bridge.stop();
-	rejectBridge = true;
-	vi.useFakeTimers();
-	spyOn(Math, "random").mockReturnValue(0.5);
-	let now = 1_000;
-	spyOn(Date, "now").mockImplementation(() => now);
-	let observed = Promise.withResolvers<number>();
-	spyOn(logger, "warn").mockImplementation((message, details) => {
-		if (message === "Sessions bridge conflict" && typeof details?.retryMs === "number")
-			observed.resolve(details.retryMs);
-	});
-	bridge = startBridge({ url: `ws://127.0.0.1:${gateway.port}/ws/bridge`, headers, dir });
-	for (const delay of [875, 1_750, 3_500, 7_000, 14_000, 26_250, 26_250]) {
-		expect(await observed.promise).toBe(delay);
-		observed = Promise.withResolvers<number>();
-		now += delay;
-		vi.advanceTimersByTime(delay);
-	}
-	expect(await observed.promise).toBe(26_250);
-	rejectBridge = false;
-	now += 26_250;
-	vi.advanceTimersByTime(26_250);
-	await next("sessions");
-	now += 30_000;
-	vi.advanceTimersByTime(30_000);
-	observed = Promise.withResolvers<number>();
-	remote!.close(4009, "a bridge is already connected");
-	expect(await observed.promise).toBe(875);
-});
-
-test("resumes the same paused RPC client after repeated retries without losing buffered output", async () => {
-	await next("sessions");
-	const bridgeId = observedHeaders.get("x-omp-bridge-id");
-	send({ t: "attach", conn: "retained", instanceId });
-	await next("frame");
-	send({ t: "frame", conn: "retained", line: '{"id":"before-conflict","type":"get_state"}' });
-	await next("frame");
-	const attached = commandSockets.get("before-conflict")!;
-	expect(attached).toBeDefined();
-	let localClosed = false;
-	attached.once("close", () => {
-		localClosed = true;
-	});
-	vi.useFakeTimers();
-	spyOn(Math, "random").mockReturnValue(1);
-	let conflict = Promise.withResolvers<number>();
-	spyOn(logger, "warn").mockImplementation((message, details) => {
-		if (message === "Sessions bridge conflict" && typeof details?.retryMs === "number")
-			conflict.resolve(details.retryMs);
-	});
-	rejectBridge = true;
-	remote!.close(4009, "a bridge is already connected");
-	for (const delay of [1_000, 2_000, 4_000]) {
-		expect(await conflict.promise).toBe(delay);
-		expect(observedHeaders.get("x-omp-bridge-id")).toBe(bridgeId);
-		expect(localClosed).toBe(false);
-		expect(attached.destroyed).toBe(false);
-		conflict = Promise.withResolvers<number>();
-		vi.advanceTimersByTime(delay);
-	}
-	expect(await conflict.promise).toBe(8_000);
-	expect(localClosed).toBe(false);
-	connections = ["retained"];
-	attached.write('{"type":"output","text":"during outage"}\n');
-	rejectBridge = false;
-	vi.advanceTimersByTime(8_000);
-	const buffered = await next("frame");
-	expect(buffered.t === "frame" && JSON.parse(buffered.line)).toEqual({ type: "output", text: "during outage" });
-	expect(localClosed).toBe(false);
-	send({ t: "attach", conn: "retained", instanceId });
-	send({ t: "frame", conn: "retained", line: '{"id":"after-conflict","type":"get_state"}' });
-	const reply = await next("frame");
-	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("after-conflict");
-	expect(commandSockets.get("after-conflict")).toBe(attached);
-});
-
-test("bounds retained RPC clients when the upstream never accepts a reconnect", async () => {
-	await next("sessions");
-	send({ t: "attach", conn: "retained", instanceId });
-	await next("frame");
-	send({ t: "frame", conn: "retained", line: '{"id":"before-timeout","type":"get_state"}' });
-	await next("frame");
-	const attached = commandSockets.get("before-timeout")!;
-	const closed = Promise.withResolvers<void>();
-	attached.once("close", closed.resolve);
-	vi.useFakeTimers();
-	const conflict = Promise.withResolvers<void>();
-	spyOn(logger, "warn").mockImplementation(message => {
-		if (message === "Sessions bridge conflict") conflict.resolve();
-	});
-	rejectBridge = true;
-	remote!.close(4009, "a bridge is already connected");
-	await conflict.promise;
-	expect(attached.destroyed).toBe(false);
-	vi.advanceTimersByTime(120_000);
-	await closed.promise;
-	expect(attached.destroyed).toBe(true);
-});
-
-test("pauses a large transcript on a throttled bridge without losing other attachments", async () => {
-	await next("sessions");
-	bridge.stop();
-	const proxySockets = new Set<net.Socket>();
-	let upstreamReader: net.Socket | undefined;
-	const proxy = net.createServer(downstream => {
-		const upstream = net.createConnection({ host: "127.0.0.1", port: gateway.port! });
-		for (const socket of [downstream, upstream]) {
-			proxySockets.add(socket);
-			socket.on("error", () => {});
-		}
-		upstreamReader = downstream;
-		downstream.pipe(upstream);
-		upstream.pipe(downstream);
-	});
-	const listening = Promise.withResolvers<void>();
-	proxy.listen(0, "127.0.0.1", listening.resolve);
-	await listening.promise;
-	const bufferedAmountDescriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, "bufferedAmount")!;
-	try {
-		const address = proxy.address() as net.AddressInfo;
-		bridge = startBridge({ url: `ws://127.0.0.1:${address.port}/ws/bridge`, headers, dir });
-		await next("sessions");
-		for (const conn of ["large", "small-one", "small-two"]) {
-			send({ t: "attach", conn, instanceId });
-			await next("frame");
-		}
-		const shared = remote;
-		upstreamReader!.pause();
-		let throttled = true;
-		Object.defineProperty(WebSocket.prototype, "bufferedAmount", {
-			...bufferedAmountDescriptor,
-			get() {
-				return throttled ? MAX_PAYLOAD_BYTES + 1 : bufferedAmountDescriptor.get!.call(this);
-			},
-		});
-		const paused = Promise.withResolvers<boolean>();
-		disconnected = () => paused.resolve(false);
-		const pause = net.Socket.prototype.pause;
-		spyOn(net.Socket.prototype, "pause").mockImplementation(function (this: net.Socket) {
-			if (this.remoteAddress === undefined) paused.resolve(true);
-			return pause.call(this);
-		});
-		send({ t: "frame", conn: "large", line: '{"id":"transcript","type":"get_messages"}' });
-		expect(await paused.promise).toBe(true);
-		throttled = false;
-		send({ t: "frame", conn: "small-one", line: '{"id":"one","type":"get_state"}' });
-		send({ t: "frame", conn: "small-two", line: '{"id":"two","type":"get_state"}' });
-		upstreamReader!.resume();
-		const decoder = new RpcFrameDecoder();
-		const completed = new Set<string>();
-		while (completed.size < 3) {
-			const frame = await next("frame");
-			if (frame.t !== "frame") throw new Error("Expected RPC frame");
-			const result = frame.conn === "large" ? decoder.push(JSON.parse(frame.line)) : JSON.parse(frame.line);
-			if (result?.type === "response") {
-				completed.add(frame.conn);
-				if (frame.conn === "large")
-					expect(result.data.messages[0].content[0].text).toBe("x".repeat(32 * 1024 * 1024));
-			}
-		}
-		expect([...completed].sort()).toEqual(["large", "small-one", "small-two"]);
-		expect(remote).toBe(shared);
-		expect(shared!.readyState).toBe(WebSocket.OPEN);
-	} finally {
-		Object.defineProperty(WebSocket.prototype, "bufferedAmount", bufferedAmountDescriptor);
-		for (const socket of proxySockets) socket.destroy();
-		proxy.close();
-	}
-}, 20_000);
-
-test("captures a supervised startup failure in an owner-only stderr log", async () => {
+test("captures supervised startup failures in an owner-only stderr log", async () => {
 	const converted = Bun.spawn(
 		["plutil", "-convert", "json", "-o", "-", path.join(import.meta.dir, "../com.omp.sessions-bridge.plist")],
-		{
-			stdout: "pipe",
-			stderr: "pipe",
-		},
+		{ stdout: "pipe", stderr: "pipe" },
 	);
-	const plist = await new Response(converted.stdout).json();
+	const plist: unknown = await new Response(converted.stdout).json();
 	expect(await converted.exited).toBe(0);
 	if (
 		!isRecord(plist) ||

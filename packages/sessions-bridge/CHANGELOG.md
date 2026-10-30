@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Resume SSE commands and retry acknowledged, numbered HTTP output without duplicating browser events.
 - Resume paused RPC clients across transport replacement and prefer the verified LAN origin when available.
 - Keep local RPC clients through upstream conflict retries with bounded retention and jittered backoff.
 - Resume the same bridge process without a stale upstream transport blocking its reconnect.

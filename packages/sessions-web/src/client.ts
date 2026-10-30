@@ -151,14 +151,23 @@ export class FrameDecoder {
 }
 
 export class SessionClient {
-	#socket?: WebSocket;
+	#source?: EventSource;
+	#client = crypto.randomUUID();
+	#lastId = "";
+	#streamReady = false;
+	#sequence = 0;
+	#outbox: Array<{ sequence: number; line: string; bytes: number; sent: boolean }> = [];
+	#outboxBytes = 0;
+	#posting = false;
+	#postRetry?: number;
+	#gapTimer?: number;
+	#hasState = false;
+	#bridgeOffline = false;
 	#listeners = new Set<() => void>();
 	#pending = new Map<string, Pending>();
 	#decoder = new FrameDecoder();
 	#retry?: number;
 	#refresh?: number;
-	#deadline?: number;
-	#backoff = 1000;
 	#stopped = false;
 	#generation = 0;
 	#hydration = 0;
@@ -185,7 +194,7 @@ export class SessionClient {
 	};
 	constructor(
 		readonly instanceId: string,
-		readonly url = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/session/${instanceId}`,
+		readonly url = `${location.origin}/events/session/${instanceId}`,
 	) {
 		if (!/^[a-f0-9]{16}$/.test(instanceId)) throw new Error("Invalid session id");
 	}
@@ -198,74 +207,154 @@ export class SessionClient {
 		this.#snapshot = { ...this.#snapshot, ...update, revision: this.#snapshot.revision + 1 };
 		for (const listener of this.#listeners) listener();
 	}
+	#gap(): void {
+		if (this.#gapTimer !== undefined || this.#stopped) return;
+		this.#gapTimer = window.setTimeout(() => {
+			this.#publish({ phase: "offline" });
+		}, 5000);
+	}
+	#recovered(bridgeReady = false): void {
+		if (bridgeReady) this.#bridgeOffline = false;
+		if (this.#bridgeOffline) return;
+		clearTimeout(this.#gapTimer);
+		this.#gapTimer = undefined;
+		if (this.#hasState && this.#snapshot.phase === "offline") this.#publish({ phase: "connected", error: null });
+		void this.#sendQueued();
+	}
 	connect = (): void => {
 		if (this.#stopped || this.#snapshot.phase === "gone") return;
 		clearTimeout(this.#retry);
-		this.#socket?.close();
+		this.#source?.close();
+		this.#streamReady = false;
 		const generation = ++this.#generation;
-		++this.#hydration;
-		this.#decoder = new FrameDecoder();
-		this.#events = [];
-		this.#publish({ phase: "connecting", dialogs: [] });
-		const socket = new WebSocket(this.url);
-		this.#socket = socket;
-		this.#deadline = window.setTimeout(() => socket.close(), 10_000);
-		socket.onmessage = event => {
+		if (!this.#lastId) this.#events = [];
+		const target = new URL(this.url);
+		target.searchParams.set("client", this.#client);
+		if (this.#lastId) target.searchParams.set("lastEventId", this.#lastId);
+		const source = new EventSource(target);
+		this.#source = source;
+		this.#gap();
+		source.onopen = () => {
+			if (generation === this.#generation) this.#recovered();
+		};
+		source.onmessage = event => {
 			if (generation !== this.#generation) return;
 			try {
-				if (typeof event.data !== "string") throw new Error("Expected RPC text");
-				const frame = this.#decoder.push(event.data);
-				if (frame) this.#receive(frame);
-			} catch (error) {
-				this.#publish({ error: error instanceof Error ? error.message : String(error) });
-				socket.close(1002, "invalid RPC frame");
+				const value: unknown = JSON.parse(event.data);
+				if (!isRecord(value)) throw new Error("Invalid stream event");
+				if (event.lastEventId === this.#lastId) return;
+				if (!event.lastEventId) throw new Error("Missing stream sequence");
+				const [epoch, sequence] = event.lastEventId.split(":");
+				const [previousEpoch, previousSequence] = this.#lastId.split(":");
+				if (!Number.isSafeInteger(Number(sequence)) || Number(sequence) < 1)
+					throw new Error("Invalid stream sequence");
+				if (epoch === previousEpoch && Number(sequence) <= Number(previousSequence)) return;
+				if (
+					epoch === previousEpoch &&
+					Number(sequence) !== Number(previousSequence) + 1 &&
+					value.event !== "resync"
+				)
+					throw new Error("Stream sequence gap");
+				if (value.type !== "cursor") {
+					const frame =
+						value.type === "gateway" && value.event === "resync" ? value : this.#decoder.push(event.data);
+					this.#lastId = event.lastEventId;
+					if (frame) this.#receive(frame);
+				}
+				this.#lastId = event.lastEventId;
+			} catch {
+				source.close();
+				this.#gap();
+				this.#retry = window.setTimeout(this.connect, 250);
 			}
 		};
-		socket.onerror = () => socket.close();
-		socket.onclose = event => {
-			if (generation !== this.#generation) return;
-			++this.#hydration;
-			this.#events = null;
-			clearTimeout(this.#deadline);
-			clearInterval(this.#refresh);
-			this.#rejectPending();
-			if (event.code === 4001 && event.reason === "session_gone")
-				this.#publish({ phase: "gone", dialogs: [], error: "The Mac closed this session. Return to sessions." });
-			if (this.#stopped || this.#snapshot.phase === "gone") return;
-			this.#publish({ phase: "offline", dialogs: [], tools: {} });
-			this.#retry = window.setTimeout(this.connect, this.#backoff);
-			this.#backoff = Math.min(30_000, this.#backoff * 2);
+		source.onerror = () => {
+			if (generation !== this.#generation || this.#stopped) return;
+			this.#streamReady = false;
+			this.#gap();
+			if (source.readyState === EventSource.CLOSED) this.#retry = window.setTimeout(this.connect, 250);
 		};
 	};
+	#enqueue(line: string): void {
+		const bytes = new TextEncoder().encode(line).byteLength;
+		if (bytes + 1 > 1024 * 1024 || this.#outboxBytes + bytes > 4 * 1024 * 1024)
+			throw new Error("The action exceeds the RPC transport limit");
+		this.#outbox.push({ sequence: ++this.#sequence, line, bytes, sent: false });
+		this.#outboxBytes += bytes;
+		void this.#sendQueued();
+	}
+	async #sendQueued(): Promise<void> {
+		if (this.#posting || this.#stopped || !this.#streamReady || this.#source?.readyState !== EventSource.OPEN) return;
+		this.#posting = true;
+		try {
+			while (this.#outbox.length && !this.#stopped && this.#streamReady) {
+				const item = this.#outbox[0]!;
+				const target = new URL(this.url);
+				target.pathname = target.pathname.replace("/events/session/", "/api/session/");
+				item.sent = true;
+				const response = await fetch(target, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						"idempotency-key": `${this.#client}:${item.sequence}`,
+						"x-omp-epoch": this.#lastId.split(":")[0]!,
+					},
+					body: JSON.stringify({ client: this.#client, sequence: item.sequence, line: item.line }),
+					signal: AbortSignal.timeout(10_000),
+				});
+				if (!response.ok) throw new Error(`Command POST failed: ${response.status}`);
+				const body: unknown = await response.json();
+				if (!isRecord(body) || !Number.isSafeInteger(body.ack) || Number(body.ack) < item.sequence)
+					throw new Error("Invalid command acknowledgement");
+				while (this.#outbox[0] && this.#outbox[0].sequence <= Number(body.ack))
+					this.#outboxBytes -= this.#outbox.shift()!.bytes;
+				this.#recovered();
+			}
+		} catch {
+			if (!this.#stopped) {
+				this.#gap();
+				this.#postRetry = window.setTimeout(() => void this.#sendQueued(), 250);
+			}
+		} finally {
+			this.#posting = false;
+		}
+	}
 	close(): void {
 		this.#stopped = true;
 		++this.#generation;
 		clearTimeout(this.#retry);
-		clearTimeout(this.#deadline);
+		clearTimeout(this.#gapTimer);
+		clearTimeout(this.#postRetry);
 		clearInterval(this.#refresh);
-		this.#socket?.close();
+		this.#source?.close();
+		if (this.#source) {
+			const target = new URL(this.url);
+			target.pathname = target.pathname.replace("/events/session/", "/api/session/");
+			target.searchParams.set("client", this.#client);
+			void fetch(target, { method: "DELETE", keepalive: true }).catch(() => {
+				// Page teardown is best effort; the session owner also releases clients at session exit.
+			});
+		}
 		this.#rejectPending();
 		this.#publish({ phase: "closed" });
 	}
-	#rejectPending(): void {
-		for (const pending of this.#pending.values()) {
+	#rejectPending(retained?: Set<string>): void {
+		for (const [id, pending] of this.#pending) {
+			if (retained?.has(id)) continue;
 			clearTimeout(pending.timer);
 			pending.reject(
 				new Error("The connection closed. The action may have reached the TUI. Check the transcript before retry."),
 			);
+			this.#pending.delete(id);
 		}
-		this.#pending.clear();
 	}
 	request(command: RpcCommand, timeout = 120_000): Promise<RecordValue> {
 		return this.#request(command, timeout);
 	}
 	#request(command: RpcCommand, timeout: number, hydration?: number): Promise<RecordValue> {
-		const socket = this.#socket;
-		if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("The Mac is disconnected"));
+		if (this.#stopped || this.#snapshot.phase === "gone") return Promise.reject(new Error("The session is closed"));
 		const id = crypto.randomUUID();
 		const line = JSON.stringify({ ...command, id });
-		if (new TextEncoder().encode(line).byteLength + 1 > 1024 * 1024 || socket.bufferedAmount > 4 * 1024 * 1024)
-			return Promise.reject(new Error("The action exceeds the RPC transport limit"));
 		const result = Promise.withResolvers<RecordValue>();
 		const timer = window.setTimeout(() => {
 			this.#pending.delete(id);
@@ -279,7 +368,7 @@ export class SessionClient {
 			hydration,
 		});
 		try {
-			socket.send(line);
+			this.#enqueue(line);
 		} catch (error) {
 			clearTimeout(timer);
 			this.#pending.delete(id);
@@ -288,8 +377,7 @@ export class SessionClient {
 		return result.promise;
 	}
 	answer(response: RpcExtensionUIResponse): void {
-		if (this.#snapshot.phase !== "connected" || this.#socket?.readyState !== WebSocket.OPEN)
-			throw new Error("The Mac is disconnected");
+		if (this.#snapshot.phase !== "connected") throw new Error("The Mac is disconnected");
 		const dialog = this.#snapshot.dialogs.find(dialog => dialog.id === response.id);
 		if (!dialog) throw new Error("This dialog is no longer open");
 		if (dialog.method === "ask" && !("cancelled" in response)) {
@@ -314,9 +402,7 @@ export class SessionClient {
 			}
 		}
 		const line = JSON.stringify(response);
-		if (new TextEncoder().encode(line).byteLength + 1 > 1024 * 1024 || this.#socket.bufferedAmount > 4 * 1024 * 1024)
-			throw new Error("The answer exceeds the RPC transport limit");
-		this.#socket.send(line);
+		this.#enqueue(line);
 		this.#publish({ dialogs: this.#snapshot.dialogs.filter(d => d.id !== response.id) });
 	}
 	clearCommandOutputs(): void {
@@ -367,7 +453,7 @@ export class SessionClient {
 			this.#publish({ messages });
 			for (const event of events) this.#apply(event);
 			this.#publish({ phase: "connected", error: null });
-			this.#backoff = 1000;
+			this.#hasState = true;
 			await this.loadCatalog();
 			await this.refresh();
 			if (generation === this.#generation && hydration === this.#hydration)
@@ -377,7 +463,9 @@ export class SessionClient {
 		} catch (error) {
 			if (generation !== this.#generation || hydration !== this.#hydration) return;
 			this.#publish({ error: error instanceof Error ? error.message : String(error) });
-			this.#socket?.close();
+			this.#source?.close();
+			this.#gap();
+			this.#retry = window.setTimeout(this.connect, 250);
 		}
 	}
 	async loadCatalog(): Promise<void> {
@@ -415,15 +503,41 @@ export class SessionClient {
 		if (frame.type === "gateway") {
 			if (frame.event === "session_gone") {
 				this.#publish({ phase: "gone", dialogs: [], error: "The Mac closed this session. Return to sessions." });
-				this.#socket?.close();
-			} else if (frame.event === "bridge_offline" || frame.event === "session_unavailable") {
-				this.#publish({ phase: "offline", dialogs: [] });
-				this.#socket?.close();
+				this.#source?.close();
+			} else if (["bridge_reconnecting", "bridge_offline", "session_unavailable"].includes(text(frame.event))) {
+				this.#bridgeOffline = true;
+				this.#gap();
+			} else if (frame.event === "bridge_resumed" || frame.event === "resumed") {
+				this.#streamReady = true;
+				this.#recovered(frame.event === "bridge_resumed");
+			} else if (frame.event === "resync") {
+				this.#streamReady = false;
+				this.#decoder = new FrameDecoder();
+				this.#events = [];
+				++this.#hydration;
+				const unsent = this.#outbox.filter(item => !item.sent);
+				const retained = new Set<string>();
+				for (const item of unsent) {
+					const command: unknown = JSON.parse(item.line);
+					if (isRecord(command) && typeof command.id === "string") retained.add(command.id);
+				}
+				if (frame.resetCommands === true) {
+					// A new gateway cannot prove whether sent mutations ran; never replay those.
+					this.#outbox = unsent;
+					this.#sequence = 0;
+					this.#outboxBytes = 0;
+					for (const item of unsent) {
+						item.sequence = ++this.#sequence;
+						this.#outboxBytes += item.bytes;
+					}
+				}
+				this.#rejectPending(retained);
 			}
 			return;
 		}
 		if (frame.type === "ready") {
-			clearTimeout(this.#deadline);
+			this.#streamReady = true;
+			this.#recovered(true);
 			void this.#rebuild();
 			return;
 		}

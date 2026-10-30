@@ -37,7 +37,7 @@ export async function selectBridgeEndpoint(
 		await probe.body?.cancel();
 		if (probe.status !== 403) throw new Error("Unexpected LAN gateway probe response");
 		// Access signs the service assertion at the edge; the LAN gateway verifies it unchanged.
-		const assertionUrl = new URL(url.replace(/^wss:/, "https:"));
+		const assertionUrl = new URL(url);
 		const response = await fetch(assertionUrl, {
 			headers,
 			redirect: "manual",
@@ -50,12 +50,11 @@ export async function selectBridgeEndpoint(
 			.find(Boolean);
 		if (!assertion || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(assertion))
 			throw new Error("Cloudflare did not return a service assertion");
-		local.protocol = "wss:";
 		return {
 			url: local.href,
 			headers: {
 				host: publicUrl.hostname,
-				Authorization: headers.Authorization!,
+				Authorization: new Headers(headers).get("authorization") ?? "",
 				"cf-access-jwt-assertion": assertion,
 			},
 			tls,

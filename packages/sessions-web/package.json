@@ -8,7 +8,7 @@
 		"dev": "bun ./index.html",
 		"check:types": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.fixture.json --noEmit",
 		"lint": "oxlint .",
-		"test": "bun test test/client.test.ts"
+		"test": "bun test test"
 	},
 	"dependencies": {
 		"@oh-my-pi/web-render": "workspace:*",

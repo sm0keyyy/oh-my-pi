@@ -1,4 +1,4 @@
-import { expect, spyOn, test, vi } from "bun:test";
+import { expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -33,21 +33,8 @@ test("relays three authenticated browser attachments to an isolated source-run T
 		port: 0,
 		accessCertsUrl: access.certsUrl,
 	});
-	const published = Promise.withResolvers<{ instanceId: string; socket: WebSocket }>();
-	const send = WebSocket.prototype.send;
-	spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, data) {
-		if (this.url.endsWith("/ws/bridge") && typeof data === "string") {
-			const frame: unknown = JSON.parse(data);
-			if (isRecord(frame) && frame.t === "sessions" && Array.isArray(frame.sessions) && frame.sessions.length) {
-				const session: unknown = frame.sessions[0];
-				if (isRecord(session) && typeof session.instanceId === "string")
-					published.resolve({ instanceId: session.instanceId, socket: this });
-			}
-		}
-		return send.call(this, data);
-	});
 	const bridge = startBridge({
-		url: gateway.url.replace("http:", "ws:") + "/ws/bridge",
+		url: gateway.url + "/events/bridge",
 		headers: { ...access.serviceHeaders, authorization: `Bearer ${token}` },
 		dir: path.join(config, "run/rpc-sessions"),
 	});
@@ -87,29 +74,31 @@ test("relays three authenticated browser attachments to an isolated source-run T
 	);
 	const peers: Peer[] = [];
 	try {
-		const { instanceId, socket } = await Promise.race([
-			published.promise,
-			child.exited.then(code => {
-				throw new Error(`Source TUI exited before publication: ${code}`);
-			}),
-		]);
-		const barrier = Promise.withResolvers<Event>();
-		socket.addEventListener("pong", barrier.resolve, { once: true });
-		socket.ping();
-		await barrier.promise;
+		// Discovery crosses a real child-process boundary; wait for its published snapshot.
+		let instanceId: string | undefined;
+		const deadline = Date.now() + 20_000;
+		while (!instanceId && Date.now() < deadline) {
+			const body: unknown = await (await access.fetch(`${gateway.url}/api/sessions`)).json();
+			if (isRecord(body) && Array.isArray(body.sessions)) {
+				const session: unknown = body.sessions[0];
+				if (isRecord(session) && typeof session.instanceId === "string") instanceId = session.instanceId;
+			}
+			if (!instanceId) await Bun.sleep(20);
+		}
+		if (!instanceId) throw new Error(`Source TUI did not publish: ${child.exitCode}`);
 		const lobby = await (await access.fetch(`${gateway.url}/api/sessions`)).json();
 		expect(lobby).toMatchObject({ sessions: [{ pid: child.pid }] });
 		for (let index = 0; index < 3; index++) {
-			const peer = new Peer(`${gateway.url.replace("http:", "ws:")}/ws/session/${instanceId}`, {
+			const peer = new Peer(`${gateway.url}/events/session/${instanceId}`, {
 				...access.headers,
 				origin: PUBLIC_ORIGIN,
 			});
 			peers.push(peer);
-			expect(JSON.parse(await peer.next()).event).toBe("attached");
-			const ready = JSON.parse(await peer.next());
+			let ready = JSON.parse(await peer.next());
+			while (ready.type !== "ready") ready = JSON.parse(await peer.next());
 			expect(ready.type).toBe("ready");
 			expect(ready.host.pid).toBe(child.pid);
-			peer.ws.send(JSON.stringify({ id: `state-${index}`, type: "get_state" }));
+			expect((await peer.send(JSON.stringify({ id: `state-${index}`, type: "get_state" }))).status).toBe(200);
 			for (;;) {
 				const frame = JSON.parse(await peer.next());
 				if (frame.id !== `state-${index}`) continue;
@@ -126,28 +115,19 @@ test("relays three authenticated browser attachments to an isolated source-run T
 			for (;;) {
 				const frame = JSON.parse(await peer.next());
 				if (frame.type !== "gateway") continue;
-				if (frame.event === "session_unavailable") {
-					expect((await peer.closed.promise).reason).toBe("session_unavailable");
-					const replacement = new Peer(`${gateway.url.replace("http:", "ws:")}/ws/session/${instanceId}`, {
-						...access.headers,
-						origin: PUBLIC_ORIGIN,
-					});
-					peers.push(replacement);
-					expect(JSON.parse(await replacement.next()).event).toBe("attached");
-					expect(JSON.parse(await replacement.next()).event).toBe("session_gone");
-				} else expect(frame.event).toBe("session_gone");
+				if (frame.event === "session_unavailable" || frame.event === "resync") continue;
+				expect(frame.event).toBe("session_gone");
 				break;
 			}
 		}
 	} finally {
-		for (const peer of peers) peer.ws.close();
+		for (const peer of peers) peer.close();
 		bridge.stop();
 		gateway.stop();
 		access.stop();
 		if (child.exitCode === null) child.kill("SIGKILL");
 		await child.exited;
 		child.terminal?.close();
-		vi.restoreAllMocks();
 		await fs.rm(config, { recursive: true });
 	}
 }, 30_000);

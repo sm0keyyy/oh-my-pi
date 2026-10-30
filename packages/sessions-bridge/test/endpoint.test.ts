@@ -1,7 +1,7 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
 import { selectBridgeEndpoint } from "../src/endpoint";
 
-const url = "wss://sessions.the-freed.family/ws/bridge";
+const url = "https://sessions.the-freed.family/events/bridge";
 const origin = "https://10.0.0.13:44301";
 const headers = { Authorization: "Bearer fixture", "CF-Access-Client-Secret": "fixture-secret" };
 
@@ -17,7 +17,7 @@ test("uses the reachable LAN origin with verified public-host TLS and a signed A
 			}),
 		);
 	const endpoint = await selectBridgeEndpoint(url, headers, origin);
-	expect(endpoint.url).toBe("wss://10.0.0.13:44301/ws/bridge");
+	expect(endpoint.url).toBe("https://10.0.0.13:44301/events/bridge");
 	expect(endpoint.tls).toEqual({ serverName: "sessions.the-freed.family", rejectUnauthorized: true });
 	expect(endpoint.headers).toEqual({
 		host: "sessions.the-freed.family",
@@ -25,7 +25,7 @@ test("uses the reachable LAN origin with verified public-host TLS and a signed A
 		"cf-access-jwt-assertion": "eyJ.eyJ.c2ln",
 	});
 	const [probeUrl, probe] = fetcher.mock.calls[0]!;
-	expect(String(probeUrl)).toBe("https://10.0.0.13:44301/ws/bridge");
+	expect(String(probeUrl)).toBe("https://10.0.0.13:44301/events/bridge");
 	expect(probe).toMatchObject({ tls: endpoint.tls });
 	expect(probe?.signal).toBeInstanceOf(AbortSignal);
 	expect(fetcher.mock.calls[1]?.[1]?.headers).toBe(headers);

@@ -798,6 +798,47 @@ a.btn {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 }
+.custom-card {
+	min-width: 0;
+	border: 1px solid var(--border-strong);
+	border-inline-start: 2px solid var(--accent-a);
+	border-radius: var(--radius);
+	background: var(--panel);
+	padding: var(--s3);
+}
+.custom-card header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--s2);
+	color: var(--fg-muted);
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+.custom-card header strong {
+	color: var(--fg);
+}
+.custom-card-body {
+	margin-block-start: var(--s2);
+	overflow-wrap: anywhere;
+}
+.custom-card ul {
+	padding-inline-start: var(--s4);
+}
+.custom-card li + li {
+	margin-block-start: var(--s2);
+}
+.custom-card details > summary {
+	cursor: pointer;
+	color: var(--fg-muted);
+}
+.custom-card pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font: inherit;
+	font-family: var(--font-mono);
+	padding-block-start: var(--s2);
+}
 .think {
 	color: var(--fg-faint);
 }

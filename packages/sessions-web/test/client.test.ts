@@ -1,12 +1,75 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import { readSseEvents } from "../../utils/src/stream";
+import { ReplayJournal } from "../../sessions-gateway/src/replay";
 import { FrameDecoder, messageOf, SessionClient, sortSessions, type RecordValue, type Snapshot } from "../src/client";
 
+const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
+class TestEventSource extends EventTarget {
+	static readonly CONNECTING = 0;
+	static readonly OPEN = 1;
+	static readonly CLOSED = 2;
+	static latest: TestEventSource;
+	readyState = 0;
+	onopen: ((event: Event) => void) | null = null;
+	onerror: ((event: Event) => void) | null = null;
+	onmessage: ((event: MessageEvent) => void) | null = null;
+	#controller = new AbortController();
+	#timer?: Timer;
+	#lastId = "";
+	constructor(readonly url: string | URL) {
+		super();
+		TestEventSource.latest = this;
+		void this.#connect();
+	}
+	close(): void {
+		this.readyState = 2;
+		clearTimeout(this.#timer);
+		this.#controller.abort();
+	}
+	async #connect(): Promise<void> {
+		try {
+			const response = await fetch(this.url, {
+				headers: this.#lastId ? { "last-event-id": this.#lastId } : {},
+				signal: this.#controller.signal,
+			});
+			if (!response.ok || !response.body) throw new Error("Stream unavailable");
+			this.readyState = 1;
+			const open = new Event("open");
+			this.onopen?.(open);
+			this.dispatchEvent(open);
+			for await (const event of readSseEvents(response.body, this.#controller.signal)) {
+				if (!event.data) continue;
+				this.#lastId = event.id ?? this.#lastId;
+				const message = new MessageEvent("message", { data: event.data, lastEventId: this.#lastId });
+				this.onmessage?.(message);
+				this.dispatchEvent(message);
+			}
+		} catch (cause) {
+			if (!this.#controller.signal.aborted && !(cause instanceof Error)) throw cause;
+		} finally {
+			if (this.readyState !== 2) {
+				this.readyState = 0;
+				const error = new Event("error");
+				this.onerror?.(error);
+				this.dispatchEvent(error);
+				this.#timer = setTimeout(() => void this.#connect(), 250);
+			}
+		}
+	}
+}
+beforeEach(() => {
+	Object.defineProperty(globalThis, "EventSource", { value: TestEventSource, configurable: true, writable: true });
+});
 Object.defineProperty(globalThis, "window", { value: globalThis, configurable: true });
 const clients: SessionClient[] = [];
 const servers: Array<{ stop(force?: boolean): void }> = [];
 afterEach(() => {
 	for (const client of clients.splice(0)) client.close();
 	for (const server of servers.splice(0)) server.stop(true);
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	if (originalEventSource) Object.defineProperty(globalThis, "EventSource", originalEventSource);
+	else Reflect.deleteProperty(globalThis, "EventSource");
 });
 
 test("lobby orders waiting sessions before recent activity and rejects malformed rows", () => {
@@ -69,97 +132,54 @@ test("v2 reassembles UTF-8 chunks and rejects interleaving", () => {
 	expect(() => new FrameDecoder().push('{"type":"rpc_chunk","index":0}')).toThrow("Invalid RPC chunk");
 });
 
-test("reconnect rebuilds snapshots without replaying an uncertain prompt", async () => {
-	let attachments = 0;
+test("quietly resumes missed output and sends a prompt queued during a gap only once", async () => {
+	let transport: FixtureStream | undefined;
 	let prompts = 0;
-	let first: Bun.ServerWebSocket<undefined> | undefined;
-	const state = {
-		sessionId: "local",
-		isStreaming: false,
-		queuedMessages: { steering: [], followUp: [] },
-		todoPhases: [],
-	};
-	const server = Bun.serve({
-		hostname: "127.0.0.1",
-		port: 0,
-		fetch(request, server) {
-			if (server.upgrade(request)) return;
-			return new Response("upgrade", { status: 400 });
-		},
-		websocket: {
-			open(socket) {
-				attachments++;
-				if (attachments === 1) first = socket;
-				socket.send('{"type":"ready"}');
-			},
-			message(socket, line) {
-				const command = JSON.parse(String(line));
-				if (command.type === "prompt") {
-					prompts++;
-					socket.close();
-					return;
-				}
-				let data: unknown = {};
-				switch (command.type) {
-					case "get_state":
-						data = state;
-						break;
-					case "get_messages":
-						data = {
-							messages:
-								attachments === 1
-									? []
-									: [
-											{ role: "user", timestamp: 1, content: [{ type: "text", text: "uncertain" }] },
-											{
-												role: "assistant",
-												timestamp: 2,
-												content: [{ type: "text", text: "received exactly once" }],
-												stopReason: "stop",
-											},
-										],
-						};
-						break;
-					case "get_available_commands":
-						data = { commands: [] };
-						break;
-					case "get_available_models":
-						data = { models: [] };
-						break;
-					case "get_available_thinking_levels":
-						data = { levels: [] };
-						break;
-					case "get_subagents":
-						data = { subagents: [] };
-						break;
-				}
-				socket.send(
-					JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data }),
-				);
-			},
-		},
-	});
-	servers.push(server);
-	const client = new SessionClient("0123456789abcdef", `ws://127.0.0.1:${server.port}`);
-	clients.push(client);
-	const connected = Promise.withResolvers<void>();
-	const rebuilt = Promise.withResolvers<void>();
-	client.subscribe(() => {
-		const snapshot = client.getSnapshot();
-		if (snapshot.phase === "connected") {
-			if (attachments === 1) connected.resolve();
-			else if (snapshot.messages.length === 2) rebuilt.resolve();
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type === "prompt") {
+			prompts++;
+			stream.loseNextAck = true;
+			respond({});
+			return true;
 		}
 	});
 	client.connect();
-	await connected.promise;
-	expect(first).toBeDefined();
-	await expect(client.request({ type: "prompt", message: "uncertain" })).rejects.toThrow("may have reached the TUI");
-	await rebuilt.promise;
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	const phases: string[] = [];
+	client.subscribe(() => phases.push(client.getSnapshot().phase));
+	const failed = Promise.withResolvers<void>();
+	TestEventSource.latest.addEventListener("error", () => failed.resolve(), { once: true });
+	transport!.close();
+	await failed.promise;
+	for (let index = 0; index < 6; index++)
+		transport!.send(JSON.stringify({ type: "command_output", text: String(index) }));
+	await client.request({ type: "prompt", message: "queued exactly once" });
+	await client.request({ type: "get_state" });
+	await waitForSnapshot(client, snapshot => snapshot.commandOutputs.length === 6);
+	expect(client.getSnapshot().commandOutputs).toEqual(["0", "1", "2", "3", "4", "5"]);
 	expect(prompts).toBe(1);
-	expect(client.getSnapshot().messages.map(message => message.key)).toEqual(["user:1:", "assistant:2:"]);
-	expect(client.getSnapshot().state).toEqual(state);
-}, 10000);
+	expect(phases.every(phase => phase === "connected")).toBe(true);
+});
+
+test("shows offline only after reconnection has failed for five seconds", async () => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient(stream => {
+		transport = stream;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	vi.useFakeTimers();
+	const failed = Promise.withResolvers<void>();
+	TestEventSource.latest.addEventListener("error", () => failed.resolve(), { once: true });
+	transport!.available = false;
+	transport!.close();
+	await failed.promise;
+	vi.advanceTimersByTime(4999);
+	expect(client.getSnapshot().phase).toBe("connected");
+	vi.advanceTimersByTime(1);
+	expect(client.getSnapshot().phase).toBe("offline");
+});
 
 const fixtureState = {
 	sessionId: "local",
@@ -167,31 +187,72 @@ const fixtureState = {
 	queuedMessages: { steering: [], followUp: [] },
 	todoPhases: [],
 };
+interface FixtureStream {
+	send(line: string): void;
+	close(): void;
+	restart(): void;
+	available: boolean;
+	loseNextAck: boolean;
+}
 function fixtureClient(
-	handle: (
-		socket: Bun.ServerWebSocket<undefined>,
-		command: RecordValue,
-		respond: (data: RecordValue) => void,
-	) => boolean | void,
+	handle: (stream: FixtureStream, command: RecordValue, respond: (data: RecordValue) => void) => boolean | void,
 ): SessionClient {
+	let journal = new ReplayJournal();
+	let started = false;
+	let sequence = 0;
+	const stream: FixtureStream = {
+		send: line => {
+			journal.append(line);
+		},
+		close: () => journal.close(),
+		restart() {
+			journal.close();
+			journal = new ReplayJournal();
+			started = false;
+			sequence = 0;
+		},
+		available: true,
+		loseNextAck: false,
+	};
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
-		fetch(request, server) {
-			if (server.upgrade(request)) return;
-			return new Response("upgrade", { status: 400 });
-		},
-		websocket: {
-			open(socket) {
-				socket.send('{"type":"ready"}');
-			},
-			message(socket, line) {
-				const command = JSON.parse(String(line)) as RecordValue;
-				const respond = (data: RecordValue) =>
-					socket.send(
-						JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data }),
-					);
-				if (handle(socket, command, respond)) return;
+		async fetch(request, server) {
+			if (request.method === "DELETE") return new Response(null, { status: 204 });
+			if (!stream.available) return new Response(null, { status: 503 });
+			if (request.method === "GET") {
+				server.timeout(request, 0);
+				const cursor =
+					request.headers.get("last-event-id") ?? new URL(request.url).searchParams.get("lastEventId") ?? "";
+				const resync = Boolean(cursor && !journal.canResume(cursor));
+				const response = journal.open(request, undefined, undefined, resync ? journal.id : cursor);
+				if (resync) stream.send('{"type":"gateway","event":"resync","resetCommands":true}');
+				if (!started) {
+					started = true;
+					stream.send('{"type":"ready"}');
+				} else stream.send('{"type":"gateway","event":"resumed"}');
+				return response;
+			}
+			if (request.headers.get("x-omp-epoch") !== journal.epoch)
+				return Response.json({ error: { code: "session_resync_required" } }, { status: 409 });
+			const body = await request.json();
+			if (
+				!body ||
+				typeof body !== "object" ||
+				!("sequence" in body) ||
+				typeof body.sequence !== "number" ||
+				!("line" in body) ||
+				typeof body.line !== "string"
+			)
+				throw new Error("Invalid fixture POST");
+			if (body.sequence <= sequence) return Response.json({ ack: sequence });
+			sequence = body.sequence;
+			const command: RecordValue = JSON.parse(body.line);
+			const respond = (data: RecordValue) =>
+				stream.send(
+					JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data }),
+				);
+			if (!handle(stream, command, respond)) {
 				switch (command.type) {
 					case "get_state":
 						respond(fixtureState);
@@ -214,11 +275,19 @@ function fixtureClient(
 					default:
 						respond({});
 				}
-			},
+			}
+			if (stream.loseNextAck) {
+				stream.loseNextAck = false;
+				return new Response(null, { status: 503 });
+			}
+			return Response.json({ ack: sequence });
 		},
 	});
 	servers.push(server);
-	const client = new SessionClient("0123456789abcdef", `ws://127.0.0.1:${server.port}`);
+	const client = new SessionClient(
+		"0123456789abcdef",
+		`http://127.0.0.1:${server.port}/events/session/0123456789abcdef`,
+	);
 	clients.push(client);
 	return client;
 }
@@ -387,25 +456,105 @@ test("host UI snapshots replace stale stores and subsequent clears remain author
 	expect(client.getSnapshot().widgets).toEqual({});
 });
 
-test("temporary attachment failure reconnects while confirmed exit stops reconnect", async () => {
-	let attachments = 0;
-	const client = fixtureClient((socket, command, respond) => {
+test("confirmed exit stops the resumable client without discarding a temporary gap", async () => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient(stream => {
+		transport = stream;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	transport!.send('{"type":"gateway","event":"session_unavailable"}');
+	transport!.send('{"type":"gateway","event":"bridge_resumed"}');
+	transport!.send('{"type":"gateway","event":"session_gone"}');
+	await waitForSnapshot(client, snapshot => snapshot.phase === "gone");
+	client.connect();
+	expect(client.getSnapshot().phase).toBe("gone");
+});
+
+test("rebuilds full state after resync even when the replay gap interrupted RPC chunks", async () => {
+	let transport: FixtureStream | undefined;
+	let snapshots = 0;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
 		if (command.type === "get_messages") {
-			attachments++;
-			if (attachments === 1) {
-				socket.send('{"type":"gateway","event":"session_unavailable"}');
-			} else {
-				respond({ messages: [] });
-				socket.send('{"type":"gateway","event":"session_gone"}');
-				socket.close(4001, "session_gone");
-			}
+			snapshots++;
+			respond({
+				messages: [{ role: "assistant", timestamp: snapshots, content: snapshots === 1 ? "before" : "after" }],
+			});
 			return true;
 		}
 	});
 	client.connect();
-	await waitForSnapshot(client, snapshot => snapshot.phase === "gone");
-	expect(attachments).toBe(2);
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.request({ type: "get_state" });
+	transport!.send(
+		JSON.stringify({
+			type: "rpc_chunk",
+			chunkId: "interrupted",
+			index: 0,
+			count: 2,
+			byteLength: 1024 * 1024,
+			data: "YQ==",
+		}),
+	);
+	transport!.send('{"type":"gateway","event":"resync"}');
+	transport!.send('{"type":"ready"}');
+	await waitForSnapshot(
+		client,
+		snapshot => snapshot.phase === "connected" && snapshot.messages[0]?.content === "after",
+	);
+	expect(snapshots).toBe(2);
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual(["after"]);
+});
+
+test("keeps a real bridge outage offline until bridge recovery, not merely browser reconnect", async () => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient(stream => {
+		transport = stream;
+	});
 	client.connect();
-	expect(attachments).toBe(2);
-	expect(client.getSnapshot().phase).toBe("gone");
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	vi.useFakeTimers();
+	transport!.send('{"type":"gateway","event":"bridge_reconnecting"}');
+	await client.request({ type: "get_state" });
+	vi.advanceTimersByTime(5000);
+	expect(client.getSnapshot().phase).toBe("offline");
+	transport!.send('{"type":"gateway","event":"resumed"}');
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().phase).toBe("offline");
+	transport!.send('{"type":"gateway","event":"bridge_resumed"}');
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+});
+
+test("resyncs a new gateway epoch, keeps unsent prompts, and never replays an uncertain mutation", async () => {
+	let transport: FixtureStream | undefined;
+	const applied = Promise.withResolvers<void>();
+	const prompts: string[] = [];
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type === "prompt") {
+			prompts.push(String(command.message));
+			if (command.message === "uncertain") {
+				stream.loseNextAck = true;
+				applied.resolve();
+			} else respond({});
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.request({ type: "get_state" });
+	const uncertain = client.request({ type: "prompt", message: "uncertain" }).catch(error => error);
+	await applied.promise;
+	const failed = Promise.withResolvers<void>();
+	TestEventSource.latest.addEventListener("error", () => failed.resolve(), { once: true });
+	transport!.restart();
+	await failed.promise;
+	const queued = client.request({ type: "prompt", message: "queued" });
+	await queued;
+	const outcome: unknown = await uncertain;
+	expect(outcome).toBeInstanceOf(Error);
+	if (outcome instanceof Error) expect(outcome.message).toContain("may have reached the TUI");
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(prompts).toEqual(["uncertain", "queued"]);
 });

@@ -1,5 +1,6 @@
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
+import { readSseEvents } from "../../utils/src/stream";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -32,7 +33,8 @@ await Bun.write(
 	"compaction:\n  keepRecentTokens: 1\n  methodOrder: [soft]\nspelling:\n  autocomplete: off\n",
 );
 const owned = new Map<string, Bun.Subprocess>();
-const sockets = new Set<Bun.ServerWebSocket<{ upstream: WebSocket; queued: string[] }>>();
+const browserStreams = new Set<AbortController>();
+const bridgeStreams = new Set<AbortController>();
 const receipts: unknown[] = [];
 const wideLine = Array.from({ length: 100 }, (_, i) => i.toString(36).padStart(3, "x")).join("");
 const widthTranscript = [
@@ -203,13 +205,7 @@ const gateway = await startGateway({
 	port: 0,
 	accessCertsUrl: access.certsUrl,
 });
-const bridge = startBridge({
-	url: gateway.url.replace("http:", "ws:") + "/ws/bridge",
-	headers: { ...serviceHeaders, authorization: `Bearer ${token}` },
-	dir: path.join(config, "run/rpc-sessions"),
-	heartbeatMs: 1000,
-});
-const proxy = Bun.serve<{ upstream: WebSocket; queued: string[] }>({
+const proxy = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
 	async fetch(request, server) {
@@ -295,56 +291,94 @@ const proxy = Bun.serve<{ upstream: WebSocket; queued: string[] }>({
 		if (url.pathname === "/fixture/drop") {
 			const ms = Number(url.searchParams.get("ms") ?? "5000");
 			if (!Number.isFinite(ms) || ms < 1000 || ms > 20000) return new Response("invalid duration", { status: 400 });
-			for (const socket of sockets) {
-				socket.data.upstream.close();
-				socket.close(4001, "simulated connection drop");
-			}
+			for (const controller of browserStreams) controller.abort();
 			droppingUntil = Date.now() + ms;
 			receipts.push({ event: "network_drop", at: Date.now(), ms });
 			return Response.json({ ms });
 		}
-		if (url.pathname.startsWith("/ws/session/")) {
-			if (Date.now() < droppingUntil) return new Response("simulated network drop", { status: 503 });
-			const upstream = new WebSocket(gateway.url.replace("http:", "ws:") + url.pathname, {
-				headers: { ...access.headers, origin: PUBLIC_ORIGIN },
-			});
-			if (server.upgrade(request, { data: { upstream, queued: [] } })) return;
-			upstream.close();
-			return new Response("upgrade required", { status: 400 });
+		if (url.pathname === "/fixture/drop-bridge") {
+			for (const controller of bridgeStreams) controller.abort();
+			receipts.push({ event: "bridge_drop", at: Date.now() });
+			return Response.json({ dropped: true });
 		}
-		return access.fetch(gateway.url + url.pathname + url.search, {
-			method: request.method,
-			body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
-		});
-	},
-	websocket: {
-		open(socket) {
-			sockets.add(socket);
-			const upstream = socket.data.upstream;
-			upstream.onopen = () => {
-				for (const line of socket.data.queued) upstream.send(line);
-				socket.data.queued = [];
+		if (
+			url.pathname.startsWith("/events/") ||
+			url.pathname.startsWith("/api/session/") ||
+			url.pathname === "/api/bridge"
+		) {
+			const isBridge = url.pathname.endsWith("/bridge");
+			if (!isBridge && Date.now() < droppingUntil) return new Response("simulated network drop", { status: 503 });
+			const forwarded: Record<string, string> = {
+				...(isBridge ? serviceHeaders : access.headers),
+				origin: PUBLIC_ORIGIN,
 			};
-			upstream.onmessage = event => {
-				if (typeof event.data !== "string") return;
-				const frame = JSON.parse(event.data);
-				receipts.push({ direction: frame.type === "response" ? "response" : "event", frame, at: Date.now() });
-				socket.send(event.data);
-			};
-			upstream.onclose = event => socket.close(event.code, event.reason);
-			upstream.onerror = () => socket.close(1011, "gateway error");
-		},
-		message(socket, message) {
-			if (typeof message !== "string") return socket.close(1003, "text required");
-			receipts.push({ direction: "command", frame: JSON.parse(message), at: Date.now() });
-			if (socket.data.upstream.readyState === WebSocket.OPEN) socket.data.upstream.send(message);
-			else socket.data.queued.push(message);
-		},
-		close(socket) {
-			sockets.delete(socket);
-			socket.data.upstream.close();
-		},
+			for (const name of [
+				"content-type",
+				"last-event-id",
+				"idempotency-key",
+				"x-omp-epoch",
+				"authorization",
+				"x-omp-bridge-id",
+			]) {
+				const value = request.headers.get(name);
+				if (value) forwarded[name] = value;
+			}
+			const payload = request.method === "POST" ? await request.text() : undefined;
+			if (payload && !isBridge)
+				receipts.push({ direction: "command", frame: JSON.parse(JSON.parse(payload).line), at: Date.now() });
+			const controller = new AbortController();
+			const signal = AbortSignal.any([controller.signal, request.signal]);
+			const upstream = await fetch(gateway.url + url.pathname + url.search, {
+				method: request.method,
+				headers: forwarded,
+				signal,
+				body: payload,
+			});
+			if (request.method !== "GET") return upstream;
+			if (!upstream.ok || !upstream.body) return upstream;
+			const active = isBridge ? bridgeStreams : browserStreams;
+			active.add(controller);
+			server.timeout(request, 0);
+			let cancelled = false;
+			const body = new ReadableStream<Uint8Array>({
+				async start(writer) {
+					writer.enqueue(new TextEncoder().encode("retry: 250\n\n"));
+					try {
+						for await (const event of readSseEvents(upstream.body!, signal)) {
+							if (!event.data) continue;
+							const frame = JSON.parse(event.data);
+							if (!isBridge)
+								receipts.push({
+									direction: frame.type === "response" ? "response" : "event",
+									frame,
+									at: Date.now(),
+								});
+							writer.enqueue(
+								new TextEncoder().encode(`${event.id ? `id: ${event.id}\n` : ""}data: ${event.data}\n\n`),
+							);
+						}
+					} catch (cause) {
+						if (!signal.aborted) writer.error(cause);
+						cancelled = true;
+					} finally {
+						active.delete(controller);
+						if (!cancelled) writer.close();
+					}
+				},
+				cancel() {
+					cancelled = true;
+					controller.abort();
+				},
+			});
+			return new Response(body, { headers: upstream.headers });
+		}
+		return access.fetch(gateway.url + url.pathname + url.search, { method: request.method });
 	},
+});
+const bridge = startBridge({
+	url: `http://127.0.0.1:${proxy.port}/events/bridge`,
+	headers: { ...serviceHeaders, authorization: `Bearer ${token}` },
+	dir: path.join(config, "run/rpc-sessions"),
 });
 let droppingUntil = 0;
 let stopped = false;

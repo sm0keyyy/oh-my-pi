@@ -3,12 +3,7 @@ import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/web-render";
 import puppeteer, { type Page } from "puppeteer-core";
 import type { RecordValue } from "../src/client";
-
-declare global {
-	interface Window {
-		reviewAcceptance: { socket: WebSocket; request(command: RecordValue): Promise<RecordValue> };
-	}
-}
+import { installHttpProbe } from "./http-probe";
 
 export async function runReviewFixAcceptance(page: Page, base: string, root: string, viewport: "desktop" | "phone") {
 	const width = viewport === "desktop" ? 1440 : 390;
@@ -46,41 +41,10 @@ export async function runReviewFixAcceptance(page: Page, base: string, root: str
 		else await page.click('button[aria-label="Close Panels"]');
 	};
 	const installProbe = async () => {
-		await page.evaluate(async () => {
-			const socket = new WebSocket(`ws://${location.host}/ws/session/${location.pathname.split("/").at(-1)}`);
-			const ready = Promise.withResolvers<void>();
-			const pending = new Map<
-				string,
-				{ resolve(value: Record<string, unknown>): void; reject(error: Error): void }
-			>();
-			socket.onmessage = event => {
-				const frame = JSON.parse(event.data) as Record<string, unknown>;
-				if (frame.type === "ready") ready.resolve();
-				if (frame.type === "response" && typeof frame.id === "string") {
-					pending.get(frame.id)?.resolve(frame);
-					pending.delete(frame.id);
-				}
-			};
-			socket.onclose = () => {
-				ready.reject(new Error("Acceptance probe closed"));
-				for (const result of pending.values()) result.reject(new Error("Acceptance probe closed"));
-				pending.clear();
-			};
-			window.reviewAcceptance = {
-				socket,
-				request(command) {
-					const id = crypto.randomUUID();
-					const result = Promise.withResolvers<Record<string, unknown>>();
-					pending.set(id, result);
-					socket.send(JSON.stringify({ ...command, id }));
-					return result.promise;
-				},
-			};
-			await ready.promise;
-		});
+		await page.evaluate(installHttpProbe, "reviewAcceptance");
 	};
 	const rpc = (command: RecordValue): Promise<RecordValue> =>
-		page.evaluate(command => window.reviewAcceptance.request(command), command);
+		page.evaluate(command => window.httpProbes.reviewAcceptance!.request(command), command);
 	const record = async (command: RecordValue) => {
 		const response = await rpc(command);
 		assert.equal(response.success, true, JSON.stringify(response));
@@ -248,7 +212,7 @@ export async function runReviewFixAcceptance(page: Page, base: string, root: str
 			screenshots,
 		};
 	} finally {
-		await page.evaluate(() => window.reviewAcceptance?.socket.close());
+		await page.evaluate(() => window.httpProbes?.reviewAcceptance?.source.close());
 		await fetch(`${base}/fixture/stop?name=${viewport}`);
 	}
 }

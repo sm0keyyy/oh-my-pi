@@ -1,5 +1,6 @@
 import type { ElementHandle, Page } from "puppeteer-core";
 import * as path from "node:path";
+import { installHttpProbe } from "./http-probe";
 
 type Frame = {
 	id?: string;
@@ -9,11 +10,6 @@ type Frame = {
 	data?: Record<string, unknown>;
 	type: string;
 };
-declare global {
-	interface Window {
-		acceptance: { socket: WebSocket; request(command: Record<string, unknown>): Promise<Frame> };
-	}
-}
 
 export async function runBrowserAcceptance(page: Page, base: string, root: string, viewport: "desktop" | "phone") {
 	const width = viewport === "desktop" ? 1440 : 390;
@@ -145,49 +141,10 @@ export async function runBrowserAcceptance(page: Page, base: string, root: strin
 		await page.waitForFunction(() => !document.querySelector(".seg"), { timeout: 120000 });
 	};
 	const installProbe = async () => {
-		await page.evaluate(async () => {
-			const socket = new WebSocket(
-				`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/session/${location.pathname.split("/").at(-1)}`,
-			);
-			const pending = new Map<string, { resolve(value: Frame): void; reject(error: Error): void; timer: number }>();
-			const ready = Promise.withResolvers<void>();
-			socket.onmessage = event => {
-				const frame = JSON.parse(event.data) as Frame;
-				if (frame.type === "ready") ready.resolve();
-				if (frame.id && pending.has(frame.id)) {
-					const item = pending.get(frame.id)!;
-					clearTimeout(item.timer);
-					pending.delete(frame.id);
-					item.resolve(frame);
-				}
-			};
-			socket.onclose = () => {
-				ready.reject(new Error("Probe closed"));
-				for (const item of pending.values()) {
-					clearTimeout(item.timer);
-					item.reject(new Error("Probe closed"));
-				}
-				pending.clear();
-			};
-			window.acceptance = {
-				socket,
-				request(command) {
-					const id = crypto.randomUUID();
-					const result = Promise.withResolvers<Frame>();
-					const timer = window.setTimeout(() => {
-						pending.delete(id);
-						result.reject(new Error("Probe timeout"));
-					}, 120000);
-					pending.set(id, { ...result, timer });
-					socket.send(JSON.stringify({ ...command, id }));
-					return result.promise;
-				},
-			};
-			await ready.promise;
-		});
+		await page.evaluate(installHttpProbe, "acceptance");
 	};
 	const rpc = (command: Record<string, unknown>) =>
-		page.evaluate(command => window.acceptance.request(command), command);
+		page.evaluate(command => window.httpProbes.acceptance!.request(command), command);
 	await page.goto(base);
 	const lobbyStart = Date.now();
 	const started = await (await fetch(`${base}/fixture/start?name=${viewport}`)).json();

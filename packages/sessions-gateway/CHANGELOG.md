@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Keep browser sessions attached across same-identity bridge replacement and allow a 10-second reconnect grace period.
 - Accept a reconnect from the same authenticated bridge process without waiting for the old transport to expire.
 - Expire stale bridge registrations during reconnect and distinguish acceptance from a conflicting WebSocket upgrade.
 - Keep known sessions and attachments after uncertain discovery. Report temporary attachment failures as retryable.

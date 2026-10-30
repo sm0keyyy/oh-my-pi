@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Resume paused RPC clients across transport replacement and prefer the verified LAN origin when available.
 - Keep local RPC clients through upstream conflict retries with bounded retention and jittered backoff.
 - Resume the same bridge process without a stale upstream transport blocking its reconnect.
 - Keep browser attachments connected through large transcripts with bounded local-socket backpressure and 10-second snapshots.

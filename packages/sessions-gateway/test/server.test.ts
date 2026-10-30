@@ -40,8 +40,12 @@ async function publish(bridge: Peer, sessions: RpcSessionSnapshot[] = [snapshot]
 	const body = await (await access.fetch(`${gateway.url}/api/sessions`)).json();
 	expect(body).toEqual({ sessions });
 }
-async function attach(): Promise<{ bridge: Peer; browser: Peer; conn: string }> {
-	const bridge = peer("/ws/bridge", { ...access.serviceHeaders, authorization: `Bearer ${token}` });
+async function attach(bridgeId = crypto.randomUUID()): Promise<{ bridge: Peer; browser: Peer; conn: string }> {
+	const bridge = peer("/ws/bridge", {
+		...access.serviceHeaders,
+		authorization: `Bearer ${token}`,
+		"x-omp-bridge-id": bridgeId,
+	});
 	await bridge.opened.promise;
 	await publish(bridge);
 	const browser = peer(`/ws/session/${snapshot.instanceId}`, { ...access.headers, origin: PUBLIC_ORIGIN });
@@ -58,7 +62,14 @@ beforeEach(async () => {
 	siteDir = await fs.mkdtemp(path.join(os.tmpdir(), "sessions-gateway-test-"));
 	await Bun.write(path.join(siteDir, "index.html"), "<html>sessions client</html>");
 	await Bun.write(path.join(siteDir, "site.js"), "export {};");
-	gateway = await startGateway({ token, siteDir, port: 0, hostname: "127.0.0.1", accessCertsUrl: access.certsUrl });
+	gateway = await startGateway({
+		token,
+		siteDir,
+		port: 0,
+		hostname: "127.0.0.1",
+		accessCertsUrl: access.certsUrl,
+		bridgeGraceMs: 100,
+	});
 });
 afterEach(async () => {
 	for (const socket of peers.splice(0)) socket.ws.close();
@@ -176,25 +187,55 @@ test("denies a bad bridge bearer and closes a second bridge with 4009", async ()
 	expect(JSON.parse(await bridge.next())).toEqual({ t: "frame", conn, line: '{"type":"get_state"}' });
 });
 
-test("replaces an unclean connection from the same bridge without waiting for idle expiry", async () => {
-	const headers = {
+test("keeps browsers attached without bridge_offline when the same identity replaces a live transport", async () => {
+	const bridgeId = crypto.randomUUID();
+	const { bridge: previous, browser, conn } = await attach(bridgeId);
+	const replacement = peer("/ws/bridge", {
 		...access.serviceHeaders,
 		authorization: `Bearer ${token}`,
-		"x-omp-bridge-id": crypto.randomUUID(),
-	};
-	const previous = peer("/ws/bridge", headers);
-	await previous.opened.promise;
-	await publish(previous);
-	const replacement = peer("/ws/bridge", headers);
-	await replacement.opened.promise;
-	await Promise.race([
-		publish(replacement),
-		replacement.closed.promise.then(event => {
-			throw new Error(`Reconnect rejected: ${event.code}`);
-		}),
-	]);
+		"x-omp-bridge-id": bridgeId,
+	});
+	await replacement.accepted.promise;
+	expect((await previous.closed.promise).reason).toBe("bridge replaced");
+	expect(JSON.parse(await replacement.next())).toEqual({ t: "attach", conn, instanceId: snapshot.instanceId });
+	browser.ws.send('{"type":"get_state"}');
+	expect(JSON.parse(await replacement.next())).toEqual({ t: "frame", conn, line: '{"type":"get_state"}' });
+	replacement.ws.send(JSON.stringify({ t: "frame", conn, line: '{"id":"resumed"}' }));
+	expect(await browser.next()).toBe('{"id":"resumed"}');
+	expect(browser.messages).toEqual([]);
+	expect(browser.ws.readyState).toBe(WebSocket.OPEN);
+	await publish(replacement);
+});
+
+test("rebinds browsers and queues commands during a same-identity reconnect grace period", async () => {
+	const bridgeId = crypto.randomUUID();
+	const { bridge: previous, browser, conn } = await attach(bridgeId);
+	vi.useFakeTimers();
+	previous.ws.close();
 	await previous.closed.promise;
-	await publish(replacement, [{ ...snapshot, busy: true }]);
+	browser.ws.send('{"id":"queued","type":"get_state"}');
+	const pong = Promise.withResolvers<Event>();
+	browser.ws.addEventListener("pong", pong.resolve, { once: true });
+	browser.ws.ping();
+	await pong.promise;
+	vi.advanceTimersByTime(99);
+	expect(browser.ws.readyState).toBe(WebSocket.OPEN);
+	const replacement = peer("/ws/bridge", {
+		...access.serviceHeaders,
+		authorization: `Bearer ${token}`,
+		"x-omp-bridge-id": bridgeId,
+	});
+	await replacement.accepted.promise;
+	expect(JSON.parse(await replacement.next())).toEqual({ t: "attach", conn, instanceId: snapshot.instanceId });
+	expect(JSON.parse(await replacement.next())).toEqual({
+		t: "frame",
+		conn,
+		line: '{"id":"queued","type":"get_state"}',
+	});
+	vi.advanceTimersByTime(101);
+	replacement.ws.send(JSON.stringify({ t: "frame", conn, line: '{"id":"resumed"}' }));
+	expect(await browser.next()).toBe('{"id":"resumed"}');
+	expect(browser.ws.readyState).toBe(WebSocket.OPEN);
 });
 
 test("expires a stale bridge during reconnect before the heartbeat timer runs", async () => {
@@ -231,13 +272,20 @@ test("relays exact RPC lines to each connection and detaches only its local sock
 	expect(browser.ws.readyState).toBe(WebSocket.OPEN);
 });
 
-test("announces bridge_offline to every browser and clears discovery on disconnect", async () => {
+test("announces bridge_offline to every browser only after the reconnect grace expires", async () => {
 	const { bridge, browser } = await attach();
 	const second = peer(`/ws/session/${snapshot.instanceId}`, { ...access.headers, origin: PUBLIC_ORIGIN });
 	await second.opened.promise;
 	await second.next();
 	await bridge.next();
+	vi.useFakeTimers();
 	bridge.ws.close();
+	await bridge.closed.promise;
+	vi.advanceTimersByTime(99);
+	expect(browser.ws.readyState).toBe(WebSocket.OPEN);
+	expect(second.ws.readyState).toBe(WebSocket.OPEN);
+	expect(browser.messages).toEqual([]);
+	vi.advanceTimersByTime(1);
 	for (const socket of [browser, second]) {
 		expect(JSON.parse(await socket.next())).toEqual({ type: "gateway", event: "bridge_offline" });
 		expect((await socket.closed.promise).reason).toBe("bridge_offline");
@@ -329,6 +377,7 @@ test("retires a silent bridge with the same bridge_offline contract", async () =
 	const now = Date.now();
 	spyOn(Date, "now").mockReturnValue(now + 120_001);
 	vi.advanceTimersByTime(30_000);
+	vi.advanceTimersByTime(10_000);
 	expect(JSON.parse(await browser.next())).toEqual({ type: "gateway", event: "bridge_offline" });
 });
 

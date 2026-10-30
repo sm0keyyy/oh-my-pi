@@ -40,6 +40,7 @@ let observedHeaders: Headers;
 let closeLocal: () => void;
 let rejectBridge = false;
 let disconnected: (() => void) | undefined;
+let connections: string[] = [];
 
 function startFakeGateway(port = 0): Bun.Server<undefined> {
 	return Bun.serve<undefined>({
@@ -57,7 +58,7 @@ function startFakeGateway(port = 0): Bun.Server<undefined> {
 					return;
 				}
 				remote = socket;
-				socket.send('{"t":"ready"}');
+				socket.send(JSON.stringify({ t: "ready", connections }));
 			},
 			close() {
 				disconnected?.();
@@ -91,6 +92,7 @@ beforeEach(async () => {
 	commandSockets.clear();
 	rejectBridge = false;
 	disconnected = undefined;
+	connections = [];
 	root = await fs.mkdtemp("/tmp/omp-sessions-bridge-test-");
 	dir = path.join(root, "rpc-sessions");
 	await fs.mkdir(dir, { mode: 0o700 });
@@ -231,15 +233,18 @@ test("refuses remote plaintext WebSockets and private metadata symlinks", async 
 	expect(await next("closed")).toEqual({ t: "closed", conn: "symlink", code: "unreachable" });
 });
 
-test("replaces an attachment without an old socket close withdrawing its replacement", async () => {
+test("keeps the existing local RPC client when the gateway repeats an attachment", async () => {
 	await next("sessions");
 	send({ t: "attach", conn: "same", instanceId });
 	await next("frame");
-	send({ t: "attach", conn: "same", instanceId });
+	send({ t: "frame", conn: "same", line: '{"id":"before","type":"get_state"}' });
 	await next("frame");
+	const attached = commandSockets.get("before");
+	send({ t: "attach", conn: "same", instanceId });
 	send({ t: "frame", conn: "same", line: '{"id":"replacement","type":"get_state"}' });
 	const reply = await next("frame");
 	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("replacement");
+	expect(commandSockets.get("replacement")).toBe(attached);
 });
 
 test("carries real pending question text and removes it on the next snapshot", async () => {
@@ -319,7 +324,7 @@ test("caps conflict backoff until the bridge stays healthy", async () => {
 	expect(await observed.promise).toBe(875);
 });
 
-test("keeps local RPC clients through repeated 4009 retries and retires them only after acceptance", async () => {
+test("resumes the same paused RPC client after repeated retries without losing buffered output", async () => {
 	await next("sessions");
 	const bridgeId = observedHeaders.get("x-omp-bridge-id");
 	send({ t: "attach", conn: "retained", instanceId });
@@ -351,18 +356,18 @@ test("keeps local RPC clients through repeated 4009 retries and retires them onl
 	}
 	expect(await conflict.promise).toBe(8_000);
 	expect(localClosed).toBe(false);
-	const closed = Promise.withResolvers<void>();
-	attached.once("close", closed.resolve);
+	connections = ["retained"];
+	attached.write('{"type":"output","text":"during outage"}\n');
 	rejectBridge = false;
 	vi.advanceTimersByTime(8_000);
-	await next("sessions");
-	await closed.promise;
-	expect(localClosed).toBe(true);
-	send({ t: "attach", conn: "replacement", instanceId });
-	await next("frame");
-	send({ t: "frame", conn: "replacement", line: '{"id":"after-conflict","type":"get_state"}' });
+	const buffered = await next("frame");
+	expect(buffered.t === "frame" && JSON.parse(buffered.line)).toEqual({ type: "output", text: "during outage" });
+	expect(localClosed).toBe(false);
+	send({ t: "attach", conn: "retained", instanceId });
+	send({ t: "frame", conn: "retained", line: '{"id":"after-conflict","type":"get_state"}' });
 	const reply = await next("frame");
 	expect(reply.t === "frame" && JSON.parse(reply.line).id).toBe("after-conflict");
+	expect(commandSockets.get("after-conflict")).toBe(attached);
 });
 
 test("bounds retained RPC clients when the upstream never accepts a reconnect", async () => {

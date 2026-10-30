@@ -19,10 +19,12 @@ import {
 	type ClosedCode,
 } from "../../sessions-gateway/src/protocol";
 import { readBridgeHeaders } from "./credentials";
+import { selectBridgeEndpoint } from "./endpoint";
 
 export interface BridgeOptions {
 	url: string;
 	headers: Record<string, string>;
+	origin?: string;
 	dir?: string;
 	heartbeatMs?: number;
 }
@@ -144,7 +146,8 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			attachment.output = attachment.output.slice(newline + 1);
 		}
 		if (Buffer.byteLength(attachment.output) >= MAX_RPC_FRAME_BYTES) detach(conn, "unreachable");
-		else if (socket?.readyState === WebSocket.OPEN && socket.bufferedAmount < MAX_PAYLOAD_BYTES / 2) local.resume();
+		else if (upstreamReady && socket?.readyState === WebSocket.OPEN && socket.bufferedAmount < MAX_PAYLOAD_BYTES / 2)
+			local.resume();
 		else local.pause();
 	};
 	const watch = (): void => {
@@ -192,6 +195,7 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		}
 	};
 	const attach = async (conn: string, instanceId: string): Promise<void> => {
+		if (attachments.get(conn)?.instanceId === instanceId) return;
 		detach(conn);
 		const attachment: Attachment = { instanceId, pending: [], pendingBytes: 0, output: "", ready: false };
 		attachments.set(conn, attachment);
@@ -264,10 +268,14 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			if (attachments.get(conn) === attachment) detach(conn, isEnoent(cause) ? "not_found" : "unreachable");
 		}
 	};
-	const connect = (): void => {
+	const connect = async (): Promise<void> => {
 		if (stopped) return;
-		const remote = new WebSocket(options.url, {
-			headers: { ...options.headers, "x-omp-bridge-id": bridgeId },
+		const endpoint = await selectBridgeEndpoint(options.url, options.headers, options.origin);
+		if (stopped) return;
+		logger.info("Sessions gateway endpoint selected", { endpoint: endpoint.url });
+		const remote = new WebSocket(endpoint.url, {
+			headers: { ...endpoint.headers, "x-omp-bridge-id": bridgeId },
+			tls: endpoint.tls,
 		});
 		socket = remote;
 		upstreamReady = false;
@@ -291,8 +299,10 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 					clearTimeout(connectDeadline);
 					clearTimeout(retainDeadline);
 					retainDeadline = undefined;
-					closed.clear();
-					for (const conn of attachments.keys()) detach(conn);
+					const retained = new Set(frame.connections);
+					for (const conn of attachments.keys()) if (!retained.has(conn)) detach(conn);
+					for (const conn of closed.keys()) if (!retained.has(conn)) closed.delete(conn);
+					for (const [conn, attachment] of attachments) flush(conn, attachment);
 					openedAt = Date.now();
 					void refresh();
 					return;
@@ -332,7 +342,6 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 			socket = undefined;
 			upstreamReady = false;
 			openedAt = 0;
-			closed.clear();
 			for (const attachment of attachments.values()) attachment.socket?.pause();
 			if (attachments.size && !retainDeadline) {
 				retainDeadline = setTimeout(() => {
@@ -349,7 +358,7 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 		};
 	};
 	watch();
-	connect();
+	void connect();
 	const snapshots = setInterval(() => {
 		if (refreshing) publish();
 		else void refresh();
@@ -392,6 +401,7 @@ if (import.meta.main) {
 	const bridge = startBridge({
 		url: `${PUBLIC_ORIGIN.replace("https:", "wss:")}/ws/bridge`,
 		headers: await readBridgeHeaders(),
+		origin: process.env.BRIDGE_LAN_ORIGIN ?? "https://10.0.0.13:44301",
 	});
 	for (const signal of ["SIGINT", "SIGTERM"] as const)
 		process.once(signal, () => {

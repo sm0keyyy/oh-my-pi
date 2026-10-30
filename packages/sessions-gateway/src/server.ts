@@ -24,6 +24,8 @@ interface SocketData {
 	lastSeen: number;
 	bridgeId: string;
 	closePath?: string;
+	pending: string[];
+	pendingBytes: number;
 }
 type Socket = Bun.ServerWebSocket<SocketData>;
 export interface GatewayOptions {
@@ -34,6 +36,7 @@ export interface GatewayOptions {
 	accessCertsUrl?: URL;
 	idleMs?: number;
 	heartbeatMs?: number;
+	bridgeGraceMs?: number;
 }
 export interface SessionsGateway {
 	url: string;
@@ -46,6 +49,8 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const indexPath = path.join(siteDir, "index.html");
 	if (!(await fs.stat(indexPath)).isFile()) throw new Error("Web client index is missing");
 	let bridge: Socket | undefined;
+	let bridgeId: string | undefined;
+	let bridgeDeadline: Timer | undefined;
 	const sessions = new Map<string, RpcSessionSnapshot>();
 	const browsers = new Map<string, Socket>();
 	const token = Buffer.from(`Bearer ${options.token}`);
@@ -65,14 +70,21 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 		socket.send(JSON.stringify({ type: "gateway", event }));
 		socket.close(4001, event);
 	};
-	const retireBridge = (socket: Socket, closePath: string): void => {
+	const expireBridge = (): void => {
+		clearTimeout(bridgeDeadline);
+		bridgeDeadline = undefined;
+		bridgeId = undefined;
+		sessions.clear();
+		for (const browser of browsers.values()) closeBrowser(browser, "bridge_offline");
+	};
+	const retireBridge = (socket: Socket, closePath: string, immediate = false): void => {
 		if (bridge !== socket) return;
 		bridge = undefined;
 		socket.data.closePath ??= closePath;
 		logger.info("Sessions bridge disconnected", { path: socket.data.closePath });
-		sessions.clear();
-		for (const browser of browsers.values()) closeBrowser(browser, "bridge_offline");
-		socket.close(4001, "bridge_offline");
+		if (immediate) expireBridge();
+		else bridgeDeadline = setTimeout(expireBridge, options.bridgeGraceMs ?? 10_000);
+		socket.close(4001, closePath === "bridge_replaced" ? "bridge replaced" : "bridge_offline");
 	};
 	const server = Bun.serve<SocketData>({
 		port: options.port ?? 8080,
@@ -100,7 +112,15 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					return error(400, "invalid_bridge_id");
 				if (
 					srv.upgrade(request, {
-						data: { role: "bridge", conn: "", instanceId: "", lastSeen: Date.now(), bridgeId },
+						data: {
+							role: "bridge",
+							conn: "",
+							instanceId: "",
+							lastSeen: Date.now(),
+							bridgeId,
+							pending: [],
+							pendingBytes: 0,
+						},
 					})
 				)
 					return;
@@ -118,6 +138,8 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 							instanceId: match[1]!,
 							lastSeen: Date.now(),
 							bridgeId: "",
+							pending: [],
+							pendingBytes: 0,
 						},
 					})
 				)
@@ -169,23 +191,45 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 							socket.close(4009, "a bridge is already connected");
 							return;
 						}
-						retireBridge(bridge, stale ? "idle_timeout" : "bridge_replaced");
+						retireBridge(
+							bridge,
+							bridge.data.bridgeId === socket.data.bridgeId ? "bridge_replaced" : "idle_timeout",
+						);
 					}
+					if (bridgeId && bridgeId !== socket.data.bridgeId) expireBridge();
+					clearTimeout(bridgeDeadline);
+					bridgeDeadline = undefined;
+					bridgeId = socket.data.bridgeId;
 					bridge = socket;
 					logger.info("Sessions bridge connected");
-					socket.send('{"t":"ready"}');
+					socket.send(JSON.stringify({ t: "ready", connections: [...browsers.keys()] }));
+					for (const browser of browsers.values()) {
+						socket.send(
+							JSON.stringify({ t: "attach", conn: browser.data.conn, instanceId: browser.data.instanceId }),
+						);
+						for (const line of browser.data.pending) {
+							const frame = JSON.stringify({ t: "frame", conn: browser.data.conn, line });
+							if (socket.getBufferedAmount() + Buffer.byteLength(frame) > MAX_PAYLOAD_BYTES) {
+								closeBrowser(browser, "session_unavailable");
+								break;
+							}
+							socket.send(frame);
+						}
+						browser.data.pending = [];
+						browser.data.pendingBytes = 0;
+					}
 					return;
 				}
-				if (!bridge) {
+				if (!bridge && !bridgeDeadline) {
 					closeBrowser(socket, "bridge_offline");
 					return;
 				}
 				browsers.set(socket.data.conn, socket);
-				if (bridge.getBufferedAmount() >= MAX_PAYLOAD_BYTES) {
+				if (bridge && bridge.getBufferedAmount() >= MAX_PAYLOAD_BYTES) {
 					closeBrowser(socket, "session_unavailable");
 					return;
 				}
-				bridge.send(JSON.stringify({ t: "attach", conn: socket.data.conn, instanceId: socket.data.instanceId }));
+				bridge?.send(JSON.stringify({ t: "attach", conn: socket.data.conn, instanceId: socket.data.instanceId }));
 				socket.send('{"type":"gateway","event":"attached"}');
 			},
 			message(socket, message) {
@@ -201,7 +245,13 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 						socket.close(1009, "invalid RPC line");
 						return;
 					}
-					if (browsers.get(socket.data.conn) === socket && bridge) {
+					if (browsers.get(socket.data.conn) === socket) {
+						if (!bridge) {
+							socket.data.pendingBytes += Buffer.byteLength(message);
+							if (socket.data.pendingBytes > MAX_PAYLOAD_BYTES) closeBrowser(socket, "session_unavailable");
+							else socket.data.pending.push(message);
+							return;
+						}
 						const frame = JSON.stringify({ t: "frame", conn: socket.data.conn, line: message });
 						if (bridge.getBufferedAmount() + Buffer.byteLength(frame) > MAX_PAYLOAD_BYTES)
 							closeBrowser(socket, "session_unavailable");
@@ -239,7 +289,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 						path: "bridge_message",
 						cause: sanitizeDiagnostic(cause),
 					});
-					retireBridge(socket, "bridge_message");
+					retireBridge(socket, "bridge_message", true);
 				}
 			},
 			pong(socket) {
@@ -268,6 +318,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			if (now - bridge.data.lastSeen >= idleMs) retireBridge(bridge, "idle_timeout");
 			else bridge.ping();
 		}
+		if (bridgeDeadline) return;
 		for (const browser of browsers.values()) {
 			if (now - browser.data.lastSeen >= idleMs) {
 				browser.data.closePath = "idle_timeout";
@@ -283,7 +334,8 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			if (stopped) return;
 			stopped = true;
 			clearInterval(heartbeat);
-			if (bridge) retireBridge(bridge, "gateway_stop");
+			if (bridge) retireBridge(bridge, "gateway_stop", true);
+			else expireBridge();
 			server.stop(true);
 		},
 	};

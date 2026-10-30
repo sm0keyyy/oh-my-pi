@@ -13,7 +13,7 @@ The bridge confirms an exit only after metadata removal or a dead PID. Snapshot 
 S3 sends `{ "type": "gateway", "event": "session_gone" }` only for a confirmed exit.
 A temporary attachment failure sends `session_unavailable`. Both close with code `4001` and the event as the reason.
 The browser retries `session_unavailable`. Discovery uncertainty preserves known snapshots and attachments.
-`bridge_offline` retains its existing contract.
+An actual bridge loss sends `bridge_offline` after a 10 s reconnect grace period.
 
 The gateway isolates a slow browser or a saturated command attachment. It does not close the shared bridge for attachment backpressure.
 The bridge sends snapshots every 10 s. WebSocket `sendPings` stays off because of Bun issue 26554.
@@ -21,8 +21,10 @@ The bridge sends snapshots every 10 s. WebSocket `sendPings` stays off because o
 The bridge upgrade requires a valid `X-Omp-Bridge-Id` UUID after Access and bearer authentication.
 Each bridge process keeps its UUID across retries. A newer authenticated transport with the same UUID replaces its predecessor immediately.
 A different bridge receives `4009` while the current bridge remains healthy. An expired bridge cannot block an upgrade between heartbeat ticks.
-The gateway sends `{ "t": "ready" }` only after acceptance. An old transport's delayed close cannot retire its replacement.
-Replacement preserves the `bridge_offline` contract for existing browsers. Browsers reconnect and establish new RPC attachments.
+The gateway sends `{ "t": "ready", "connections": [...] }` only after acceptance. An old transport's delayed close cannot retire its replacement.
+Same-identity replacement keeps browsers and known sessions attached, then rebinds their RPC clients without `bridge_offline`.
+During the grace period, browser commands wait in a bounded queue. Sent commands are not replayed.
+A different bridge identity clears the old attachments. Invalid bridge messages fail closed without the grace period.
 Deploy this gateway with the bridge from the same revision. Stop the bridge before the gateway upgrade, then restart the updated bridge.
 
 ## Diagnostics

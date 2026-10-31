@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
+- Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 
 ## [18.14.0] - 2026-10-29
 

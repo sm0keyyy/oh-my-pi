@@ -9,6 +9,7 @@
 ### Fixed
 
 - Reduced CPU use during streamed code blocks while preserving completed lines in scrollback.
+- Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 
 ## [18.14.0] - 2026-10-29
 

@@ -98,8 +98,8 @@ interface TranscriptEntry {
 	 */
 	stableFrozen: boolean;
 	/**
-	 * Head rows of a settled block already in native history while the rest
-	 * stays live: pressure commits only the rows that left the screen, so no
+	 * Head rows of a settled block or an active block's stable prefix already
+	 * in native history: pressure commits only the rows that left the screen, so no
 	 * committed row is ever still visible above the viewport.
 	 */
 	split: RowSplit | undefined;
@@ -108,8 +108,8 @@ interface TranscriptEntry {
 /**
  * A committed physical row prefix of one block. `rows` counts trimmed render
  * rows at `width` (any emitted stable prefix included) and `hash` fingerprints
- * them; `text` is their letters and digits in order. A settled block can still
- * change (a tool pane expanding) or rewrap at another width without a replay,
+ * them; `text` is their letters and digits in order. A block can still change
+ * (a tool pane expanding or an active tail growing) or rewrap without a replay,
  * so every render re-locates the seam: the committed rows when they render
  * unchanged, else by continuing `text` — per-row decoration (quote bars,
  * borders, rules) is punctuation it ignores.
@@ -889,8 +889,15 @@ export class TranscriptContainer extends Container {
 		if (policy === "pressure" && keep > 0 && limit === this.#frontier + keep) {
 			const boundary = live[keep - 1]!;
 			const visible = room - tailRows - (tailRows > 0 ? 1 : 0);
-			if (boundary.entry.state === "settled" && visible > 0) {
-				const offer = this.#splitOffer(boundary.entry, width, visible);
+			const entry = boundary.entry;
+			// A stable snapshot can span more rows than the overflow. Retire only
+			// its off-screen rows instead of dropping them until the snapshot fits.
+			const stableEnd =
+				entry.state === "active" && entry.mode === "appendOnly" && !entry.stableFrozen
+					? this.#stablePrefixRowCount(entry, entry.stableRows.length, width)
+					: 0;
+			if (visible > 0 && (entry.state === "settled" || stableEnd > 0)) {
+				const offer = this.#splitOffer(entry, width, visible, entry.state === "settled" ? undefined : stableEnd);
 				if (offer === "whole") {
 					limit = boundary.index + 1;
 				} else if (offer !== undefined) {
@@ -933,9 +940,9 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
-	 * The head rows of settled `entry` beyond its committed prefix that leave
-	 * `visible` rows live, or undefined when nothing would remain committed
-	 * past that prefix or the scrollback render would not line up row for row.
+	 * The head rows of `entry` beyond its committed prefix that leave
+	 * `visible` rows live, bounded by `stableEnd` for an active block.
+	 * Undefined when no further rows can retire or the renders differ in height.
 	 * `"whole"` when keeping an image whole moves the cut to the block's end:
 	 * the block then retires in full, with the blank row that separates it from
 	 * the next block, which a split never carries.
@@ -944,17 +951,19 @@ export class TranscriptContainer extends Container {
 		entry: TranscriptEntry,
 		width: number,
 		visible: number,
+		stableEnd = Number.POSITIVE_INFINITY,
 	): { rows: readonly string[]; split: RowSplit } | "whole" | undefined {
 		const measured = this.#measure(entry, width).rows;
 		const start = this.#emittedRowCount(entry, width);
-		const cut = measured.length - visible;
+		const cut = Math.min(measured.length - visible, stableEnd);
 		if (cut <= start) return undefined;
 		// The boundary block stays live, so the viewport renders it in display
 		// order; this render precedes the retired blocks and must claim no slot.
 		const scrollback = measureRender(() => renderForScrollback(() => this.#renderEntry(entry, width))).value;
 		if (scrollback.length !== measured.length) return undefined;
 		const total = cutBelowWholeImage(scrollback, cut);
-		if (total >= scrollback.length) return "whole";
+		if (total > stableEnd) return undefined;
+		if (total >= scrollback.length && entry.state === "settled") return "whole";
 		return { rows: scrollback.slice(start, total), split: rowSplit(scrollback, total, width) };
 	}
 

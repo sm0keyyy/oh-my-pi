@@ -40,6 +40,7 @@ export interface GatewayOptions {
 	bridgeGraceMs?: number;
 	replayEvents?: number;
 	replayBytes?: number;
+	heartbeatMs?: number;
 }
 export interface SessionsGateway {
 	url: string;
@@ -55,7 +56,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const sessions = new Map<string, RpcSessionSnapshot>();
 	const streams = new Map<string, Session>();
 	const clients = new Map<string, Client>();
-	const commands = new ReplayJournal(4096, 8 * 1024 * 1024);
+	const commands = new ReplayJournal(4096, 8 * 1024 * 1024, options.heartbeatMs);
 	const token = Buffer.from(`Bearer ${options.token}`);
 	const verifyAccess = createAccessVerifier(options.accessCertsUrl);
 	let bridgeId: string | undefined;
@@ -216,7 +217,10 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 				if (!sessions.has(instanceId)) return error(404, "session_gone");
 				let session = streams.get(instanceId);
 				if (!session) {
-					session = { replay: new ReplayJournal(options.replayEvents, options.replayBytes), clients: new Map() };
+					session = {
+						replay: new ReplayJournal(options.replayEvents, options.replayBytes, options.heartbeatMs),
+						clients: new Map(),
+					};
 					streams.set(instanceId, session);
 				}
 				if (match[1] === "events") {

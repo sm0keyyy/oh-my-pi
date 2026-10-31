@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+export const HEARTBEAT_MS = 30_000;
+const HEARTBEAT = new TextEncoder().encode(":\n\n");
 export const SSE_HEADERS = {
 	"content-type": "text/event-stream",
 	"cache-control": "no-cache, no-transform",
@@ -13,6 +15,7 @@ interface Entry {
 interface Subscriber {
 	controller: ReadableStreamDefaultController<Uint8Array>;
 	recipient?: string;
+	idle: boolean;
 	close(): void;
 }
 
@@ -25,6 +28,7 @@ export class ReplayJournal {
 	constructor(
 		readonly maxEvents = 1024,
 		readonly maxBytes = 2 * 1024 * 1024,
+		readonly heartbeatMs = HEARTBEAT_MS,
 	) {}
 	get id(): string {
 		return `${this.epoch}:${this.#sequence}`;
@@ -79,6 +83,7 @@ export class ReplayJournal {
 			subscriber.close();
 			return;
 		}
+		subscriber.idle = false;
 		subscriber.controller.enqueue(
 			entry.recipient && entry.recipient !== subscriber.recipient
 				? new TextEncoder().encode(`id: ${this.epoch}:${entry.sequence}\ndata: {"type":"cursor"}\n\n`)
@@ -99,7 +104,14 @@ export class ReplayJournal {
 				}
 		const sequence = from ? this.sequence(from) : this.#sequence;
 		let subscriber: Subscriber;
+		// Proxies on both legs cut silent streams; a comment line after each idle interval keeps them open.
+		const heartbeat = setInterval(() => {
+			if (subscriber.idle && (subscriber.controller.desiredSize ?? 0) > 0) subscriber.controller.enqueue(HEARTBEAT);
+			subscriber.idle = true;
+		}, this.heartbeatMs);
+		heartbeat.unref();
 		const cleanup = (): void => {
+			clearInterval(heartbeat);
 			if (!this.#subscribers.delete(subscriber)) return;
 			request.signal.removeEventListener("abort", abort);
 			onClose();
@@ -111,7 +123,7 @@ export class ReplayJournal {
 		const body = new ReadableStream<Uint8Array>(
 			{
 				start: controller => {
-					subscriber = { controller, recipient, close: cleanup };
+					subscriber = { controller, recipient, idle: true, close: cleanup };
 					this.#subscribers.add(subscriber);
 					request.signal.addEventListener("abort", abort, { once: true });
 					controller.enqueue(new TextEncoder().encode("retry: 250\n\n"));

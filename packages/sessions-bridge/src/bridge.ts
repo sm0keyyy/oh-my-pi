@@ -317,6 +317,9 @@ export function startBridge(options: BridgeOptions): SessionsBridge {
 				},
 				tls: endpoint.tls,
 				signal: controller.signal,
+				// Bun's default 5-minute idle timeout cut the stream every 360 s. The gateway now sends a
+				// comment within 60 s of silence, so this bound only ends a dead stream.
+				timeout: IDLE_MS,
 			});
 			clearTimeout(connectDeadline);
 			if (!response.ok || !response.body) {

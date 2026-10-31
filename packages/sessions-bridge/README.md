@@ -8,7 +8,8 @@ Repeated attachment commands are idempotent. Obsolete clients close on acceptanc
 The bridge bounds its unacknowledged output outbox at 4 MiB and pauses local reads when it fills.
 Numbered POSTs retry until acknowledged. The gateway deduplicates them before publishing browser events.
 Gateway commands resume with `Last-Event-ID`; their acknowledgements travel in the bridge POSTs.
-A different active bridge receives `409`. Retries use capped, jittered backoff. No ping or SSE heartbeat is added.
+A different active bridge receives `409`. Retries use capped, jittered backoff.
+The command stream fetch replaces Bun's default 5-minute idle timeout, which cut the stream every 360 seconds, with a 120-second bound. The gateway's SSE comments keep a healthy stream under that bound, so it ends only a dead stream.
 
 ## Endpoint selection
 

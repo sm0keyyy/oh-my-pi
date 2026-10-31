@@ -42,7 +42,8 @@ Only confirmed exits send `session_gone`. Temporary local attachment failures re
 
 SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, and `X-Accel-Buffering: no`.
 The gateway enqueues each event immediately and disables Bun's request idle timeout for each stream.
-It adds no ping or periodic SSE comment. Idle behavior must be measured through the deployed Cloudflare tunnel before adding a keepalive.
+A stream that carried no event for a 30-second interval receives an SSE comment line (`:`), so proxies and client idle timeouts do not cut a silent stream.
+Comments carry no event ID, and EventSource and the bridge ignore them.
 Diagnostics never include RPC content, assertions, bearer values, or request headers.
 
 ## Custom transcript cards

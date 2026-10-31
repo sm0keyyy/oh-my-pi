@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Send an SSE comment on streams idle for 30 seconds so silent bridge and browser streams survive proxy and client idle timeouts.
 - Show IRC and other built-in custom messages as structured cards instead of model prompt templates in the bundled web client.
 - Resume session output with bounded SSE replay and deliver queued HTTP commands once across connection drops.
 - Keep browser sessions attached across same-identity bridge replacement and allow a 10-second reconnect grace period.

@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PUBLIC_ORIGIN } from "../src/protocol";
+import { ReplayJournal } from "../src/replay";
 import { startGateway, type SessionsGateway } from "../src/server";
 import { createAccessFixture, type AccessFixture } from "./access-fixture";
 import { Peer } from "./peer";
@@ -251,4 +252,27 @@ test("reattaches a temporary RPC failure without declaring the session gone", as
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+test("sends an SSE comment only after an idle interval and stops on close", async () => {
+	const journal = new ReplayJournal(16, 4096, 40);
+	const controller = new AbortController();
+	const reader = journal.open(new Request("http://x/", { signal: controller.signal })).body!.getReader();
+	const decoder = new TextDecoder();
+	const chunks: string[] = [];
+	const pump = (async () => {
+		for (let read = await reader.read(); !read.done; read = await reader.read())
+			chunks.push(decoder.decode(read.value));
+	})();
+	const busy = setInterval(() => journal.append('{"type":"tick"}'), 10);
+	await Bun.sleep(130);
+	clearInterval(busy);
+	expect(chunks).not.toContain(":\n\n");
+	await Bun.sleep(130);
+	expect(chunks.filter(chunk => chunk === ":\n\n").length).toBeGreaterThanOrEqual(1);
+	controller.abort();
+	await pump;
+	const count = chunks.length;
+	await Bun.sleep(100);
+	expect(chunks.length).toBe(count);
 });

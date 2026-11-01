@@ -1753,10 +1753,9 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 	// command loop below exists, a dialog answer and the ask-dialog opt-in are handled at once and every other
 	// frame is held, in arrival order, for that loop.
 	let heldFrames: unknown[] | undefined = [];
-	let inputDispatcher: RpcInputDispatcher | undefined;
 	const receiveFrame = (parsed: unknown): void => {
 		if (!heldFrames) {
-			inputDispatcher!.dispatch(parsed);
+			dispatcher.dispatch(parsed);
 			return;
 		}
 		if (isRpcExtensionUIResponse(parsed)) {
@@ -2346,7 +2345,8 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 			}
 
 			case "dictation_start": {
-				if (host.liveBridge?.active) return error(id, "dictation_start", "End live voice before starting dictation");
+				if (host.liveBridge?.active)
+					return error(id, "dictation_start", "End live voice before starting dictation");
 				if (sessionChangesInProgress > 0 || host.shutdownRequested)
 					return error(id, "dictation_start", "Session is changing or shutting down");
 				if (!cfgSttEnabled.get(session.settings))
@@ -2872,7 +2872,6 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		afterSerialCommand: () => shutdownCoordinator.checkShutdownRequested(),
 		acceptInput: command => inputGate.accept(command),
 	});
-	inputDispatcher = dispatcher;
 
 	let cleanup: Promise<void> | undefined;
 	const dispose = (): Promise<void> => {

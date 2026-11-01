@@ -3643,78 +3643,98 @@ describe("openai-codex streaming", () => {
 		await streamResult.result();
 	});
 
-	it("falls back to SSE when websocket connect fails", async () => {
-		const tempDir = TempDir.createSync("@pi-codex-stream-");
-		setAgentDir(tempDir.path());
-		const payload = Buffer.from(
-			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
-			"utf8",
-		).toBase64();
-		const token = `aaa.${payload}.bbb`;
-		const sse = `${[
-			`data: ${JSON.stringify({ type: "response.content_part.added", part: { type: "output_text", text: "" } })}`,
-			`data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hello" })}`,
-			`data: ${JSON.stringify({ type: "response.output_item.done", item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Hello" }] } })}`,
-			`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8, input_tokens_details: { cached_tokens: 0 } } } })}`,
-		].join("\n\n")}\n\n`;
+	it.each(["handshake", "stream", "prewarmed", "sse failure"] as const)(
+		"replays TLS websocket failures over SSE without changing models (%s)",
+		async phase => {
+			const tempDir = TempDir.createSync("@pi-codex-stream-");
+			setAgentDir(tempDir.path());
+			const model = createCodexTestModel();
+			const context = createCodexTestContext();
+			const token = createCodexTestToken();
+			const providerSessionState = new Map<string, ProviderSessionState>();
+			const sessionId = `ws-tls-${phase}`;
+			const fetchMock = vi.fn<FetchImpl>(async (input, init) => {
+				expect(String(input)).toBe("https://chatgpt.com/backend-api/codex/responses");
+				const body: unknown = JSON.parse(decodeCodexRequestBody(init?.body));
+				const request = requireRecord(body, "SSE fallback request");
+				expect(request.model).toBe(model.id);
+				expect(JSON.stringify(request.input)).toContain("Say hello");
+				return phase === "sse failure"
+					? new Response(JSON.stringify({ detail: "SSE fallback failed" }), { status: 400 })
+					: new Response(createStatefulCodexSse("Hello SSE", "resp_sse"), {
+							headers: { "content-type": "text/event-stream" },
+						});
+			});
+			let constructorCount = 0;
+			class TlsFailingWebSocket extends MockWebSocket {
+				constructor(url: string, options?: WsOptions) {
+					super(url, options);
+					constructorCount += 1;
+					if (phase === "handshake") {
+						queueMicrotask(() => this.failTls());
+					} else {
+						queueMicrotask(() => {
+							this.readyState = MockWebSocket.OPEN;
+							this.emit("open", new Event("open"));
+						});
+					}
+				}
 
-		const fetchMock = vi.fn(async (input: string | URL) => {
-			const url = typeof input === "string" ? input : input.toString();
-			if (url === "https://chatgpt.com/backend-api/codex/responses") {
-				return new Response(sse, {
-					status: 200,
-					headers: { "content-type": "text/event-stream" },
-				});
-			}
-			return new Response("not found", { status: 404 });
-		});
-		class FailingWebSocket extends MockWebSocket {
-			constructor(url: string, options?: { headers?: WsHeaders }) {
-				super(url, options);
-				setTimeout(() => {
-					expect(this.options?.headers?.["OpenAI-Beta"] ?? this.options?.headers?.["openai-beta"]).toStartWith(
-						"responses_websockets=",
-					);
-					this.emit("error", new Event("error"));
-					this.emit("close", new Event("close"));
+				failTls(): void {
 					this.readyState = MockWebSocket.CLOSED;
-				}, 0);
-			}
-		}
+					this.emit(
+						"error",
+						new ErrorEvent("error", {
+							message: `WebSocket connection to '${this.url}' failed: TLS handshake failed`,
+						}),
+					);
+					this.emit("close", new CloseEvent("close", { code: 1006 }));
+				}
 
-		global.WebSocket = FailingWebSocket as unknown as typeof WebSocket;
-		const model: Model<"openai-codex-responses"> = buildModel({
-			id: "gpt-5.3-codex-spark",
-			name: "GPT-5.3 Codex Spark",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: "https://chatgpt.com/backend-api",
-			reasoning: true,
-			preferWebsockets: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 128000,
-		});
-		const context: Context = {
-			systemPrompt: ["You are a helpful assistant."],
-			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
-		};
-		const providerSessionState = new Map<string, ProviderSessionState>();
-		const streamResult = streamOpenAICodexResponses(model, context, {
-			fetch: fetchMock as FetchImpl,
-			apiKey: token,
-			sessionId: "ws-session",
-			providerSessionState,
-		});
-		const result = await streamResult.result();
-		expect(result.role).toBe("assistant");
-		expect(fetchMock).toHaveBeenCalled();
-		const fallbackDetails = getOpenAICodexTransportDetails(model, { sessionId: "ws-session", providerSessionState });
-		expect(fallbackDetails.lastTransport).toBe("sse");
-		expect(fallbackDetails.websocketDisabled).toBe(true);
-		expect(fallbackDetails.fallbackCount).toBe(1);
-	});
+				override send(): void {
+					this.failTls();
+				}
+			}
+			global.WebSocket = TlsFailingWebSocket as unknown as typeof WebSocket;
+			const options = { apiKey: token, sessionId, providerSessionState, fetch: fetchMock };
+			try {
+				if (phase === "prewarmed") await prewarmOpenAICodexResponses(model, options);
+				const stream = streamOpenAICodexResponses(model, context, options);
+				const eventTypes: string[] = [];
+				for await (const event of stream) eventTypes.push(event.type);
+				const result = await stream.result();
+				expect(result.model).toBe(model.id);
+				expect(result.provider).toBe("openai-codex");
+				if (phase === "sse failure") {
+					expect(result.stopReason).toBe("error");
+					expect(result.errorMessage).toContain("SSE fallback failed");
+					expect(result.errorMessage).not.toContain("TLS handshake failed");
+					expect(eventTypes.filter(type => type === "error")).toHaveLength(1);
+				} else {
+					expect(result.stopReason).toBe("stop");
+					expect(result.errorMessage).toBeUndefined();
+					expect(result.content).toEqual([expect.objectContaining({ type: "text", text: "Hello SSE" })]);
+					expect(eventTypes).not.toContain("error");
+					expect(eventTypes).toContain("done");
+				}
+				expect(constructorCount).toBe(1);
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				const details = getOpenAICodexTransportDetails(model, options);
+				expect(details.lastTransport).toBe(phase === "sse failure" ? "websocket" : "sse");
+				expect(details.websocketDisabled).toBe(true);
+				expect(details.fallbackCount).toBe(1);
+				if (phase !== "sse failure") {
+					const next = await streamOpenAICodexResponses(model, context, options).result();
+					expect(next.stopReason).toBe("stop");
+					expect(next.model).toBe(model.id);
+					expect(constructorCount).toBe(1);
+					expect(fetchMock).toHaveBeenCalledTimes(2);
+				}
+			} finally {
+				for (const state of providerSessionState.values()) state.close();
+			}
+		},
+	);
 
 	it.each(["during handshake", "before request", "during request"] as const)(
 		"preserves timeout classification when compaction is aborted %s",

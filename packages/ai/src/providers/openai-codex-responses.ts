@@ -1040,6 +1040,8 @@ function isCodexWebSocketRetryableStreamError(error: unknown): boolean {
 	if (!(error instanceof CodexWebSocketTransportError)) return false;
 	const message = error.message.toLowerCase();
 	return (
+		// Late connection errors reach the stream instead of the initial-open fallback.
+		CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern => message.includes(pattern)) ||
 		message.includes("websocket closed (") ||
 		message.includes("websocket closed before response completion") ||
 		message.includes("websocket connection is unavailable") ||

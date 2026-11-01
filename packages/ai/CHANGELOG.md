@@ -18,6 +18,10 @@
 
 - Fixed Factory Droid Fable requests offering Opus 5 as the refusal fallback when your organization's model policy excludes Opus 5; Claude requests now offer only fallback models your account can use, and a request served by another organization's login than the one your model list came from offers none ([#17772](https://github.com/can1357/oh-my-pi/pull/17772) by [@will-bogusz](https://github.com/will-bogusz))
 
+### Fixed
+
+- Fixed Codex WebSocket connection errors ending a turn or switching models instead of retrying the same turn over SSE.
+
 ## [18.15.0] - 2026-11-01
 
 ### Fixed

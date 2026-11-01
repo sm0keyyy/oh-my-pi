@@ -205,6 +205,11 @@ function primaryArgText(name: string, args: Record<string, unknown> | undefined)
 		const pattern = primaryArgValue(args.pat);
 		if (pattern) return pattern;
 	}
+	if (name === "codegraph") {
+		return [primaryArgValue(args.op), primaryArgValue(args.query) || primaryArgValue(args.file)]
+			.filter(Boolean)
+			.join(" ");
+	}
 	for (const key of PRIMARY_ARG_KEYS) {
 		const value = args[key];
 		const summary = primaryArgValue(value);

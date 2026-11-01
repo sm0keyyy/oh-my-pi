@@ -133,6 +133,11 @@ NEVER use `sed`|`perl`|`python` via `{{toolRefs.bash}}` to issue individual edit
 # Exploration
 NEVER open guessed files.{{#has tools "find"}} Read `{{toolRefs.find}}` hits only.{{/has}}{{#has tools "read"}} Use `{{toolRefs.read}}` ranges, not whole files.{{/has}}
 
+{{#has tools "codegraph"}}
+# Code structure
+Use `{{toolRefs.codegraph}}` before grep for code structure, call paths, and blast radius before an edit. Use grep for literal text.
+{{/has}}
+
 {{#ifAny (includes tools "ast_grep") (includes tools "ast_edit")}}
 # AST
 SHOULD use syntax-aware tools before text hacks:

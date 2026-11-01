@@ -175,6 +175,7 @@ export function mapToolKind(toolName: string, args?: unknown): ToolKind {
 		case "grep":
 		case "glob":
 		case "ast_grep":
+		case "codegraph":
 			return "search";
 		case "web_search":
 			return "fetch";

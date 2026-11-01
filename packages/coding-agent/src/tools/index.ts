@@ -50,6 +50,7 @@ import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
+import { CodegraphTool } from "./codegraph";
 import { ContextNotesTool, NewContextTool } from "./context-notes";
 import { DebugTool } from "./debug";
 import { cfgIdaAvailable } from "../ida/install";
@@ -83,6 +84,7 @@ import {
 	cfgAskEnabled,
 	cfgAstEditEnabled,
 	cfgAstGrepEnabled,
+	cfgCodegraphEnabled,
 	cfgAsyncEnabled,
 	cfgCheckpointEnabled,
 	cfgDebugEnabled,
@@ -123,6 +125,7 @@ export type {
 } from "@oh-my-pi/pi-tui/tools/bash";
 export * from "./browser";
 export * from "./checkpoint";
+export * from "./codegraph";
 export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./context-notes";
@@ -573,6 +576,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	bash: s => new BashTool(s),
 	edit: s => new EditTool(s),
 	ast_grep: s => new AstGrepTool(s),
+	codegraph: CodegraphTool.createIf,
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
@@ -711,6 +715,13 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			requestedTools.push("ast_grep");
 		}
 		if (
+			requestedTools.includes("grep") &&
+			!requestedTools.includes("codegraph") &&
+			cfgCodegraphEnabled.get(session.settings)
+		) {
+			requestedTools.push("codegraph");
+		}
+		if (
 			requestedTools.includes("edit") &&
 			!requestedTools.includes("ast_edit") &&
 			cfgAstEditEnabled.get(session.settings)
@@ -767,6 +778,7 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		if (name === "find") return isFindEnabled(session);
 		if (name === "github") return cfgGithubEnabled.get(session.settings);
 		if (name === "ast_grep") return cfgAstGrepEnabled.get(session.settings);
+		if (name === "codegraph") return cfgCodegraphEnabled.get(session.settings);
 		if (name === "ast_edit") return cfgAstEditEnabled.get(session.settings);
 		if (name === "web_search") return cfgWebSearchEnabled.get(session.settings);
 		if (name === "security_scan") return cfgSecurityEnabled.get(session.settings);

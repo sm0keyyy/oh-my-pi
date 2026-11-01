@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
+
 ### Changed
 
 - Updated the fork to upstream 18.15.0 while retaining session sockets, reconnect handling, usage tracking, and table scrollback fixes.

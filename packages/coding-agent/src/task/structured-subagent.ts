@@ -293,7 +293,10 @@ function resolveSchema(
 }
 
 function createPlanModeAgent(agent: AgentDefinition): AgentDefinition {
-	const tools = [...PLAN_MODE_TOOLS, ...(agent.tools ?? []).filter(tool => tool === "ast_grep")];
+	const tools = [
+		...PLAN_MODE_TOOLS,
+		...(agent.tools ?? []).filter(tool => tool === "ast_grep" || tool === "codegraph"),
+	];
 	return {
 		...agent,
 		systemPrompt: `${planModeSubagentPrompt}\n\n${agent.systemPrompt}`,

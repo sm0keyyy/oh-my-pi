@@ -535,6 +535,30 @@ export const cfgAstGrepEnabled = register({
 	},
 });
 
+export const cfgCodegraphEnabled = register({
+	id: "codegraph.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Codegraph",
+		description: "Enable the codegraph tool when the project has an index",
+	},
+});
+
+export const cfgCodegraphPath = register({
+	id: "codegraph.path",
+	type: "string",
+	default: "codegraph",
+});
+
+export const cfgCodegraphTimeout = register({
+	id: "codegraph.timeout",
+	type: "number",
+	default: 60,
+});
+
 export const cfgAstEditEnabled = register({
 	id: "astEdit.enabled",
 	type: "boolean",
@@ -1129,6 +1153,8 @@ export const cfgBuiltinToolGates = combine({
 	ask: cfgAskEnabled,
 	astEdit: cfgAstEditEnabled,
 	astGrep: cfgAstGrepEnabled,
+	codegraph: cfgCodegraphEnabled,
+	codegraphPath: cfgCodegraphPath,
 	async: cfgAsyncEnabled,
 	autolearn: cfgAutolearnEnabled,
 	bash: cfgBashEnabled,

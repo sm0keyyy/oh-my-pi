@@ -11,7 +11,7 @@ import type { CustomMessage, SkillPromptDetails } from "./messages";
 import { fileHyperlink } from "../render";
 import { tryFileUri } from "../render/hyperlink";
 import { collapseSkillTokens, skillChipLabel, skillChipStyle, skillToken } from "../prompt/composer-attachments";
-import { type UserBubbleOptions, UserMessageComponent, userBubbleColor } from "./user-message";
+import { type UserBubbleOptions, UserMessageComponent, userBubbleColor, renderUserMessageBar } from "./user-message";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { card, md, node, span } from "../native/describe";
 import { type NativeChild, type NativeNode, type NativeUiEvent } from "../native/node";
@@ -21,7 +21,7 @@ import { Memo } from "../native/memo";
  * Transcript row for a user-invoked skill. Two layouts, chosen by where the
  * `/skill:<name>` token sat in the submitted draft:
  *
- * - **Callout** (token first): a user bubble with a skill-colored left rail,
+ * - **Callout** (token first): a user bubble with a user-message bar,
  *   the skill chip and prompt size as its header, then the rest of the draft
  *   as full Markdown.
  * - **Inline** (token mid-prompt): a plain user bubble with the token drawn
@@ -179,7 +179,7 @@ export class SkillMessageComponent extends Container {
 		const children: Component[] = [new Text(this.#header(label, details), 0, 0)];
 		if (body) children.push(new Spacer(1), this.#markdown(body, bubble));
 		// The prompt disclosure nests inside the one callout so the
-		// skill-colored rail stays continuous across summary and detail.
+		// user-message bar stays continuous across summary and detail.
 		const promptDisclosure = new Disclosure({
 			body: () => this.#promptFragment(bubble),
 			expanded,
@@ -245,7 +245,7 @@ function bubbleReset(): string {
 }
 
 /**
- * A user-bubble box with a skill-colored rail down its left edge. Memoized on the
+ * A user-bubble box with the shared user-message bar down its left edge. Memoized on the
  * inner box's render so the transcript's incremental assembly sees stable rows.
  */
 class SkillCallout implements Component {
@@ -274,7 +274,7 @@ class SkillCallout implements Component {
 	render(width: number): readonly string[] {
 		const inner = this.#box.render(Math.max(1, width - 1));
 		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
-		const rail = theme.bg("userMessageBg", theme.fg("customMessageLabel", theme.symbol("skill.rail")));
+		const rail = theme.bg("userMessageBg", renderUserMessageBar());
 		const lines = inner.map(line => rail + line);
 		this.#source = inner;
 		this.#lines = lines;

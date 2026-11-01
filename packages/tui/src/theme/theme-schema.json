@@ -33,7 +33,7 @@
 		},
 		"colors": {
 			"type": "object",
-			"description": "Theme color definitions (all required except thinkingMax and assistantMessageText)",
+			"description": "Theme color definitions (all required except thinkingMax, assistantMessageText and userMessageBar)",
 			"required": [
 				"accent",
 				"border",
@@ -162,6 +162,10 @@
 				"userMessageText": {
 					"$ref": "#/$defs/colorValue",
 					"description": "User message text color"
+				},
+				"userMessageBar": {
+					"$ref": "#/$defs/colorValue",
+					"description": "User message left bar (optional; absent or empty falls back to borderAccent)"
 				},
 				"customMessageBg": {
 					"$ref": "#/$defs/colorValue",

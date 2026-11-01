@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -6,10 +6,21 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { MAGIC_KEYWORDS } from "@oh-my-pi/pi-coding-agent/modes/magic-keywords";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { CollabPromptMessageComponent } from "@oh-my-pi/pi-tui/chat/collab-prompt-message";
 import { chipLabel, modelChipStyle, modelMentionChipLabel } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { imageReferenceHyperlink } from "@oh-my-pi/pi-tui/prompt/image-references";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
-import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import {
+	getEditorTheme,
+	initTheme,
+	setThemeInstance,
+	theme,
+	type Theme,
+	type ThemeColor,
+} from "@oh-my-pi/pi-tui/theme";
+import { createTheme, getBuiltinThemes } from "@oh-my-pi/pi-tui/theme/loader";
+import { validateThemeJson } from "@oh-my-pi/pi-tui/theme/schema-validation";
+import { stripTerminalSequences, visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { Container } from "@oh-my-pi/pi-tui";
@@ -203,5 +214,97 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 		expect(Bun.stripANSI(raw)).toContain("[Image #1, 800x600]");
 		expect(raw).toContain("\x1b]8;id=");
 		expect(raw).toContain(imageUri);
+	});
+});
+
+describe("user-message left bar", () => {
+	let previousTheme: Theme;
+
+	beforeEach(() => {
+		previousTheme = theme;
+		const dark = getBuiltinThemes().dark!;
+		setThemeInstance(
+			createTheme(
+				validateThemeJson({
+					...dark,
+					vars: { ...dark.vars, bar: "#123456" },
+					colors: { ...dark.colors, userMessageBar: "bar" },
+				}),
+				{ mode: "truecolor" },
+			),
+		);
+	});
+
+	afterEach(() => setThemeInstance(previousTheme));
+
+	function expectBar(lines: readonly string[], color: ThemeColor): void {
+		for (const line of lines) {
+			expect(stripTerminalSequences(line).startsWith("▌")).toBe(true);
+			const prefix = line.slice(0, line.indexOf("▌")).replace("\x1b]133;A\x07", "");
+			expect(prefix).toMatch(/^(?:\x1b\[[0-9;]*m)*$/);
+			expect(prefix.endsWith(theme.getBgAnsi("userMessageBg") + theme.getFgAnsi(color))).toBe(true);
+			expect(line).not.toContain(`${theme.fg(color, "▌")}\x1b[49m`);
+		}
+	}
+
+	it("paints padding, wrapped content and badge rows without changing layout or OSC zones", () => {
+		const component = new UserMessageComponent("A wide 界 prompt with enough words to wrap across several rows.", {
+			liveSteered: true,
+		});
+		const before = Container.prototype.render.call(component, 24);
+		component.setReaction("👍");
+		const lines = component.render(24);
+		expectBar(lines, "userMessageBar");
+		expect(lines.map(visibleWidth)).toEqual(before.map(visibleWidth));
+		expect(lines.every(line => visibleWidth(line) === 24)).toBe(true);
+		expect(stripTerminalSequences(lines[0]!)).toContain("*");
+		expect(stripTerminalSequences(lines[0]!)).toContain("👍");
+		expect(lines[0]!.startsWith("\x1b]133;A\x07")).toBe(true);
+		expect(lines.at(-1)!.endsWith("\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07")).toBe(true);
+		expect(component.render(24)).toBe(lines);
+	});
+
+	it.each([undefined, ""])("uses borderAccent when userMessageBar is %j", userMessageBar => {
+		const dark = getBuiltinThemes().dark!;
+		const colors = { ...dark.colors };
+		if (userMessageBar === undefined) delete colors.userMessageBar;
+		else colors.userMessageBar = userMessageBar;
+		setThemeInstance(createTheme(validateThemeJson({ ...dark, colors }), { mode: "truecolor" }));
+		expectBar(new UserMessageComponent("fallback").render(60), "borderAccent");
+	});
+
+	it("uses dim bars for synthetic input, including both emergency paths", () => {
+		const component = new UserMessageComponent("synthetic input\nsecond line", { synthetic: true });
+		expectBar(component.render(60), "dim");
+		const emergency = component.renderTranscriptBlockEmergencyRow(60)!;
+		expectBar([emergency], "dim");
+		expect(visibleWidth(emergency)).toBe(60);
+		expect(stripTerminalSequences(emergency)).toContain("synthetic input");
+		expect(emergency).not.toContain("\x1b]133;");
+		component.setTranscriptAllocation(1);
+		expect(component.render(60)).toEqual([emergency]);
+	});
+
+	it("gives collab guest prompts the same bar without changing row widths", () => {
+		const component = new CollabPromptMessageComponent({
+			role: "custom",
+			customType: "collab-prompt",
+			content: "A guest prompt that wraps across several rows in the user turn.",
+			details: { from: "guest" },
+			display: true,
+			timestamp: 0,
+		});
+		const before = Container.prototype.render.call(component, 24);
+		const lines = component.render(24);
+		expectBar(lines, "userMessageBar");
+		expect(lines.map(visibleWidth)).toEqual(before.map(visibleWidth));
+		expect(component.render(24)).toBe(lines);
+	});
+
+	it("rejects a non-color value for userMessageBar", () => {
+		const dark = getBuiltinThemes().dark!;
+		expect(() => validateThemeJson({ ...dark, colors: { ...dark.colors, userMessageBar: false } })).toThrow(
+			"userMessageBar",
+		);
 	});
 });

@@ -18,6 +18,7 @@ const themeColorsSchema = type({
 	selectedBg: "string | number",
 	userMessageBg: "string | number",
 	userMessageText: "string | number",
+	"userMessageBar?": "string | number",
 	customMessageBg: "string | number",
 	customMessageText: "string | number",
 	customMessageLabel: "string | number",

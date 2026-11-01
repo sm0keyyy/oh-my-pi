@@ -7,6 +7,7 @@ import type { CustomMessage } from "./messages";
 import { getMarkdownTheme, theme } from "../theme";
 import { card, md, span } from "../native/describe";
 import type { NativeNode } from "../native/node";
+import { renderUserMessageBar } from "./user-message";
 
 /**
  * Renders a collab guest prompt on every participant's transcript: a
@@ -14,11 +15,15 @@ import type { NativeNode } from "../native/node";
  */
 export class CollabPromptMessageComponent extends Container {
 	readonly #native: NativeNode;
+	#source: readonly string[] | undefined;
+	#lines: string[] | undefined;
 
 	constructor(message: CustomMessage<CollabPromptDetails>) {
 		super();
 		const from = message.details?.from?.trim() || "guest";
-		const authorText = new Text(theme.fg("accent", `\x1b[1m«${from}»\x1b[22m ›`), 1, 0);
+		const authorText = new Text(theme.fg("accent", `\x1b[1m«${from}»\x1b[22m ›`), 1, 0, value =>
+			theme.bg("userMessageBg", value),
+		);
 		authorText.setIgnoreTight(true);
 		this.addChild(authorText);
 		const text =
@@ -42,5 +47,20 @@ export class CollabPromptMessageComponent extends Container {
 	/** A user-toned card headed by the guest's name, with the prompt as markdown. */
 	override describe(): NativeNode {
 		return this.#native;
+	}
+
+	override render(width: number): readonly string[] {
+		const source = super.render(width);
+		if (this.#source === source && this.#lines !== undefined) return this.#lines;
+		const bar = renderUserMessageBar();
+		this.#source = source;
+		this.#lines = source.map(line => line.replace(" ", bar));
+		return this.#lines;
+	}
+
+	override releaseRenderCaches(): void {
+		this.#source = undefined;
+		this.#lines = undefined;
+		super.releaseRenderCaches();
 	}
 }

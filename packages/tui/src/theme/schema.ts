@@ -14,6 +14,7 @@ export type ColorValue = string | number;
  */
 export const OPTIONAL_THEME_COLOR_RECORD = {
 	assistantMessageText: true,
+	userMessageBar: true,
 } satisfies Partial<Record<ThemeColor, true>>;
 
 export interface ThemeJson {
@@ -66,6 +67,7 @@ export type ThemeColor =
 	| "assistantMessageText"
 	| "thinkingText"
 	| "userMessageText"
+	| "userMessageBar"
 	| "customMessageText"
 	| "customMessageLabel"
 	| "toolTitle"
@@ -130,6 +132,7 @@ const THEME_COLOR_RECORD = {
 	assistantMessageText: true,
 	thinkingText: true,
 	userMessageText: true,
+	userMessageBar: true,
 	customMessageText: true,
 	customMessageLabel: true,
 	toolTitle: true,

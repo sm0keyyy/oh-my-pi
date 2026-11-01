@@ -5,6 +5,7 @@
 ### Changed
 
 - Reduced repeated rendering work for long streamed paragraphs and open code blocks.
+- User messages, skill invocations and collab prompts now have a continuous left bar. Set the optional `userMessageBar` theme color to override `borderAccent`.
 
 ### Fixed
 

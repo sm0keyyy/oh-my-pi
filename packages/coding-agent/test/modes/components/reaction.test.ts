@@ -143,11 +143,11 @@ describe("agent reactions in the transcript", () => {
 		const transcript = new Container();
 		const user = new UserMessageComponent("use tabs", { liveSteered: true });
 		transcript.addChild(user);
-		expect(bubbleTopRow(user)).toStartWith(" *");
+		expect(bubbleTopRow(user)).toStartWith("▌*");
 
 		const reply = new AssistantMessageComponent(msg("👍 On it."));
 		reply.pickReactionTarget(transcript.children);
-		expect(bubbleTopRow(user)).toStartWith(" *");
+		expect(bubbleTopRow(user)).toStartWith("▌*");
 		expect(bubbleTopRow(user)).toEndWith("👍 ");
 		expect(Bun.stringWidth(bubbleTopRow(user))).toBe(W);
 	});

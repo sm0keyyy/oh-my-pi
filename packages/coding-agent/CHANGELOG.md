@@ -6,6 +6,7 @@
 
 - Updated the fork to upstream 18.15.0 while retaining session sockets, reconnect handling, usage tracking, and table scrollback fixes.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
+- User messages now have a colored left bar, including skill invocations and collab prompts. Synthetic input uses a dim bar.
 
 ### Fixed
 

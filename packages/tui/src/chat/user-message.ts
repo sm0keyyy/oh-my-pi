@@ -120,6 +120,12 @@ export function userBubbleColor(
 		);
 }
 
+/** The shared left bar for user turns, with a dim bar for agent-attributed input. */
+export function renderUserMessageBar(synthetic = false): string {
+	const color = synthetic ? "dim" : theme.hasColor("userMessageBar") ? "userMessageBar" : "borderAccent";
+	return theme.fg(color, "▌");
+}
+
 /**
  * Component that renders a user message. Accepts an agent reaction badge
  * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row;
@@ -328,12 +334,12 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		if (lines.length >= 3) {
 			for (let i = 1; i < lines.length - 1; i++) {
 				if (stripTerminalSequences(lines[i]!).trim().length > 0) {
-					return lines[i];
+					return lines[i]!.replace(" ", renderUserMessageBar(this.#synthetic));
 				}
 			}
-			return lines[1];
+			return lines[1]!.replace(" ", renderUserMessageBar(this.#synthetic));
 		}
-		return lines[0];
+		return lines[0]!.replace(" ", renderUserMessageBar(this.#synthetic));
 	}
 
 	override render(width: number): readonly string[] {
@@ -350,6 +356,9 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		}
 		const wrapped = lines.slice();
 		if (this.#reaction !== undefined || this.#liveSteered) wrapped[0] = this.#badgeRow(width);
+		const bar = renderUserMessageBar(this.#synthetic);
+		// Markdown and badge rows place a padding space before any content or links.
+		for (let i = 0; i < wrapped.length; i++) wrapped[i] = wrapped[i]!.replace(" ", bar);
 		wrapped[0] = OSC133_ZONE_START + wrapped[0];
 		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
 		this.#zoneSource = lines;

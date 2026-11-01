@@ -59,8 +59,11 @@ describe("SkillMessageComponent", () => {
 		const text = strip(lines);
 
 		// Every row carries the rail; the header is the chip, not the raw token.
-		const rail = uiTheme.symbol("skill.rail");
-		for (const line of lines) expect(Bun.stripANSI(line).startsWith(rail)).toBe(true);
+		const rail = uiTheme.bg("userMessageBg", uiTheme.fg("borderAccent", "▌"));
+		for (const line of lines) {
+			expect(line.startsWith(rail)).toBe(true);
+			expect(Bun.stringWidth(line)).toBe(80);
+		}
 		expect(text).toContain(chip());
 		expect(text).not.toContain("/skill:");
 
@@ -96,9 +99,12 @@ describe("SkillMessageComponent", () => {
 		expect(text).not.toContain("/skill:");
 		// The inline chip still opens the SKILL.md.
 		expect(lines.join("\n")).toContain(skillUri);
-		// No rail, no meta line: it reads as an ordinary user turn.
-		const rail = uiTheme.symbol("skill.rail");
-		expect(lines.some(line => Bun.stripANSI(line).startsWith(rail))).toBe(false);
+		// The user-message bar remains, without a separate skill rail or meta line.
+		for (const line of lines) {
+			expect(Bun.stripANSI(line).startsWith("▌")).toBe(true);
+			expect(line).toContain(uiTheme.fg("borderAccent", "▌"));
+			expect(Bun.stringWidth(line)).toBe(80);
+		}
 		expect(text).not.toContain("88 lines");
 	});
 

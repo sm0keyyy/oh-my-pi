@@ -38,6 +38,10 @@ class TestEventSource extends EventTarget {
 			this.onopen?.(open);
 			this.dispatchEvent(open);
 			for await (const event of readSseEvents(response.body, this.#controller.signal)) {
+				if (event.event === "heartbeat") {
+					this.dispatchEvent(new Event("heartbeat"));
+					continue;
+				}
 				if (!event.data) continue;
 				this.#lastId = event.id ?? this.#lastId;
 				const message = new MessageEvent("message", { data: event.data, lastEventId: this.#lastId });
@@ -224,10 +228,15 @@ function fixtureClient(
 				server.timeout(request, 0);
 				const cursor =
 					request.headers.get("last-event-id") ?? new URL(request.url).searchParams.get("lastEventId") ?? "";
-				const resync = Boolean(cursor && !journal.canResume(cursor));
+				const resync =
+					Boolean(cursor && !journal.canResume(cursor)) ||
+					(new URL(request.url).searchParams.get("resync") === "1" && !request.headers.has("last-event-id"));
 				const response = journal.open(request, undefined, undefined, resync ? journal.id : cursor);
-				if (resync) stream.send('{"type":"gateway","event":"resync","resetCommands":true}');
-				if (!started) {
+				if (resync)
+					stream.send(
+						JSON.stringify({ type: "gateway", event: "resync", resetCommands: !journal.canResume(cursor) }),
+					);
+				if (!started || resync) {
 					started = true;
 					stream.send('{"type":"ready"}');
 				} else stream.send('{"type":"gateway","event":"resumed"}');
@@ -557,4 +566,125 @@ test("resyncs a new gateway epoch, keeps unsent prompts, and never replays an un
 	if (outcome instanceof Error) expect(outcome.message).toContain("may have reached the TUI");
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
 	expect(prompts).toEqual(["uncertain", "queued"]);
+});
+
+test("gateway resume controls never interrupt a partially decoded RPC frame", async () => {
+	let transport: FixtureStream | undefined;
+	let snapshots = 0;
+	const client = fixtureClient((stream, command) => {
+		transport = stream;
+		if (command.type === "get_messages") snapshots++;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.request({ type: "get_state" });
+	const output = "é".repeat(600_000);
+	const bytes = new TextEncoder().encode(JSON.stringify({ type: "command_output", text: output }));
+	const count = Math.ceil(bytes.length / (256 * 1024));
+	const sendChunk = (index: number) =>
+		transport!.send(
+			JSON.stringify({
+				type: "rpc_chunk",
+				chunkId: "resumable",
+				index,
+				count,
+				byteLength: bytes.length,
+				data: Buffer.from(bytes.subarray(index * 256 * 1024, (index + 1) * 256 * 1024)).toString("base64"),
+			}),
+		);
+	sendChunk(0);
+	transport!.send('{"type":"gateway","event":"bridge_reconnecting"}');
+	transport!.send('{"type":"gateway","event":"bridge_resumed"}');
+	const failed = Promise.withResolvers<void>();
+	TestEventSource.latest.addEventListener("error", () => failed.resolve(), { once: true });
+	transport!.close();
+	await failed.promise;
+	for (let index = 1; index < count; index++) sendChunk(index);
+	await waitForSnapshot(client, snapshot => snapshot.commandOutputs.length === 1);
+	expect(client.getSnapshot().commandOutputs).toEqual([output]);
+	expect(snapshots).toBe(1);
+});
+
+test("a malformed event forces a clean resync instead of a permanent replay loop", async () => {
+	let transport: FixtureStream | undefined;
+	let snapshots = 0;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type === "get_messages") {
+			respond({
+				messages: [{ role: "assistant", timestamp: 1, content: ++snapshots === 1 ? "partial" : "restored" }],
+			});
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	const phases: string[] = [];
+	client.subscribe(() => phases.push(client.getSnapshot().phase));
+	transport!.send("{");
+	await waitForSnapshot(client, snapshot => snapshot.messages[0]?.content === "restored");
+	expect(snapshots).toBe(2);
+	expect(phases.every(phase => phase === "connected")).toBe(true);
+});
+
+test("a transport drop during initial hydration still finishes the view", async () => {
+	let snapshots = 0;
+	let dropped = false;
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "negotiate_protocol" && !dropped) {
+			dropped = true;
+			respond({});
+			stream.close();
+			return true;
+		}
+		if (command.type === "get_messages") snapshots++;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(snapshots).toBe(1);
+	expect(client.getSnapshot().error).toBeNull();
+});
+
+test("page restoration and online events resume partial output without a rebuild", async () => {
+	let transport: FixtureStream | undefined;
+	let snapshots = 0;
+	const client = fixtureClient((stream, command) => {
+		transport = stream;
+		if (command.type === "get_messages") snapshots++;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	transport!.send(
+		JSON.stringify({ type: "message_update", message: { role: "assistant", timestamp: 1, content: "partial" } }),
+	);
+	await waitForSnapshot(client, snapshot => snapshot.messages[0]?.content === "partial");
+	const source = TestEventSource.latest;
+	const restored = new Event("pageshow");
+	Object.defineProperty(restored, "persisted", { value: true });
+	window.dispatchEvent(restored);
+	await client.request({ type: "get_state" });
+	expect(TestEventSource.latest).not.toBe(source);
+	expect(client.getSnapshot().messages[0]?.content).toBe("partial");
+	const resumed = TestEventSource.latest;
+	window.dispatchEvent(new Event("online"));
+	await client.request({ type: "get_state" });
+	expect(TestEventSource.latest).not.toBe(resumed);
+	expect(snapshots).toBe(1);
+});
+
+test("heartbeats retain idle streams and a silent half-open stream resumes from its cursor", async () => {
+	vi.useFakeTimers();
+	const client = fixtureClient(() => {});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.request({ type: "get_state" });
+	const source = TestEventSource.latest;
+	for (let index = 0; index < 6; index++) {
+		source.dispatchEvent(new Event("heartbeat"));
+		vi.advanceTimersByTime(10_000);
+	}
+	expect(TestEventSource.latest).toBe(source);
+	vi.advanceTimersByTime(40_000);
+	expect(TestEventSource.latest).not.toBe(source);
+	expect(new URL(TestEventSource.latest.url).searchParams.get("lastEventId")).toMatch(/:\d+$/);
 });

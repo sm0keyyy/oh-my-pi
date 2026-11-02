@@ -172,6 +172,19 @@ export class SessionClient {
 	#generation = 0;
 	#hydration = 0;
 	#events: RecordValue[] | null = null;
+	#watchdog?: number;
+	#lastActivity = 0;
+	#needsResync = false;
+	#resume = (event: Event): void => {
+		if (typeof document !== "undefined" && document.hidden) return;
+		if (
+			event.type === "online" ||
+			("persisted" in event && event.persisted === true) ||
+			!this.#streamReady ||
+			Date.now() - this.#lastActivity > 20_000
+		)
+			this.connect();
+	};
 	#snapshot: Snapshot = {
 		phase: "connecting",
 		state: {},
@@ -218,36 +231,70 @@ export class SessionClient {
 		if (this.#bridgeOffline) return;
 		clearTimeout(this.#gapTimer);
 		this.#gapTimer = undefined;
-		if (this.#hasState && this.#snapshot.phase === "offline") this.#publish({ phase: "connected", error: null });
+		if (this.#hasState && (this.#snapshot.phase === "offline" || this.#snapshot.error))
+			this.#publish({ phase: "connected", error: null });
 		void this.#sendQueued();
+	}
+	#retryStream(resync = false): void {
+		this.#needsResync ||= resync;
+		this.#streamReady = false;
+		++this.#generation;
+		this.#source?.close();
+		this.#gap();
+		clearTimeout(this.#retry);
+		this.#retry = window.setTimeout(this.connect, 1000);
 	}
 	connect = (): void => {
 		if (this.#stopped || this.#snapshot.phase === "gone") return;
+		if (this.#watchdog === undefined) {
+			window.addEventListener("online", this.#resume);
+			window.addEventListener("pageshow", this.#resume);
+			if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.#resume);
+			this.#watchdog = window.setInterval(() => {
+				if (typeof document !== "undefined" && document.hidden) return;
+				if (Date.now() - this.#lastActivity > 45_000) this.connect();
+			}, 5000);
+		}
 		clearTimeout(this.#retry);
 		this.#source?.close();
 		this.#streamReady = false;
 		const generation = ++this.#generation;
+		this.#lastActivity = Date.now();
 		if (!this.#lastId) this.#events = [];
 		const target = new URL(this.url);
 		target.searchParams.set("client", this.#client);
 		if (this.#lastId) target.searchParams.set("lastEventId", this.#lastId);
+		if (this.#needsResync) target.searchParams.set("resync", "1");
 		const source = new EventSource(target);
 		this.#source = source;
 		this.#gap();
 		source.onopen = () => {
-			if (generation === this.#generation) this.#recovered();
+			if (generation === this.#generation) this.#lastActivity = Date.now();
 		};
+		source.addEventListener("heartbeat", () => {
+			if (generation === this.#generation) this.#lastActivity = Date.now();
+		});
 		source.onmessage = event => {
 			if (generation !== this.#generation) return;
+			this.#lastActivity = Date.now();
+			const previousId = this.#lastId;
 			try {
 				const value: unknown = JSON.parse(event.data);
 				if (!isRecord(value)) throw new Error("Invalid stream event");
 				if (event.lastEventId === this.#lastId) return;
 				if (!event.lastEventId) throw new Error("Missing stream sequence");
-				const [epoch, sequence] = event.lastEventId.split(":");
+				const [epoch, sequence, extra] = event.lastEventId.split(":");
 				const [previousEpoch, previousSequence] = this.#lastId.split(":");
-				if (!Number.isSafeInteger(Number(sequence)) || Number(sequence) < 1)
+				if (
+					!epoch ||
+					extra !== undefined ||
+					!/^\d+$/.test(sequence ?? "") ||
+					!Number.isSafeInteger(Number(sequence)) ||
+					Number(sequence) < 1
+				)
 					throw new Error("Invalid stream sequence");
+				if (previousEpoch && epoch !== previousEpoch && value.event !== "resync")
+					throw new Error("Stream epoch changed without resync");
 				if (epoch === previousEpoch && Number(sequence) <= Number(previousSequence)) return;
 				if (
 					epoch === previousEpoch &&
@@ -256,23 +303,21 @@ export class SessionClient {
 				)
 					throw new Error("Stream sequence gap");
 				if (value.type !== "cursor") {
-					const frame =
-						value.type === "gateway" && value.event === "resync" ? value : this.#decoder.push(event.data);
+					const frame = value.type === "gateway" ? value : this.#decoder.push(event.data);
 					this.#lastId = event.lastEventId;
 					if (frame) this.#receive(frame);
 				}
 				this.#lastId = event.lastEventId;
 			} catch {
-				source.close();
-				this.#gap();
-				this.#retry = window.setTimeout(this.connect, 250);
+				this.#lastId = previousId;
+				this.#retryStream(true);
 			}
 		};
 		source.onerror = () => {
 			if (generation !== this.#generation || this.#stopped) return;
 			this.#streamReady = false;
 			this.#gap();
-			if (source.readyState === EventSource.CLOSED) this.#retry = window.setTimeout(this.connect, 250);
+			if (source.readyState === EventSource.CLOSED) this.#retryStream();
 		};
 	};
 	#enqueue(line: string): void {
@@ -326,6 +371,10 @@ export class SessionClient {
 		clearTimeout(this.#gapTimer);
 		clearTimeout(this.#postRetry);
 		clearInterval(this.#refresh);
+		clearInterval(this.#watchdog);
+		window.removeEventListener("online", this.#resume);
+		window.removeEventListener("pageshow", this.#resume);
+		if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.#resume);
 		this.#source?.close();
 		if (this.#source) {
 			const target = new URL(this.url);
@@ -431,45 +480,41 @@ export class SessionClient {
 		this.#publish({ notices: [...this.#snapshot.notices, message] });
 	}
 	async #rebuild(): Promise<void> {
-		const generation = this.#generation;
 		const hydration = ++this.#hydration;
 		this.#events ??= [];
 		clearInterval(this.#refresh);
-		this.#publish({ phase: "rebuilding", tools: {}, dialogs: [], agentMessages: {} });
+		if (!this.#hasState) this.#publish({ phase: "rebuilding" });
 		try {
 			await this.request({ type: "negotiate_protocol", protocolVersion: 2 }, 10_000);
 			await this.request({ type: "set_event_filter", events: null, messageUpdates: "full" }, 10_000);
 			await this.request({ type: "set_ask_dialog", enabled: true }, 10_000);
 			await this.request({ type: "set_subagent_subscription", level: "events" }, 10_000);
-			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			if (this.#stopped || hydration !== this.#hydration) return;
 			const result = await this.#request({ type: "get_messages" }, 10_000, hydration);
-			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			if (this.#stopped || hydration !== this.#hydration) return;
 			const state = await this.#request({ type: "get_state" }, 10_000, hydration);
-			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			if (this.#stopped || hydration !== this.#hydration) return;
 			const messages = records(result.messages).map((m, i) => messageOf(m, `snapshot-${i}`));
 			const events = this.#events ?? [];
 			this.#events = null;
 			this.#setState(state);
-			this.#publish({ messages });
+			this.#publish({ messages, tools: {}, dialogs: [], agentMessages: {} });
 			for (const event of events) this.#apply(event);
 			this.#publish({ phase: "connected", error: null });
 			this.#hasState = true;
+			this.#recovered();
 			await this.loadCatalog();
 			await this.refresh();
-			if (generation === this.#generation && hydration === this.#hydration)
+			if (!this.#stopped && hydration === this.#hydration)
 				this.#refresh = window.setInterval(() => {
 					void this.refresh().catch(error => this.#publish({ error: String(error) }));
 				}, 5000);
-		} catch (error) {
-			if (generation !== this.#generation || hydration !== this.#hydration) return;
-			this.#publish({ error: error instanceof Error ? error.message : String(error) });
-			this.#source?.close();
-			this.#gap();
-			this.#retry = window.setTimeout(this.connect, 250);
+		} catch {
+			if (this.#stopped || hydration !== this.#hydration) return;
+			this.#retryStream(true);
 		}
 	}
 	async loadCatalog(): Promise<void> {
-		const generation = this.#generation;
 		const hydration = this.#hydration;
 		const [commands, models, levels, agents] = await Promise.all([
 			this.request({ type: "get_available_commands" }),
@@ -477,7 +522,7 @@ export class SessionClient {
 			this.request({ type: "get_available_thinking_levels" }),
 			this.request({ type: "get_subagents" }),
 		]);
-		if (generation === this.#generation && hydration === this.#hydration)
+		if (!this.#stopped && hydration === this.#hydration)
 			this.#publish({
 				commands: [...records(commands.commands), ...terminalCommands],
 				models: records(models.models),
@@ -512,6 +557,7 @@ export class SessionClient {
 				this.#recovered(frame.event === "bridge_resumed");
 			} else if (frame.event === "resync") {
 				this.#streamReady = false;
+				this.#needsResync = false;
 				this.#decoder = new FrameDecoder();
 				this.#events = [];
 				++this.#hydration;

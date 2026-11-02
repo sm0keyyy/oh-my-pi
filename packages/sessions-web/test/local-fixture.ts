@@ -345,6 +345,10 @@ const proxy = Bun.serve({
 					writer.enqueue(new TextEncoder().encode("retry: 250\n\n"));
 					try {
 						for await (const event of readSseEvents(upstream.body!, signal)) {
+							if (event.event === "heartbeat") {
+								writer.enqueue(new TextEncoder().encode(":\nevent: heartbeat\ndata:\n\n"));
+								continue;
+							}
 							if (!event.data) continue;
 							const frame = JSON.parse(event.data);
 							if (!isBridge)

@@ -28,6 +28,10 @@ Previously sent mutations with uncertain outcomes are not replayed; their caller
 Browser commands remain queued across a transport gap. An explicit client close releases its local RPC attachment with DELETE.
 The browser keeps its current UI during reconnect and shows offline only after reconnection has failed for 5 s.
 Replay recovery does not reload the page. An expired cursor, a new gateway epoch, or a failed local RPC attachment requires a state rebuild.
+Gateway control events bypass RPC chunk assembly. A transport resume preserves the partial decoder and the transcript.
+Invalid frames request an explicit attachment resync instead of replay of the same invalid event.
+Page restoration, foreground return, and network recovery resume stale browser streams from the last accepted cursor.
+Named heartbeats drive a 45 s stale-stream watchdog. A brief reconnect retains the current view and does not show a banner.
 
 ## Bridge lifecycle
 
@@ -42,9 +46,21 @@ Only confirmed exits send `session_gone`. Temporary local attachment failures re
 
 SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, and `X-Accel-Buffering: no`.
 The gateway enqueues each event immediately and disables Bun's request idle timeout for each stream.
-A stream that carried no event for a 30-second interval receives an SSE comment line (`:`), so proxies and client idle timeouts do not cut a silent stream.
-Comments carry no event ID, and EventSource and the bridge ignore them.
-Diagnostics never include RPC content, assertions, bearer values, or request headers.
+The gateway sends a heartbeat every 10 s, before the 30 s proxy timeout, even at an exact stream queue boundary.
+The heartbeat contains a comment and an empty named `heartbeat` event. It carries no event ID or RPC content.
+The bridge ignores its empty data. EventSource uses its named event for browser liveness.
+Diagnostics never include RPC content, assertions, bearer values, request headers, or client identities.
+`Sessions stream closes` reports one summary per leg and reason each minute, with counts and total, minimum, and maximum connection durations.
+The reason set is fixed: `peer_abort`, `cancelled`, `replaced`, `backpressure`, `shutdown`, and `idle_timeout`.
+The gateway flushes remaining summaries on shutdown. Log storage follows the container's existing log retention.
+
+## iPhone viewport and transcript
+
+An upward touch movement, wheel event, or navigation key detaches the transcript immediately.
+New output does not move a detached transcript. Jump to latest or a downward scroll to the bottom restores follow.
+The transcript disables scroll anchoring and overscroll. Viewport resize changes the visible area without a page scroll reset.
+The app follows the visual viewport height and offset, so the composer remains above the keyboard.
+The operator requires a fixed-scale screen. The viewport disables user scaling, pinch gestures are blocked, and editable controls use at least 16px text.
 
 ## Custom transcript cards
 

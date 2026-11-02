@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as logger from "../../utils/src/logger";
 import { PUBLIC_ORIGIN } from "../src/protocol";
 import { ReplayJournal } from "../src/replay";
 import { startGateway, type SessionsGateway } from "../src/server";
@@ -75,6 +76,8 @@ afterEach(async () => {
 	gateway.stop();
 	access.stop();
 	await fs.rm(siteDir, { recursive: true });
+	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 test("requires signed service assertions and bearer for both bridge methods and user assertions for browser routes", async () => {
@@ -254,25 +257,98 @@ test("reattaches a temporary RPC failure without declaring the session gone", as
 	}
 });
 
-test("sends an SSE comment only after an idle interval and stops on close", async () => {
+test("sends named heartbeats during idle and active streams without advancing the replay cursor", async () => {
+	vi.useFakeTimers();
 	const journal = new ReplayJournal(16, 4096, 40);
 	const controller = new AbortController();
 	const reader = journal.open(new Request("http://x/", { signal: controller.signal })).body!.getReader();
 	const decoder = new TextDecoder();
-	const chunks: string[] = [];
-	const pump = (async () => {
-		for (let read = await reader.read(); !read.done; read = await reader.read())
-			chunks.push(decoder.decode(read.value));
-	})();
-	const busy = setInterval(() => journal.append('{"type":"tick"}'), 10);
-	await Bun.sleep(130);
-	clearInterval(busy);
-	expect(chunks).not.toContain(":\n\n");
-	await Bun.sleep(130);
-	expect(chunks.filter(chunk => chunk === ":\n\n").length).toBeGreaterThanOrEqual(1);
+	await reader.read();
+	journal.append('{"type":"tick"}');
+	await reader.read();
+	const cursor = journal.id;
+	vi.advanceTimersByTime(40);
+	expect(decoder.decode((await reader.read()).value)).toBe(":\nevent: heartbeat\ndata:\n\n");
+	vi.advanceTimersByTime(40);
+	expect(decoder.decode((await reader.read()).value)).toBe(":\nevent: heartbeat\ndata:\n\n");
+	expect(journal.id).toBe(cursor);
 	controller.abort();
-	await pump;
-	const count = chunks.length;
-	await Bun.sleep(100);
-	expect(chunks.length).toBe(count);
+	expect((await reader.read()).done).toBe(true);
+});
+
+test("heartbeats can fill an exact queue boundary and close a stalled consumer with a reason", async () => {
+	vi.useFakeTimers();
+	const reasons: string[] = [];
+	const journal = new ReplayJournal(16, 13, 40);
+	const response = journal.open(new Request("http://x/"), undefined, reason => reasons.push(reason));
+	vi.advanceTimersByTime(40);
+	expect(reasons).toEqual([]);
+	vi.advanceTimersByTime(40);
+	expect(reasons).toEqual(["backpressure"]);
+	const reader = response.body!.getReader();
+	const decoder = new TextDecoder();
+	expect(decoder.decode((await reader.read()).value)).toBe("retry: 1000\n\n");
+	expect(decoder.decode((await reader.read()).value)).toBe(":\nevent: heartbeat\ndata:\n\n");
+	expect((await reader.read()).done).toBe(true);
+});
+
+test("an explicit decoder resync replaces the attachment even while its cursor remains retained", async () => {
+	const { browser, conn } = await attach();
+	const replacement = peer(
+		`/events/session/${snapshot.instanceId}?resync=1`,
+		{ ...access.headers, origin: PUBLIC_ORIGIN },
+		"",
+		browser.client,
+	);
+	await replacement.opened.promise;
+	expect(JSON.parse(await replacement.next()).event).toBe("resync");
+	expect(JSON.parse(await bridge.next())).toEqual({ t: "detach", conn });
+	const attached = JSON.parse(await bridge.next());
+	expect(attached.t).toBe("attach");
+	await post({ t: "frame", conn: attached.conn, line: '{"type":"ready"}' });
+	expect(JSON.parse(await replacement.next()).type).toBe("ready");
+	const resumed = peer(
+		`/events/session/${snapshot.instanceId}?resync=1`,
+		{ ...access.headers, origin: PUBLIC_ORIGIN },
+		replacement.lastId,
+		browser.client,
+	);
+	await resumed.opened.promise;
+	expect(JSON.parse(await resumed.next()).event).toBe("resumed");
+});
+
+test("aggregates close reasons and durations once per minute without client data", async () => {
+	gateway.stop();
+	vi.useFakeTimers();
+	gateway = await startGateway({
+		token,
+		siteDir,
+		port: 0,
+		hostname: "127.0.0.1",
+		accessCertsUrl: access.certsUrl,
+	});
+	const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+	const { browser } = await attach();
+	for (let index = 0; index < 3; index++) {
+		const replacement = peer(
+			`/events/session/${snapshot.instanceId}`,
+			{ ...access.headers, origin: PUBLIC_ORIGIN },
+			browser.lastId,
+			browser.client,
+		);
+		await replacement.opened.promise;
+		await replacement.next();
+	}
+	expect(info.mock.calls.filter(([message]) => message === "Sessions stream closes")).toEqual([]);
+	vi.advanceTimersByTime(60_000);
+	const summaries = info.mock.calls.filter(([message]) => message === "Sessions stream closes");
+	expect(summaries).toHaveLength(1);
+	expect(summaries[0]?.[1]).toEqual({
+		leg: "browser",
+		reason: "replaced",
+		count: 3,
+		totalDurationMs: expect.any(Number),
+		minDurationMs: expect.any(Number),
+		maxDurationMs: expect.any(Number),
+	});
 });

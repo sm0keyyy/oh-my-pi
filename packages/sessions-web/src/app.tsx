@@ -1,6 +1,6 @@
 import { isRecord, shortenPath, type ToolRenderHost } from "@oh-my-pi/web-render";
 import { Moon, PanelsTopLeft, Sun } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { messageOf, number, records, SessionClient, sortSessions, strings, text, type RecordValue } from "./client";
 import { Composer } from "./composer";
 import { Modal, OperatorDialog } from "./dialogs";
@@ -26,19 +26,30 @@ function ThemeButton(): ReactNode {
 }
 export function App(): ReactNode {
 	const match = /^\/session\/([a-f0-9]{16})$/.exec(location.pathname);
-	useEffect(() => {
+	useLayoutEffect(() => {
 		const viewport = window.visualViewport;
-		if (!viewport) return;
 		const update = () => {
-			document.documentElement.style.setProperty("--viewport-height", `${viewport.height}px`);
-			window.scrollTo(0, 0);
+			document.documentElement.style.setProperty("--viewport-height", `${viewport?.height ?? window.innerHeight}px`);
+			document.documentElement.style.setProperty("--viewport-top", `${viewport?.offsetTop ?? 0}px`);
+		};
+		const preventZoom = (event: Event) => event.preventDefault();
+		const preventPinch = (event: TouchEvent) => {
+			if (event.touches.length > 1) event.preventDefault();
 		};
 		update();
-		viewport.addEventListener("resize", update);
-		viewport.addEventListener("scroll", update);
+		viewport?.addEventListener("resize", update);
+		viewport?.addEventListener("scroll", update);
+		window.addEventListener("resize", update);
+		document.addEventListener("gesturestart", preventZoom, { passive: false });
+		document.addEventListener("gesturechange", preventZoom, { passive: false });
+		document.addEventListener("touchmove", preventPinch, { passive: false });
 		return () => {
-			viewport.removeEventListener("resize", update);
-			viewport.removeEventListener("scroll", update);
+			viewport?.removeEventListener("resize", update);
+			viewport?.removeEventListener("scroll", update);
+			window.removeEventListener("resize", update);
+			document.removeEventListener("gesturestart", preventZoom);
+			document.removeEventListener("gesturechange", preventZoom);
+			document.removeEventListener("touchmove", preventPinch);
 		};
 	}, []);
 	return match ? <Session instanceId={match[1]} /> : <Lobby />;

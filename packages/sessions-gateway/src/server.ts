@@ -15,7 +15,7 @@ import {
 	sanitizeDiagnostic,
 	TOKEN,
 } from "./protocol";
-import { ReplayJournal } from "./replay";
+import { ReplayJournal, type StreamCloseReason } from "./replay";
 
 interface Client {
 	id: string;
@@ -30,6 +30,14 @@ interface Client {
 interface Session {
 	replay: ReplayJournal;
 	clients: Map<string, Client>;
+}
+interface CloseSummary {
+	leg: "browser" | "bridge";
+	reason: StreamCloseReason;
+	count: number;
+	totalDurationMs: number;
+	minDurationMs: number;
+	maxDurationMs: number;
 }
 export interface GatewayOptions {
 	token: string;
@@ -64,6 +72,31 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	let bridgeDeadline: Timer | undefined;
 	let incoming = 0;
 	let lastSeen = Date.now();
+	const closes = new Map<string, CloseSummary>();
+	const recordClose = (leg: CloseSummary["leg"], reason: StreamCloseReason, started: number): void => {
+		const duration = Math.max(0, Date.now() - started);
+		const key = `${leg}:${reason}`;
+		const summary = closes.get(key);
+		if (summary) {
+			summary.count++;
+			summary.totalDurationMs += duration;
+			summary.minDurationMs = Math.min(summary.minDurationMs, duration);
+			summary.maxDurationMs = Math.max(summary.maxDurationMs, duration);
+		} else {
+			closes.set(key, {
+				leg,
+				reason,
+				count: 1,
+				totalDurationMs: duration,
+				minDurationMs: duration,
+				maxDurationMs: duration,
+			});
+		}
+	};
+	const flushCloses = (): void => {
+		for (const summary of closes.values()) logger.info("Sessions stream closes", { ...summary });
+		closes.clear();
+	};
 	const headers = {
 		"cache-control": "no-store",
 		"referrer-policy": "no-referrer",
@@ -138,19 +171,20 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					const previous = bridgeTicket;
 					const ticket = {};
 					bridgeTicket = ticket;
-					commands.close();
+					commands.close("replaced");
 					clearTimeout(bridgeDeadline);
 					bridgeDeadline = undefined;
 					lastSeen = Date.now();
 					srv.timeout(request, 0);
+					const started = Date.now();
 					const response = commands.open(
 						request,
 						undefined,
-						() => {
+						reason => {
+							recordClose("bridge", reason, started);
 							if (bridgeTicket !== ticket) return;
 							bridgeTicket = undefined;
 							lost();
-							logger.info("Sessions bridge stream closed", { path: "peer" });
 						},
 						cursor,
 					);
@@ -230,7 +264,9 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					let client = session.clients.get(id);
 					const cursor = request.headers.get("last-event-id") ?? url.searchParams.get("lastEventId") ?? "";
 					const resetCommands = !client;
-					const resync = Boolean(cursor && (!client || !session.replay.canResume(cursor)));
+					const resync =
+						Boolean(cursor && (!client || !session.replay.canResume(cursor))) ||
+						(url.searchParams.get("resync") === "1" && !request.headers.has("last-event-id"));
 					if (!client) {
 						client = { id, conn: randomUUID(), instanceId, sequence: 0, backoff: 1000, ready: false };
 						if (!command({ t: "attach", conn: client.conn, instanceId }))
@@ -248,10 +284,11 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 						clients.set(conn, client);
 					}
 					srv.timeout(request, 0);
+					const started = Date.now();
 					const response = session.replay.open(
 						request,
 						id,
-						undefined,
+						reason => recordClose("browser", reason, started),
 						resync || !cursor ? session.replay.id : cursor,
 					);
 					if (resync) emit(client, JSON.stringify({ type: "gateway", event: "resync", resetCommands }));
@@ -343,21 +380,25 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 	const watchdog = setInterval(() => {
 		if (bridgeTicket && Date.now() - lastSeen >= IDLE_MS) {
 			bridgeTicket = undefined;
-			commands.close();
+			commands.close("idle_timeout");
 			lost();
 		}
 	}, 10_000);
 	watchdog.unref();
+	const diagnostics = setInterval(flushCloses, 60_000);
+	diagnostics.unref();
 	return {
 		url: `http://127.0.0.1:${server.port}`,
 		stop() {
 			bridgeTicket = undefined;
 			for (const client of clients.values()) clearTimeout(client.retry);
 			clearInterval(watchdog);
+			clearInterval(diagnostics);
 			clearTimeout(bridgeDeadline);
 			commands.close();
 			for (const session of streams.values()) session.replay.close();
 			server.stop(true);
+			flushCloses();
 		},
 	};
 }

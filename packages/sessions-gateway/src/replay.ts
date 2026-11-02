@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-export const HEARTBEAT_MS = 30_000;
-const HEARTBEAT = new TextEncoder().encode(":\n\n");
+export const HEARTBEAT_MS = 10_000;
+const HEARTBEAT = new TextEncoder().encode(":\nevent: heartbeat\ndata:\n\n");
+export type StreamCloseReason = "peer_abort" | "cancelled" | "replaced" | "backpressure" | "shutdown" | "idle_timeout";
 export const SSE_HEADERS = {
 	"content-type": "text/event-stream",
 	"cache-control": "no-cache, no-transform",
@@ -15,8 +16,7 @@ interface Entry {
 interface Subscriber {
 	controller: ReadableStreamDefaultController<Uint8Array>;
 	recipient?: string;
-	idle: boolean;
-	close(): void;
+	close(reason: StreamCloseReason): void;
 }
 
 export class ReplayJournal {
@@ -79,11 +79,9 @@ export class ReplayJournal {
 	#deliver(subscriber: Subscriber, entry: Entry): void {
 		if (!this.#subscribers.has(subscriber)) return;
 		if ((subscriber.controller.desiredSize ?? 0) < 0) {
-			subscriber.controller.close();
-			subscriber.close();
+			subscriber.close("backpressure");
 			return;
 		}
-		subscriber.idle = false;
 		subscriber.controller.enqueue(
 			entry.recipient && entry.recipient !== subscriber.recipient
 				? new TextEncoder().encode(`id: ${this.epoch}:${entry.sequence}\ndata: {"type":"cursor"}\n\n`)
@@ -93,53 +91,56 @@ export class ReplayJournal {
 	open(
 		request: Request,
 		recipient?: string,
-		onClose = (): void => {},
+		onClose = (_reason: StreamCloseReason): void => {},
 		from = request.headers.get("last-event-id") ?? "",
 	): Response {
 		if (recipient)
 			for (const subscriber of this.#subscribers)
 				if (subscriber.recipient === recipient) {
-					subscriber.controller.close();
-					subscriber.close();
+					subscriber.close("replaced");
 				}
 		const sequence = from ? this.sequence(from) : this.#sequence;
 		let subscriber: Subscriber;
-		// Proxies on both legs cut silent streams; a comment line after each idle interval keeps them open.
+		// A named heartbeat also lets Safari detect a half-open stream after suspension.
 		const heartbeat = setInterval(() => {
-			if (subscriber.idle && (subscriber.controller.desiredSize ?? 0) > 0) subscriber.controller.enqueue(HEARTBEAT);
-			subscriber.idle = true;
+			if ((subscriber.controller.desiredSize ?? 0) < 0) subscriber.close("backpressure");
+			else subscriber.controller.enqueue(HEARTBEAT);
 		}, this.heartbeatMs);
 		heartbeat.unref();
-		const cleanup = (): void => {
+		const cleanup = (reason: StreamCloseReason): void => {
 			clearInterval(heartbeat);
 			if (!this.#subscribers.delete(subscriber)) return;
 			request.signal.removeEventListener("abort", abort);
-			onClose();
+			onClose(reason);
 		};
 		const abort = (): void => {
-			subscriber.controller.close();
-			cleanup();
+			subscriber.close("peer_abort");
 		};
 		const body = new ReadableStream<Uint8Array>(
 			{
 				start: controller => {
-					subscriber = { controller, recipient, idle: true, close: cleanup };
+					subscriber = {
+						controller,
+						recipient,
+						close(reason) {
+							controller.close();
+							cleanup(reason);
+						},
+					};
 					this.#subscribers.add(subscriber);
 					request.signal.addEventListener("abort", abort, { once: true });
-					controller.enqueue(new TextEncoder().encode("retry: 250\n\n"));
+					controller.enqueue(new TextEncoder().encode("retry: 1000\n\n"));
 					if (sequence !== undefined)
 						for (const entry of this.#entries) if (entry.sequence > sequence) this.#deliver(subscriber, entry);
+					if (request.signal.aborted) subscriber.close("peer_abort");
 				},
-				cancel: cleanup,
+				cancel: () => cleanup("cancelled"),
 			},
 			new ByteLengthQueuingStrategy({ highWaterMark: this.maxBytes }),
 		);
 		return new Response(body, { headers: SSE_HEADERS });
 	}
-	close(): void {
-		for (const subscriber of this.#subscribers) {
-			subscriber.controller.close();
-			subscriber.close();
-		}
+	close(reason: StreamCloseReason = "shutdown"): void {
+		for (const subscriber of this.#subscribers) subscriber.close(reason);
 	}
 }

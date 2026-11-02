@@ -1,0 +1,120 @@
+{
+  "date": "2026-11-02",
+  "target": "Built production sessions-web/dist, real source TUI, gateway and bridge through the existing authenticated local fixture",
+  "phoneViewport": {
+    "width": 390,
+    "height": 844
+  },
+  "checks": {
+    "wheel": {
+      "beforeTop": 1387,
+      "afterTop": 1387,
+      "beforeBottomDistance": 1,
+      "afterBottomDistance": 21
+    },
+    "touch": {
+      "movementPx": 0.1,
+      "beforeTop": 1408,
+      "afterTop": 1408
+    },
+    "jump": {
+      "top": 1408,
+      "max": 1408
+    },
+    "keyboardBefore": {
+      "top": 1408,
+      "height": 621
+    },
+    "keyboardOpen": {
+      "top": 1408,
+      "height": 277,
+      "footerBottom": 500,
+      "windowTop": 0,
+      "viewport": 500
+    },
+    "keyboardClosed": {
+      "top": 1408,
+      "footerBottom": 844
+    },
+    "reconnect": {
+      "dropMs": 1000,
+      "beforeTop": 1523,
+      "afterBrowserTop": 1523,
+      "afterBridgeTop": 1523,
+      "streamTokens": 15,
+      "banners": [],
+      "following": false,
+      "sse": {
+        "opens": 0,
+        "errors": 0,
+        "heartbeats": 0
+      }
+    },
+    "zoom": {
+      "gesturePrevented": true,
+      "pinchPrevented": true,
+      "scale": 1,
+      "minControlFont": 16,
+      "viewportMeta": "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
+    },
+    "bottomReturn": {
+      "top": 1472,
+      "max": 1472,
+      "reattached": true
+    },
+    "desktop": {
+      "width": 1280,
+      "height": 900,
+      "bodyWidth": 1280,
+      "footerBottom": 900,
+      "viewportScale": 1,
+      "inputs": [
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px",
+        "16px"
+      ]
+    },
+    "idle": {
+      "status": "not established",
+      "observedProbe": {
+        "opens": 1,
+        "heartbeats": 15,
+        "errors": 1,
+        "readyState": 2
+      },
+      "limitations": [
+        "Cross-context browser wait could not access probe state.",
+        "A 90-second browser.run exceeded the CDP protocol timeout.",
+        "Public-path idle survival and real iPhone keyboard/pinch behavior remain operator checks."
+      ]
+    },
+    "screenshots": [
+      "evidence/screenshots/mobile-safari-phone.png",
+      "evidence/screenshots/mobile-safari-desktop.png"
+    ]
+  },
+  "errors": {
+    "application": [],
+    "harness": [
+      "Multiline browser.fill submitted only its first line. Used the native textarea setter and input event for the overflowing transcript.",
+      "Browser wait mixed evaluation contexts and generated a TypeError.",
+      "Long idle evaluation exceeded CDP timeout."
+    ],
+    "expected": [
+      "Aborted SSE requests during forced reconnect and probe cleanup."
+    ]
+  },
+  "untrustedContent": [
+    "test/custom-message.test.tsx:10 contains a fixture instruction to reply via write. Treated as data."
+  ]
+}

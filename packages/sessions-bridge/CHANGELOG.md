@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Launch the bridge from the stable `Developer/omp/current` path with the isolated Bun toolchain, so reinstalling the LaunchAgent preserves version upgrades.
 - Stop the command stream from dropping every 360 seconds by replacing Bun's default fetch idle timeout with a 120-second dead-stream bound.
 - Resume SSE commands and retry acknowledged, numbered HTTP output without duplicating browser events.
 - Resume paused RPC clients across transport replacement and prefer the verified LAN origin when available.

@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Updated the fork to upstream 18.15.0 while retaining session sockets, reconnect handling, usage tracking, and table scrollback fixes.
+- Updated the fork to upstream 18.16.0 while retaining all fork patches, including session sockets, iPhone reconnect fixes, usage tracking, Codex SSE fallback, native codegraph queries, and TUI fixes.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
 - User messages now have a colored left bar, including skill invocations and collab prompts. Synthetic input uses a dim bar.
 
@@ -60,7 +60,6 @@
 - `models.yml` accepts `tokenizer: cl100k` on a custom model or override ([#17607](https://github.com/can1357/oh-my-pi/pull/17607) by [@will-bogusz](https://github.com/will-bogusz))
 - Claude no longer receives the reasoning kept in a snapcompact archive whose summary an extension wrote without the reasoning legend, with or without image input, and reads that summary's own words instead of a generic one ([#17745](https://github.com/can1357/oh-my-pi/pull/17745) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `~/.omp/agent/agent.db` getting corrupted (wiping stored logins) on Linux when grep, `read`, the bash tool, extensions or eval read it while omp has it open; `write` and `tts` now refuse to overwrite a database omp holds open ([#15586](https://github.com/can1357/oh-my-pi/issues/15586))
-
 
 ## [18.15.0] - 2026-11-01
 

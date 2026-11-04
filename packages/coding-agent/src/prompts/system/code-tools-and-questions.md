@@ -6,4 +6,4 @@
 4. If codegraph has no index for the target repo, errors (for example codegraph-rs 'Graph search exceeds 10000 records' on a natural-language explore; use symbol names instead), indexes a different repo than the target, or returns nothing for a symbol that exists, use ast_grep plus grep and say so.
 5. When unsure about something only the operator can decide, ask with ask_operator (batch your questions), then ask_operator_result. If it times out, take the safe default, record the open question in your report, and continue. If ask_operator is not among your tools (for example security-reviewer inside a security scan, or seance), put the question in your report for your parent.
 
-Keep these rules word for word in step with `~/.omp/agent/skills/crewmate-references/code-tools.md`.
+{{!-- Keep these rules word for word in step with ~/.omp/agent/skills/crewmate-references/code-tools.md. --}}

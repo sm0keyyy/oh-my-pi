@@ -134,6 +134,11 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 
 - `scout`, `reviewer`, and `security-reviewer` from prompt files
 - `task` and `sonic` from the shared `task.md` body plus injected frontmatter; no bundled agent sets `prewalk` — the generic `task` agent's hand-off is armed by the `task.prewalk` setting (default off), or per agent via `/agents` / `task.agentPrewalk` / user agent frontmatter
+- `seance` is a history-only consultant with isolated `read`, `grep`, and `glob` tools; its parent asks the operator when needed.
+
+Code agents include the shared "Code tools and questions" prompt partial. Reviewer, security-reviewer, and scout outputs include a required `queries` field for codegraph and ast_grep evidence or an explanation that a tool did not apply. The general-purpose `task` and `sonic` agents retain the default full built-in toolset rather than a fixed allowlist.
+
+`codegraph`, `ast_grep`, and `lsp` are built-ins subject to their runtime settings and availability. `ask_operator` and `ask_operator_result` are extension tools supplied by ask-bridge, not bundled implementations; listing them does not install the extension. Seance disables extensions and LSP and does not receive these code or interview tools.
 
 Loading path:
 

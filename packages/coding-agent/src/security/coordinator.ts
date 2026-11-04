@@ -12,6 +12,7 @@ import securityReviewerPrompt from "../prompts/agents/security-reviewer.md" with
 import securityCoordinatorPrompt from "../prompts/security/scan-coordinator.md" with { type: "text" };
 import securityRequestPrompt from "../prompts/security/scan-request.md" with { type: "text" };
 import securityPublishDescription from "../prompts/tools/security-publish.md" with { type: "text" };
+import codeToolsAndQuestions from "../prompts/system/code-tools-and-questions.md" with { type: "text" };
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
@@ -50,6 +51,7 @@ const SECURITY_WORKFLOW_FINGERPRINT = createSecurityWorkflowFingerprint([
 	securityCoordinatorPrompt,
 	securityRequestPrompt,
 	securityReviewerPrompt,
+	codeToolsAndQuestions,
 	securityPublishDescription,
 ]);
 

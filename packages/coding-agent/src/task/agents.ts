@@ -13,6 +13,7 @@ import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import seanceMd from "../prompts/agents/seance.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
+import codeToolsAndQuestions from "../prompts/system/code-tools-and-questions.md" with { type: "text" };
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentSource } from "@oh-my-pi/pi-tui/tools/task";
@@ -35,6 +36,8 @@ interface EmbeddedAgentDef {
 	frontmatter?: AgentFrontmatter;
 	template: string;
 }
+
+prompt.registerPartial("codeToolsAndQuestions", codeToolsAndQuestions);
 
 function buildAgentContent(def: EmbeddedAgentDef): string {
 	const body = prompt.render(def.template);

@@ -8524,8 +8524,9 @@ func (c Commands) GetMessages(ctx context.Context) ([]AgentMessage, error) {
 
 // GetMessagesPageCommand holds the parameters of "get_messages_page".
 type GetMessagesPageCommand struct {
-	Cursor *string `json:"cursor,omitempty"`
-	Limit  *int64  `json:"limit,omitempty"`
+	Cursor   *string `json:"cursor,omitempty"`
+	Limit    *int64  `json:"limit,omitempty"`
+	Backward *bool   `json:"backward,omitempty"`
 }
 
 // GetMessagesPage sends "get_messages_page": One stable page of messages.

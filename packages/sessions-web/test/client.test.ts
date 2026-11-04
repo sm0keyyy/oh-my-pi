@@ -259,14 +259,23 @@ function fixtureClient(
 			const command: RecordValue = JSON.parse(body.line);
 			const respond = (data: RecordValue) =>
 				stream.send(
-					JSON.stringify({ type: "response", id: command.id, command: command.type, success: true, data }),
+					JSON.stringify({
+						type: "response",
+						id: command.id,
+						command: command.type,
+						success: true,
+						data:
+							command.type === "get_messages_page"
+								? { totalMessages: Array.isArray(data.messages) ? data.messages.length : 0, ...data }
+								: data,
+					}),
 				);
 			if (!handle(stream, command, respond)) {
 				switch (command.type) {
 					case "get_state":
 						respond(fixtureState);
 						break;
-					case "get_messages":
+					case "get_messages_page":
 						respond({ messages: [] });
 						break;
 					case "get_available_commands":
@@ -317,7 +326,7 @@ async function waitForSnapshot(client: SessionClient, predicate: (snapshot: Snap
 test("hydration replays same-key updates after the snapshot boundary without replaying older events", async () => {
 	const message = (content: string) => ({ role: "assistant", timestamp: 7, content });
 	const client = fixtureClient((socket, command, respond) => {
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			socket.send(JSON.stringify({ type: "message_update", message: message("old event") }));
 			respond({ messages: [message("snapshot")] });
 			socket.send(JSON.stringify({ type: "message_update", message: message("later update") }));
@@ -348,7 +357,7 @@ test("session changes during hydration restart the snapshot and ignore the previ
 	let snapshots = 0;
 	let oldStateResponse: ((data: RecordValue) => void) | undefined;
 	const client = fixtureClient((socket, command, respond) => {
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			snapshots++;
 			respond({
 				messages: [{ role: "user", timestamp: snapshots, content: snapshots === 1 ? "previous" : "current" }],
@@ -377,7 +386,7 @@ test("single-choice invalid answers remain open and never reach the socket", asy
 	const sent: RecordValue[] = [];
 	const client = fixtureClient((socket, command, respond) => {
 		sent.push(command);
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			respond({ messages: [] });
 			socket.send(
 				JSON.stringify({
@@ -419,7 +428,7 @@ test("command output reaches a separate result store and never enters the transc
 	let snapshots = 0;
 	let changeSession = false;
 	const client = fixtureClient((socket, command) => {
-		if (command.type === "get_messages" && ++snapshots === 1)
+		if (command.type === "get_messages_page" && ++snapshots === 1)
 			socket.send(JSON.stringify({ type: "command_output", text: "Session information" }));
 		if (command.type === "get_session_stats" && changeSession) {
 			changeSession = false;
@@ -441,7 +450,7 @@ test("command output reaches a separate result store and never enters the transc
 
 test("host UI snapshots replace stale stores and subsequent clears remain authoritative", async () => {
 	const client = fixtureClient((socket, command, respond) => {
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			for (const frame of [
 				{ method: "setStatus", statusKey: "stale", statusText: "Old status" },
 				{ method: "setWidget", widgetKey: "stale", widgetLines: ["Old widget"] },
@@ -485,7 +494,7 @@ test("rebuilds full state after resync even when the replay gap interrupted RPC 
 	let snapshots = 0;
 	const client = fixtureClient((stream, command, respond) => {
 		transport = stream;
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			snapshots++;
 			respond({
 				messages: [{ role: "assistant", timestamp: snapshots, content: snapshots === 1 ? "before" : "after" }],
@@ -573,11 +582,13 @@ test("gateway resume controls never interrupt a partially decoded RPC frame", as
 	let snapshots = 0;
 	const client = fixtureClient((stream, command) => {
 		transport = stream;
-		if (command.type === "get_messages") snapshots++;
+		if (command.type === "get_messages_page") snapshots++;
 	});
 	client.connect();
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
 	await client.request({ type: "get_state" });
+	await client.loadCatalog();
+	await client.refresh();
 	const output = "é".repeat(600_000);
 	const bytes = new TextEncoder().encode(JSON.stringify({ type: "command_output", text: output }));
 	const count = Math.ceil(bytes.length / (256 * 1024));
@@ -592,9 +603,14 @@ test("gateway resume controls never interrupt a partially decoded RPC frame", as
 				data: Buffer.from(bytes.subarray(index * 256 * 1024, (index + 1) * 256 * 1024)).toString("base64"),
 			}),
 		);
+	const consumed = Promise.withResolvers<void>();
+	TestEventSource.latest.addEventListener("message", event => {
+		if (event instanceof MessageEvent && event.data.includes('"bridge_resumed"')) consumed.resolve();
+	});
 	sendChunk(0);
 	transport!.send('{"type":"gateway","event":"bridge_reconnecting"}');
 	transport!.send('{"type":"gateway","event":"bridge_resumed"}');
+	await consumed.promise;
 	const failed = Promise.withResolvers<void>();
 	TestEventSource.latest.addEventListener("error", () => failed.resolve(), { once: true });
 	transport!.close();
@@ -610,7 +626,7 @@ test("a malformed event forces a clean resync instead of a permanent replay loop
 	let snapshots = 0;
 	const client = fixtureClient((stream, command, respond) => {
 		transport = stream;
-		if (command.type === "get_messages") {
+		if (command.type === "get_messages_page") {
 			respond({
 				messages: [{ role: "assistant", timestamp: 1, content: ++snapshots === 1 ? "partial" : "restored" }],
 			});
@@ -637,7 +653,7 @@ test("a transport drop during initial hydration still finishes the view", async 
 			stream.close();
 			return true;
 		}
-		if (command.type === "get_messages") snapshots++;
+		if (command.type === "get_messages_page") snapshots++;
 	});
 	client.connect();
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
@@ -650,7 +666,7 @@ test("page restoration and online events resume partial output without a rebuild
 	let snapshots = 0;
 	const client = fixtureClient((stream, command) => {
 		transport = stream;
-		if (command.type === "get_messages") snapshots++;
+		if (command.type === "get_messages_page") snapshots++;
 	});
 	client.connect();
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
@@ -687,4 +703,130 @@ test("heartbeats retain idle streams and a silent half-open stream resumes from 
 	vi.advanceTimersByTime(40_000);
 	expect(TestEventSource.latest).not.toBe(source);
 	expect(new URL(TestEventSource.latest.url).searchParams.get("lastEventId")).toMatch(/:\d+$/);
+});
+
+test("a slow first page survives ten seconds without a fresh request or stream", async () => {
+	let finish: ((data: RecordValue) => void) | undefined;
+	let loads = 0;
+	const requested = Promise.withResolvers<void>();
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type !== "get_messages_page") return;
+		expect(command.backward).toBe(true);
+		expect(command.limit).toBe(50);
+		loads++;
+		finish = respond;
+		requested.resolve();
+		return true;
+	});
+	client.connect();
+	await requested.promise;
+	const source = TestEventSource.latest;
+	vi.useFakeTimers();
+	for (let index = 0; index < 12; index++) {
+		source.dispatchEvent(new Event("heartbeat"));
+		vi.advanceTimersByTime(10_000);
+	}
+	expect(TestEventSource.latest).toBe(source);
+	expect(loads).toBe(1);
+	finish!({ messages: [{ role: "user", timestamp: 1, content: "late page" }] });
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(client.getSnapshot().messages[0]?.content).toBe("late page");
+	expect(loads).toBe(1);
+});
+
+test("loads older pages on demand, evicts distant messages, and returns to latest", async () => {
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type !== "get_messages_page") return;
+		const end = command.cursor === undefined ? 300 : Number(command.cursor);
+		const start = Math.max(0, end - 50);
+		respond({
+			messages: Array.from({ length: end - start }, (_, index) => ({
+				role: "user",
+				timestamp: start + index,
+				content: `message ${start + index}`,
+			})),
+			nextCursor: start ? String(start) : undefined,
+			totalMessages: 300,
+		});
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(client.getSnapshot().messages[0]?.content).toBe("message 250");
+	await Promise.all([client.loadOlder(), client.loadOlder()]);
+	expect(client.getSnapshot().messages).toHaveLength(100);
+	await client.loadOlder();
+	await client.loadOlder();
+	expect(client.getSnapshot().messages).toHaveLength(150);
+	expect(client.getSnapshot().messages[0]?.content).toBe("message 100");
+	expect(client.getSnapshot().messages.at(-1)?.content).toBe("message 249");
+	expect(client.getSnapshot().history?.newer).toBe(true);
+	await client.loadLatest();
+	expect(client.getSnapshot().messages).toHaveLength(50);
+	expect(client.getSnapshot().messages.at(-1)?.content).toBe("message 299");
+	expect(client.getSnapshot().history?.newer).toBe(false);
+});
+
+test("a refused catalog request leaves the chat and stream connected without a new page load", async () => {
+	let loads = 0;
+	const client = fixtureClient((stream, command) => {
+		if (command.type === "get_messages_page") loads++;
+		if (command.type === "get_available_commands") {
+			stream.send(
+				JSON.stringify({
+					type: "response",
+					id: command.id,
+					command: command.type,
+					success: false,
+					error: "Catalog unavailable",
+				}),
+			);
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.error?.includes("Catalog unavailable") === true);
+	const source = TestEventSource.latest;
+	vi.useFakeTimers();
+	for (let index = 0; index < 12; index++) {
+		source.dispatchEvent(new Event("heartbeat"));
+		vi.advanceTimersByTime(10_000);
+	}
+	expect(client.getSnapshot().phase).toBe("connected");
+	expect(TestEventSource.latest).toBe(source);
+	expect(loads).toBe(1);
+});
+
+test("a refused first page stops buffering and retries only on an explicit load action", async () => {
+	let loads = 0;
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		if (++loads === 1)
+			stream.send(
+				JSON.stringify({
+					type: "response",
+					id: command.id,
+					command: command.type,
+					success: false,
+					error: "Page unavailable",
+				}),
+			);
+		else respond({ messages: [{ role: "user", timestamp: 9, content: "recovered page" }] });
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.error?.includes("Page unavailable") === true);
+	const source = TestEventSource.latest;
+	transport!.send(
+		JSON.stringify({ type: "message_start", message: { role: "user", timestamp: 8, content: "live event" } }),
+	);
+	await waitForSnapshot(client, snapshot => snapshot.messages.length === 1);
+	expect(loads).toBe(1);
+	client.retry();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(loads).toBe(2);
+	expect(TestEventSource.latest).toBe(source);
+	expect(client.getSnapshot().messages[0]?.content).toBe("recovered page");
 });

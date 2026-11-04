@@ -142,7 +142,7 @@ export type RpcCommand =
 
 	// Messages
 	| { id?: string; type: "get_messages" }
-	| { id?: string; type: "get_messages_page"; cursor?: string; limit?: number }
+	| { id?: string; type: "get_messages_page"; cursor?: string; limit?: number; backward?: boolean }
 
 	// Login
 	| { id?: string; type: "get_login_providers" }

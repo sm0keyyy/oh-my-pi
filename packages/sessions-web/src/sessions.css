@@ -223,7 +223,9 @@ pre {
 	flex-direction: column;
 	line-height: 1.2;
 }
-.top-title b {
+.top-title h1 {
+	margin: 0;
+	font-size: inherit;
 	font-weight: 600;
 	white-space: nowrap;
 	overflow: hidden;
@@ -631,6 +633,13 @@ a.btn {
 	display: flex;
 	flex-direction: column;
 	gap: var(--s4);
+}
+.transcript-virtual {
+	display: block;
+	padding-block: 0;
+}
+.virtual-entry {
+	padding-block: var(--s2);
 }
 
 /* rail */

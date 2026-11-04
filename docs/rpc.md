@@ -293,9 +293,11 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 ### Messages
 
 - `{ id?, type: "get_messages" }`
-- `{ id?, type: "get_messages_page", cursor?: string, limit?: number }`
+- `{ id?, type: "get_messages_page", cursor?: string, limit?: number, backward?: boolean }`
 
 `get_messages_page` returns a stable chronological page with `messages`, `totalMessages`, and an opaque `nextCursor` when more messages remain. Cursors are bound to the session ID, durable leaf, and message count. The server rejects stale cursors if the session changes between requests, and refuses to start a paging walk while the session is streaming or compacting. Failed page requests carry a machine-readable `code` on the error response — `session_busy` (session is streaming or compacting) or `stale_cursor` (the snapshot behind the cursor changed, e.g. a background bash appended a message between pages) — so clients can react without matching error-message text. Pages default to 100 messages; `limit` must be an integer from 1 through 256. The page builder normally caps serialized message content at 768 KiB, but always includes at least one message, so a single large message can exceed that budget. A v1 caller can page ordinary histories, but an individual message whose response exceeds the 1 MiB physical-frame ceiling produces an overflow error; retrieving it losslessly requires negotiated v2 framing.
+
+With `backward: true`, the first request returns the newest page, in chronological order. `nextCursor` walks toward older messages. This mode is available while streaming because each page reads the current in-memory array synchronously; it does not read the session journal. Backwards cursors bind the session and the message at the older boundary. Appending messages preserves that boundary; replacing it returns `stale_cursor`. The page count and byte limits still apply. Omit `backward` to retain the stable forward-walk contract above.
 
 The bundled TypeScript `RpcClient.getMessages()` and Python `RpcClient.get_messages()` drain this paged endpoint automatically after negotiating v2. They retain the legacy monolithic command when connected to a v1 server, and on either `session_busy` or `stale_cursor` they discard partial pages and fall back to the legacy best-effort snapshot. Direct `getMessagesPage()` and `get_messages_page()` calls remain strict so incremental hosts never mix snapshots silently.
 

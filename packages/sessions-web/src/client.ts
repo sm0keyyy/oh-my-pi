@@ -26,12 +26,13 @@ export interface Snapshot {
 	lastFrame: number;
 	revision: number;
 	editorText?: { text: string; version: number };
+	history?: { olderCursor?: string; newer: boolean; loading: boolean };
 }
 interface Pending {
 	command: string;
 	resolve(value: RecordValue): void;
 	reject(error: Error): void;
-	timer: number;
+	timer?: number;
 	hydration?: number;
 }
 export function records(value: unknown): RecordValue[] {
@@ -175,6 +176,9 @@ export class SessionClient {
 	#watchdog?: number;
 	#lastActivity = 0;
 	#needsResync = false;
+	#historyRequest = 0;
+	#loadingHistory = false;
+	#pageEvents: RecordValue[] | null = null;
 	#resume = (event: Event): void => {
 		if (typeof document !== "undefined" && document.hidden) return;
 		if (
@@ -405,10 +409,13 @@ export class SessionClient {
 		const id = crypto.randomUUID();
 		const line = JSON.stringify({ ...command, id });
 		const result = Promise.withResolvers<RecordValue>();
-		const timer = window.setTimeout(() => {
-			this.#pending.delete(id);
-			result.reject(new Error("The TUI response timed out. Check its state before retry."));
-		}, timeout);
+		const timer =
+			timeout > 0
+				? window.setTimeout(() => {
+						this.#pending.delete(id);
+						result.reject(new Error("The TUI response timed out. Check its state before retry."));
+					}, timeout)
+				: undefined;
 		this.#pending.set(id, {
 			command: command.type,
 			resolve: result.resolve,
@@ -457,8 +464,67 @@ export class SessionClient {
 	clearCommandOutputs(): void {
 		this.#publish({ commandOutputs: [] });
 	}
-	replaceMessages(messages: Message[]): void {
-		this.#publish({ messages });
+	async loadLatest(): Promise<void> {
+		if (this.#loadingHistory) return;
+		await this.#loadPage();
+	}
+	async loadOlder(): Promise<void> {
+		const cursor = this.#snapshot.history?.olderCursor;
+		if (!cursor || this.#loadingHistory) return;
+		await this.#loadPage(cursor);
+	}
+	async #loadPage(cursor?: string): Promise<void> {
+		this.#loadingHistory = true;
+		const request = ++this.#historyRequest;
+		const hydration = this.#hydration;
+		if (!cursor) this.#pageEvents = [];
+		this.#publish({
+			history: { ...this.#snapshot.history, newer: this.#snapshot.history?.newer ?? false, loading: true },
+		});
+		try {
+			const result = await this.#request({ type: "get_messages_page", backward: true, limit: 50, cursor }, 0);
+			if (request !== this.#historyRequest || hydration !== this.#hydration || this.#stopped) return;
+			const page = this.#page(result);
+			const keys = new Set(page.messages.map(message => message.key));
+			const messages = cursor
+				? [...page.messages, ...this.#snapshot.messages.filter(message => !keys.has(message.key))]
+				: page.messages;
+			this.#publish({
+				messages: messages.slice(0, 150),
+				history: {
+					olderCursor: page.olderCursor,
+					newer: Boolean(cursor && (this.#snapshot.history?.newer || messages.length > 150)),
+					loading: false,
+				},
+				error: null,
+			});
+			if (!cursor) {
+				const events = this.#pageEvents ?? [];
+				this.#pageEvents = null;
+				for (const event of events) this.#apply(event);
+			}
+		} catch (error) {
+			if (request === this.#historyRequest && hydration === this.#hydration && !this.#stopped)
+				this.#publish({
+					error: String(error),
+					history: { ...this.#snapshot.history, newer: this.#snapshot.history?.newer ?? false, loading: false },
+				});
+		} finally {
+			if (request === this.#historyRequest) this.#loadingHistory = false;
+			if (request === this.#historyRequest) this.#pageEvents = null;
+		}
+	}
+	#page(result: RecordValue): { messages: Message[]; olderCursor?: string } {
+		if (
+			!Number.isSafeInteger(result.totalMessages) ||
+			Number(result.totalMessages) < 0 ||
+			(result.nextCursor !== undefined && typeof result.nextCursor !== "string")
+		)
+			throw new Error("Invalid message page from the TUI");
+		return {
+			messages: records(result.messages).map((message, index) => messageOf(message, `snapshot-${index}`)),
+			olderCursor: typeof result.nextCursor === "string" ? result.nextCursor : undefined,
+		};
 	}
 	setThinking(level: string): Promise<RecordValue> {
 		const selected = Object.values(ThinkingLevel).find(value => value === level);
@@ -479,26 +545,39 @@ export class SessionClient {
 	#notice(message: string): void {
 		this.#publish({ notices: [...this.#snapshot.notices, message] });
 	}
+	retry = (): void => {
+		if (this.#snapshot.error && this.#streamReady) void this.#rebuild();
+		else this.connect();
+	};
 	async #rebuild(): Promise<void> {
 		const hydration = ++this.#hydration;
+		++this.#historyRequest;
+		this.#loadingHistory = false;
+		this.#pageEvents = null;
 		this.#events ??= [];
 		clearInterval(this.#refresh);
-		if (!this.#hasState) this.#publish({ phase: "rebuilding" });
+		this.#publish({ error: null, ...(!this.#hasState ? { phase: "rebuilding" as const } : {}) });
 		try {
-			await this.request({ type: "negotiate_protocol", protocolVersion: 2 }, 10_000);
-			await this.request({ type: "set_event_filter", events: null, messageUpdates: "full" }, 10_000);
-			await this.request({ type: "set_ask_dialog", enabled: true }, 10_000);
-			await this.request({ type: "set_subagent_subscription", level: "events" }, 10_000);
+			await this.#request({ type: "negotiate_protocol", protocolVersion: 2 }, 0);
+			await this.#request({ type: "set_event_filter", events: null, messageUpdates: "full" }, 0);
+			await this.#request({ type: "set_ask_dialog", enabled: true }, 0);
+			await this.#request({ type: "set_subagent_subscription", level: "events" }, 0);
 			if (this.#stopped || hydration !== this.#hydration) return;
-			const result = await this.#request({ type: "get_messages" }, 10_000, hydration);
+			const result = await this.#request({ type: "get_messages_page", backward: true, limit: 50 }, 0, hydration);
 			if (this.#stopped || hydration !== this.#hydration) return;
-			const state = await this.#request({ type: "get_state" }, 10_000, hydration);
+			const state = await this.#request({ type: "get_state" }, 0, hydration);
 			if (this.#stopped || hydration !== this.#hydration) return;
-			const messages = records(result.messages).map((m, i) => messageOf(m, `snapshot-${i}`));
+			const page = this.#page(result);
 			const events = this.#events ?? [];
 			this.#events = null;
 			this.#setState(state);
-			this.#publish({ messages, tools: {}, dialogs: [], agentMessages: {} });
+			this.#publish({
+				messages: page.messages,
+				history: { olderCursor: page.olderCursor, newer: false, loading: false },
+				tools: {},
+				dialogs: [],
+				agentMessages: {},
+			});
 			for (const event of events) this.#apply(event);
 			this.#publish({ phase: "connected", error: null });
 			this.#hasState = true;
@@ -509,9 +588,10 @@ export class SessionClient {
 				this.#refresh = window.setInterval(() => {
 					void this.refresh().catch(error => this.#publish({ error: String(error) }));
 				}, 5000);
-		} catch {
+		} catch (error) {
 			if (this.#stopped || hydration !== this.#hydration) return;
-			this.#retryStream(true);
+			this.#events = null;
+			this.#publish({ error: String(error), phase: this.#hasState ? "connected" : "offline" });
 		}
 	}
 	async loadCatalog(): Promise<void> {
@@ -595,10 +675,11 @@ export class SessionClient {
 			if (frame.command !== pending.command) throw new Error("RPC response command mismatch");
 			clearTimeout(pending.timer);
 			this.#pending.delete(frame.id);
+			if (frame.success && pending.command === "get_messages_page" && this.#pageEvents) this.#pageEvents = [];
 			if (frame.success && this.#events && pending.hydration === this.#hydration) {
 				// The synchronous RPC response separates the snapshot from later stream events.
 				const replaced =
-					pending.command === "get_messages"
+					pending.command === "get_messages_page"
 						? ["message_start", "message_update", "message_end"]
 						: ["agent_start", "agent_end", "session_settled", "queue_update"];
 				this.#events = this.#events.filter(event => !replaced.includes(text(event.type)));
@@ -630,11 +711,20 @@ export class SessionClient {
 		const snapshot = this.#snapshot;
 		if (["message_start", "message_update", "message_end"].includes(text(frame.type))) {
 			const message = messageOf(frame.message, text(frame.messageId));
+			if (this.#pageEvents) {
+				const previous = this.#pageEvents.findIndex(
+					event => messageOf(event.message, text(event.messageId)).key === message.key,
+				);
+				if (previous < 0) this.#pageEvents.push(frame);
+				else this.#pageEvents[previous] = frame;
+			}
+			if (snapshot.history?.newer) return;
 			const index = snapshot.messages.findIndex(m => m.key === message.key);
 			const messages = [...snapshot.messages];
 			if (index < 0) messages.push(message);
 			else messages[index] = message;
-			this.#publish({ messages });
+			this.#publish({ messages: messages.slice(-150) });
+			if (messages.length > 150) void this.loadLatest();
 		} else if (frame.type === "queue_update") {
 			const queuedMessages = { steering: strings(frame.steering), followUp: strings(frame.followUp) };
 			this.#publish({

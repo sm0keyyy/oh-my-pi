@@ -1,5 +1,10 @@
 {
 	"extends": "../tsconfig.workspace.json",
-	"include": ["test/local-fixture.ts", "test/fixture-extension.ts", "../../types/assets"],
+	"include": [
+		"test/local-fixture.ts",
+		"test/fixture-extension.ts",
+		"test/performance-fixture.ts",
+		"../../types/assets"
+	],
 	"compilerOptions": { "noEmit": true, "types": ["bun"] }
 }

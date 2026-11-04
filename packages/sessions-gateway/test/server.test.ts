@@ -218,7 +218,7 @@ test("sets unbuffered SSE headers, isolates principals, and rejects cross-origin
 	const { browser } = await attach();
 	const response = await browser.opened.promise;
 	expect(response.headers.get("content-type")).toBe("text/event-stream");
-	expect(response.headers.get("cache-control")).toContain("no-cache");
+	expect(response.headers.get("cache-control")).toBe("no-store");
 	expect(response.headers.get("x-accel-buffering")).toBe("no");
 	for (const route of [`/events/session/${snapshot.instanceId}`, `/api/session/${snapshot.instanceId}`]) {
 		expect((await access.fetch(gateway.url + route, { headers: { origin: "https://foreign.example" } })).status).toBe(
@@ -276,20 +276,20 @@ test("sends named heartbeats during idle and active streams without advancing th
 	expect((await reader.read()).done).toBe(true);
 });
 
-test("heartbeats can fill an exact queue boundary and close a stalled consumer with a reason", async () => {
+test("a quiet consumer is not disconnected when heartbeat bytes fill its queue", async () => {
 	vi.useFakeTimers();
 	const reasons: string[] = [];
 	const journal = new ReplayJournal(16, 13, 40);
-	const response = journal.open(new Request("http://x/"), undefined, reason => reasons.push(reason));
+	const controller = new AbortController();
+	const response = journal.open(new Request("http://x/", { signal: controller.signal }), undefined, reason =>
+		reasons.push(reason),
+	);
 	vi.advanceTimersByTime(40);
+	vi.advanceTimersByTime(60_000);
 	expect(reasons).toEqual([]);
-	vi.advanceTimersByTime(40);
-	expect(reasons).toEqual(["backpressure"]);
-	const reader = response.body!.getReader();
-	const decoder = new TextDecoder();
-	expect(decoder.decode((await reader.read()).value)).toBe("retry: 1000\n\n");
-	expect(decoder.decode((await reader.read()).value)).toBe(":\nevent: heartbeat\ndata:\n\n");
-	expect((await reader.read()).done).toBe(true);
+	controller.abort();
+	expect(await response.text()).toBe("retry: 1000\n\n");
+	expect(reasons).toEqual(["peer_abort"]);
 });
 
 test("an explicit decoder resync replaces the attachment even while its cursor remains retained", async () => {
@@ -351,4 +351,95 @@ test("aggregates close reasons and durations once per minute without client data
 		minDurationMs: expect.any(Number),
 		maxDurationMs: expect.any(Number),
 	});
+});
+
+test("caches only content-hashed assets and negotiates gzip without caching chat data", async () => {
+	await Bun.write(path.join(siteDir, "main-abcdef12.js"), "export const text = 'compressed';".repeat(100));
+	for (const [route, cache] of [
+		["/", "no-store"],
+		["/site.js", "no-store"],
+		["/api/sessions", "no-store"],
+		["/main-abcdef12.js", "private, max-age=31536000, immutable"],
+	]) {
+		const response = await access.fetch(gateway.url + route);
+		expect(response.headers.get("cache-control")).toBe(cache);
+		await response.text();
+	}
+	for (const encoding of ["gzip", "br, gzip;q=0.5", "*;q=1", "GZip"]) {
+		const response = await access.fetch(gateway.url + "/main-abcdef12.js", {
+			headers: { "accept-encoding": encoding },
+		});
+		expect(response.headers.get("content-encoding")).toBe("gzip");
+		expect(response.headers.get("vary")).toBe("Accept-Encoding");
+		expect(await response.text()).toBe("export const text = 'compressed';".repeat(100));
+	}
+	for (const encoding of ["identity", "gzip;q=0, *;q=1", "gzip;q=bogus", "br"]) {
+		const response = await access.fetch(gateway.url + "/site.js", { headers: { "accept-encoding": encoding } });
+		expect(response.headers.get("content-encoding")).toBeNull();
+		expect(await response.text()).toBe("export {};");
+	}
+});
+
+test("gzip flushes each SSE event and heartbeat before the stream ends", async () => {
+	const journal = new ReplayJournal(16, 4096, 20);
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request, server) {
+			server.timeout(request, 0);
+			return journal.open(request);
+		},
+	});
+	const controller = new AbortController();
+	try {
+		const response = await fetch(`http://127.0.0.1:${server.port}`, {
+			headers: { "accept-encoding": "gzip" },
+			signal: controller.signal,
+		});
+		expect(response.headers.get("content-encoding")).toBe("gzip");
+		expect(response.headers.get("cache-control")).toBe("no-store");
+		const reader = response.body!.getReader();
+		const decoder = new TextDecoder();
+		let output = decoder.decode((await reader.read()).value);
+		journal.append('{"type":"tick","text":"é"}');
+		while (!output.includes('"tick"')) output += decoder.decode((await reader.read()).value);
+		expect(output).toContain('data: {"type":"tick","text":"é"}\n\n');
+		while (!output.includes("event: heartbeat")) output += decoder.decode((await reader.read()).value);
+		expect(output).toContain("event: heartbeat\ndata:\n\n");
+		journal.close();
+		expect((await reader.read()).done).toBe(true);
+	} finally {
+		controller.abort();
+		journal.close();
+		server.stop(true);
+	}
+});
+
+test("releases an abandoned browser attachment after its reconnect grace", async () => {
+	gateway.stop();
+	gateway = await startGateway({
+		token,
+		siteDir,
+		port: 0,
+		hostname: "127.0.0.1",
+		accessCertsUrl: access.certsUrl,
+		clientGraceMs: 10,
+	});
+	const { browser, conn } = await attach();
+	const cursor = browser.lastId;
+	browser.close();
+	await browser.closed.promise;
+	// The timer starts at the server's socket-close event, not the test process's abort.
+	expect(JSON.parse(await bridge.next())).toEqual({ t: "detach", conn });
+	const resumed = peer(
+		`/events/session/${snapshot.instanceId}`,
+		{ ...access.headers, origin: PUBLIC_ORIGIN },
+		cursor,
+		browser.client,
+	);
+	await resumed.opened.promise;
+	expect(JSON.parse(await resumed.next())).toMatchObject({ event: "resync", resetCommands: true });
+	const attached = JSON.parse(await bridge.next());
+	expect(attached.t).toBe("attach");
+	expect(attached.conn).not.toBe(conn);
 });

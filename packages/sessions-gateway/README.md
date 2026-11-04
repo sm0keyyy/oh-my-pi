@@ -26,12 +26,19 @@ Each command also carries the current `X-Omp-Epoch`; an old in-flight POST canno
 Replay and idempotency state are memory-only. After a gateway restart, unsent prompts remain queued.
 Previously sent mutations with uncertain outcomes are not replayed; their callers must check the rebuilt transcript before retrying.
 Browser commands remain queued across a transport gap. An explicit client close releases its local RPC attachment with DELETE.
+If a tab disappears without DELETE, the gateway releases its attachment after a 5-minute reconnect grace. A reconnect cancels that expiry; later reconnects request a new paged snapshot.
 The browser keeps its current UI during reconnect and shows offline only after reconnection has failed for 5 s.
 Replay recovery does not reload the page. An expired cursor, a new gateway epoch, or a failed local RPC attachment requires a state rebuild.
 Gateway control events bypass RPC chunk assembly. A transport resume preserves the partial decoder and the transcript.
 Invalid frames request an explicit attachment resync instead of replay of the same invalid event.
 Page restoration, foreground return, and network recovery resume stale browser streams from the last accepted cursor.
 Named heartbeats drive a 45 s stale-stream watchdog. A brief reconnect retains the current view and does not show a banner.
+The initial view requests the newest 50 messages with `get_messages_page` and `backward: true`, not the full transcript.
+Older pages load on upward scroll or the history button. The browser retains at most 150 messages; Jump to latest reloads the newest page after newer pages are evicted.
+The virtual list keeps only visible message cards mounted. Its stable keys and `firstItemIndex` retain the reading position across prepends.
+Backwards cursors tolerate appended output and reject a replaced boundary. The RPC handler reads the in-memory message array, including while streaming.
+Page requests have no response deadline. Transport recovery retains the pending request and partial decoder; an RPC or catalog error is shown without closing the SSE stream or restarting hydration.
+Forward paging retains its stable-snapshot contract for existing RPC callers.
 
 ## Bridge lifecycle
 
@@ -44,15 +51,28 @@ Only confirmed exits send `session_gone`. Temporary local attachment failures re
 
 ## Proxy behavior and diagnostics
 
-SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, and `X-Accel-Buffering: no`.
-The gateway enqueues each event immediately and disables Bun's request idle timeout for each stream.
-The gateway sends a heartbeat every 10 s, before the 30 s proxy timeout, even at an exact stream queue boundary.
+SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-store`, `Vary: Accept-Encoding`, and `X-Accel-Buffering: no`.
+Clients that accept gzip receive a streaming gzip response with a synchronous flush for each SSE write. Heartbeats never wait for another event or the end of the stream.
+The gateway disables Bun's request idle timeout for each stream and sends a heartbeat every 10 s.
+When a consumer's queue is full, the gateway skips disposable heartbeats rather than closing a quiet stream. Actual RPC output still uses the bounded backpressure close and replay path.
+The web build gives JS and CSS content-hashed names. Those files use private immutable browser caching; HTML, unversioned files, API responses, and streams stay no-store.
+Cloudflare and Traefik must pass compressed SSE through without buffering. A local probe cannot establish the behavior of an undeployed build through that public path.
 The heartbeat contains a comment and an empty named `heartbeat` event. It carries no event ID or RPC content.
 The bridge ignores its empty data. EventSource uses its named event for browser liveness.
 Diagnostics never include RPC content, assertions, bearer values, request headers, or client identities.
 `Sessions stream closes` reports one summary per leg and reason each minute, with counts and total, minimum, and maximum connection durations.
 The reason set is fixed: `peer_abort`, `cancelled`, `replaced`, `backpressure`, `shutdown`, and `idle_timeout`.
 The gateway flushes remaining summaries on shutdown. Log storage follows the container's existing log retention.
+
+## Local performance probe
+
+Build the web bundle, then run `bun packages/sessions-web/test/performance-probe.ts` from the repository root.
+The probe uses a signed local Access fixture, the gateway, a fake bridge, and a synthetic transcript. It does not open live sessions or read their journals.
+`SESSIONS_SOAK_SECONDS` sets the real-time soak duration (3660 s by default). `SESSIONS_PERF_OUTPUT` sets the JSON evidence path.
+For a virtual-list comparison, put the pre-virtualization web build in `.sessions-perf-before` before running the probe.
+The probe records first-page render times, mounted DOM nodes, JS heap, wire bytes, serialization times, memory samples, and stream-open counts.
+It also checks that an older-page prepend keeps the visible message anchored.
+
 
 ## iPhone viewport and transcript
 

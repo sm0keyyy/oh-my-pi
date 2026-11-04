@@ -5635,6 +5635,8 @@ pub struct GetMessagesPageParams {
 	pub cursor: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub backward: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -7249,6 +7251,8 @@ pub struct GetMessagesPageCommand {
 	pub cursor: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub limit: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub backward: Option<bool>,
 }
 
 impl Command for GetMessagesPageCommand {

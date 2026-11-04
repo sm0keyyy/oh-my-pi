@@ -7129,6 +7129,9 @@
 				},
 				"limit": {
 					"type": "integer"
+				},
+				"backward": {
+					"type": "boolean"
 				}
 			}
 		},

@@ -504,6 +504,7 @@ describe("persisted subagent revival", () => {
 		await reviver(ref);
 
 		expect(capturedOptions?.toolNames).toEqual(["read", "yield"]);
+		expect(capturedOptions?.lspReadOnly).toBe(true);
 		expect(activeToolNames).toEqual([["read", "yield"]]);
 	});
 
@@ -526,6 +527,7 @@ describe("persisted subagent revival", () => {
 		await reviver(ref);
 
 		expect(capturedOptions?.toolNames).toEqual(["read", "write", "yield"]);
+		expect(capturedOptions?.lspReadOnly).toBeUndefined();
 		expect(activeToolNames).toEqual([["read", "write", "yield"]]);
 	});
 

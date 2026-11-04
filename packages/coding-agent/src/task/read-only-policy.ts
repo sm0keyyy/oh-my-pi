@@ -1,9 +1,8 @@
 import type { AgentDefinition } from "./types";
 
-// Built-in tools whose approval tier is "read" (see tool classes' `approval`).
-// An agent is read-only iff its declared tools are a non-empty subset of this set.
-// Fail-safe: any unknown tool makes the agent not read-only.
-//
+// Tools allowed for read-only delegated work. Unknown tools fail closed.
+// LSP qualifies only because spawn and cold revival enforce lspReadOnly,
+// which rejects its workspace-mutating actions.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"read",
 	"wait",
@@ -14,7 +13,10 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"ast_grep",
 	"codegraph",
 	"yield",
+	"lsp",
 	"ask",
+	"ask_operator",
+	"ask_operator_result",
 	"todo",
 	"recall",
 	"reflect",

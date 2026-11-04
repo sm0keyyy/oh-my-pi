@@ -140,6 +140,8 @@ Code agents include the shared "Code tools and questions" prompt partial. Review
 
 `codegraph`, `ast_grep`, and `lsp` are built-ins subject to their runtime settings and availability. `ask_operator` and `ask_operator_result` are extension tools supplied by ask-bridge, not bundled implementations; listing them does not install the extension. Seance disables extensions and LSP and does not receive these code or interview tools.
 
+Delegated agents classified as read-only receive `lspReadOnly: true` on spawn and cold revival. They can use LSP navigation and diagnostics, but not rename, code-action application, or file rename. Operator-question tools do not change the read-only classification. If interview tools are unavailable, including inside a restricted security scan, agents report their questions to their parent.
+
 Loading path:
 
 1. `loadBundledAgents()` parses embedded markdown with `parseAgent(..., "bundled", "fatal")`

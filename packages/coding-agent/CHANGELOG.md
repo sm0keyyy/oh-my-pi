@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Read-only delegated agents keep their capability tags when using operator-question tools or LSP; LSP workspace mutations are blocked on spawn and cold revival.
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 

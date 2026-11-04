@@ -7,10 +7,12 @@ import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-regis
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
+import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { TaskParams } from "@oh-my-pi/pi-tui/tools/task";
@@ -203,6 +205,33 @@ describe("subagent LSP availability", () => {
 
 		expect(getOptions()?.enableLsp).toBe(true);
 		expect(getOptions()?.toolNames).toContain("lsp");
+	});
+
+	it("rejects workspace mutations through a read-only scout's enabled LSP", async () => {
+		const scout = getBundledAgent("scout");
+		if (!scout) throw new Error("Missing bundled scout");
+		mockAgents({ ...scout, output: undefined });
+		const { getOptions } = mockCreateAgentSession();
+		const parent = createSession({ taskEnableLsp: true });
+		const tool = await TaskTool.create(parent);
+		await tool.execute("tool-call", { ...TEST_TASK, agent: "scout" });
+
+		const options = getOptions();
+		expect(options?.enableLsp).toBe(true);
+		expect(options?.toolNames).toContain("lsp");
+		const lsp = new LspTool({ ...parent, lspReadOnly: options?.lspReadOnly });
+		for (const action of ["rename", "code_actions", "rename_file"] as const) {
+			await expect(
+				lsp.execute(`blocked-${action}`, {
+					action,
+					file: "src/example.ts",
+					line: 1,
+					symbol: "example",
+					new_name: "renamed",
+					apply: true,
+				}),
+			).rejects.toThrow(`LSP action ${action} is disabled in this read-only session`);
+		}
 	});
 
 	it("keeps subagent LSP disabled when the parent session disables LSP", async () => {

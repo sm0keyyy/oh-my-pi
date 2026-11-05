@@ -1,6 +1,6 @@
 import { isRecord, ToolView, type ToolRenderHost, type ToolResultLike } from "@oh-my-pi/web-render";
 import { Markdown } from "@oh-my-pi/web-render/Markdown";
-import { forwardRef, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import { forwardRef, useCallback, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { messageText, text, type Message, type Snapshot, type SessionClient } from "./client";
 import { renderCustomMessage } from "./custom-message";
@@ -42,6 +42,20 @@ export function Transcript({
 	const follower = useRef(new ScrollFollow());
 	const touchY = useRef<number | undefined>(undefined);
 	const [following, setFollowing] = useState(true);
+	const [scroller, setScroller] = useState<HTMLElement | null>(null);
+	const scrollerRef = useCallback((node: HTMLElement | Window | null) => {
+		setScroller(node instanceof HTMLElement ? node : null);
+	}, []);
+	useLayoutEffect(() => {
+		if (!scroller) return;
+		const track = () => {
+			follower.current.track(scroller);
+			setFollowing(follower.current.isFollowing);
+		};
+		track();
+		scroller.addEventListener("scroll", track);
+		return () => scroller.removeEventListener("scroll", track);
+	}, [scroller]);
 	const detach = () => {
 		follower.current.detach();
 		setFollowing(false);
@@ -202,6 +216,7 @@ export function Transcript({
 				<Virtuoso
 					className="scroll"
 					ref={virtuoso}
+					scrollerRef={scrollerRef}
 					role="region"
 					aria-label="Transcript"
 					tabIndex={0}
@@ -226,10 +241,11 @@ export function Transcript({
 						if (atTop) loadOlder();
 					}}
 					atBottomStateChange={atBottom => {
+						follower.current.atBottomStateChange(atBottom);
 						if (atBottom) {
-							follower.current.isFollowing = true;
 							setFollowing(true);
-						} else detach();
+							client?.resumeLive();
+						}
 					}}
 					itemContent={(_index, message) => <div className="virtual-entry">{renderMessage(message)}</div>}
 				/>

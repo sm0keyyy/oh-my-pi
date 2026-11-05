@@ -921,6 +921,58 @@ test("two older pages stay intact when live messages arrive", async () => {
 	expect(client.getSnapshot().history).toEqual({ olderCursor: "150", newer: true, loading: false });
 });
 
+test.each([false, true])("older history with room keeps live appends, resumeLive=%s", async resume => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		respond(historyPage(command.cursor === undefined ? 300 : Number(command.cursor)));
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.loadOlder();
+	if (resume) client.resumeLive();
+	transport!.send(
+		JSON.stringify({ type: "message_start", message: { role: "user", timestamp: 300, content: "live" } }),
+	);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual([
+		...Array.from({ length: 100 }, (_, index) => String(200 + index)),
+		"live",
+	]);
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "200", newer: false, loading: false });
+});
+
+test("returning to the bottom resumes live appends after a full history window", async () => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		respond(historyPage(command.cursor === undefined ? 300 : Number(command.cursor)));
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.loadOlder();
+	await client.loadOlder();
+	transport!.send(
+		JSON.stringify({ type: "message_start", message: { role: "user", timestamp: 300, content: "missed" } }),
+	);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().history?.newer).toBe(true);
+	client.resumeLive();
+	await waitForSnapshot(client, snapshot => snapshot.history?.newer === false);
+	transport!.send(
+		JSON.stringify({ type: "message_start", message: { role: "user", timestamp: 301, content: "live" } }),
+	);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual([
+		...Array.from({ length: 50 }, (_, index) => String(250 + index)),
+		"live",
+	]);
+});
+
 test("a live append racing loadOlder never trims a gap into the window", async () => {
 	let transport: FixtureStream | undefined;
 	let finish: ((data: RecordValue) => void) | undefined;

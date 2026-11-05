@@ -16,6 +16,7 @@
 ### Fixed
 
 - Advertise backward message paging so web clients can safely connect to older TUIs.
+- Keep web transcript follow mode during streamed row resizing, detach on upward scrolling, and resume live messages when returning to the bottom.
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 

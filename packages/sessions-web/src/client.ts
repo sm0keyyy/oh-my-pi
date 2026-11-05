@@ -466,6 +466,10 @@ export class SessionClient {
 	clearCommandOutputs(): void {
 		this.#publish({ commandOutputs: [] });
 	}
+	resumeLive(): void {
+		this.#readingHistory = false;
+		if (this.#snapshot.history?.newer) void this.loadLatest();
+	}
 	async loadLatest(): Promise<void> {
 		if (this.#loadingHistory) return;
 		await this.#loadPage();
@@ -749,7 +753,11 @@ export class SessionClient {
 			}
 			if (snapshot.history?.newer) return;
 			const index = snapshot.messages.findIndex(m => m.key === message.key);
-			if (index < 0 && (this.#readingHistory || this.#loadingHistory)) {
+			if (
+				index < 0 &&
+				this.#backwardPaging &&
+				(this.#loadingHistory || (this.#readingHistory && snapshot.messages.length >= 150))
+			) {
 				this.#publish({
 					history: { ...snapshot.history, newer: true, loading: snapshot.history?.loading ?? false },
 				});

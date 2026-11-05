@@ -8,6 +8,9 @@ export class ScrollFollow {
 	isFollowing = true;
 	#top = 0;
 	#height = 0;
+	atBottomStateChange(atBottom: boolean): void {
+		if (atBottom) this.isFollowing = true;
+	}
 	detach(): void {
 		this.isFollowing = false;
 	}

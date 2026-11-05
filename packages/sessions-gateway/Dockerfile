@@ -5,6 +5,7 @@ COPY patches/ ./patches/
 COPY packages/sessions-gateway/package.json ./packages/sessions-gateway/package.json
 COPY packages/utils/package.json ./packages/utils/package.json
 COPY packages/natives/package.json ./packages/natives/package.json
+COPY packages/omptype/package.json ./packages/omptype/package.json
 RUN bun install --filter @oh-my-pi/sessions-gateway --frozen-lockfile --production --ignore-scripts --linker=hoisted
 COPY packages/sessions-gateway/src/ ./packages/sessions-gateway/src/
 COPY packages/utils/src/ ./packages/utils/src/

@@ -19,6 +19,8 @@
 !packages/utils/package.json
 !packages/utils/src/
 !packages/utils/src/**
+!packages/omptype/
+!packages/omptype/package.json
 !packages/natives/
 !packages/natives/package.json
 !packages/natives/native/

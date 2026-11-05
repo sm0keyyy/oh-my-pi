@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
 
 ### Changed
@@ -14,6 +15,8 @@
 
 ### Fixed
 
+- Advertise backward message paging so web clients can safely connect to older TUIs.
+- Keep web transcript follow mode during streamed row resizing, detach on upward scrolling, and resume live messages when returning to the bottom.
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 

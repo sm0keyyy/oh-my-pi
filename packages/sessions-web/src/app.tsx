@@ -1,7 +1,7 @@
 import { isRecord, shortenPath, type ToolRenderHost } from "@oh-my-pi/web-render";
 import { Moon, PanelsTopLeft, Sun } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { messageOf, number, records, SessionClient, sortSessions, strings, text, type RecordValue } from "./client";
+import { number, SessionClient, sortSessions, strings, text, type RecordValue } from "./client";
 import { Composer } from "./composer";
 import { Modal, OperatorDialog } from "./dialogs";
 import { Rail } from "./rail";
@@ -248,10 +248,7 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 	}, [title]);
 	const synchronize = async () => {
 		await client.refresh();
-		if (!client.getSnapshot().state.isStreaming) {
-			const result = await client.request({ type: "get_messages" });
-			client.replaceMessages(records(result.messages).map((message, i) => messageOf(message, `snapshot-${i}`)));
-		}
+		await client.loadLatest();
 	};
 	const host: ToolRenderHost = {
 		hasAgent: id => snapshot.agents.some(agent => agent.id === id),
@@ -283,7 +280,7 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 					‹
 				</a>
 				<div className="top-title">
-					<b>{title}</b>
+					<h1>{title}</h1>
 					<span className="mono" title={text(rpc.cwd)}>
 						{shortenPath(text(rpc.cwd))}
 					</span>
@@ -329,7 +326,7 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 							Back to sessions
 						</a>
 					) : (
-						<button type="button" className="btn" onClick={client.connect}>
+						<button type="button" className="btn" onClick={client.retry}>
 							Retry now
 						</button>
 					)}
@@ -338,11 +335,16 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 			{(error || snapshot.error) && (
 				<div className="banner banner-err" role="alert">
 					{error || snapshot.error}
+					{snapshot.error && (
+						<button type="button" className="btn" onClick={client.retry}>
+							Retry load
+						</button>
+					)}
 				</div>
 			)}
 			<div className="body">
 				<main className="main">
-					<Transcript snapshot={snapshot} host={host} />
+					<Transcript snapshot={snapshot} host={host} client={client} />
 					{snapshot.notices.length > 0 && (
 						<details className="queue">
 							<summary>Notices · {snapshot.notices.length}</summary>

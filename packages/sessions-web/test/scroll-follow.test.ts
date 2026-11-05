@@ -75,3 +75,31 @@ test("an empty transcript follows without a negative scroll position", () => {
 	follower.jump(node);
 	expect(node.scrollTop).toBe(100);
 });
+
+test("streaming SIZE_INCREASED bottom notifications preserve follow mode", () => {
+	const follower = new ScrollFollow();
+	const node = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 };
+	follower.track(node);
+	node.scrollHeight = 1200;
+	follower.atBottomStateChange(false);
+	follower.track(node);
+	follower.follow(node);
+	expect(follower.isFollowing).toBe(true);
+	expect(node.scrollTop).toBe(800);
+});
+
+test("F2 upward scrolling detaches without a wheel, touch, or keyboard gesture", () => {
+	const follower = new ScrollFollow();
+	const node = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 };
+	follower.track(node);
+	node.scrollTop = 500;
+	follower.track(node);
+	follower.atBottomStateChange(false);
+	node.scrollHeight = 1200;
+	follower.follow(node);
+	expect(follower.isFollowing).toBe(false);
+	expect(node.scrollTop).toBe(500);
+	follower.atBottomStateChange(true);
+	follower.follow(node);
+	expect(node.scrollTop).toBe(800);
+});

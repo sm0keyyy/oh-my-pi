@@ -252,6 +252,7 @@
         "lucide-react": "catalog:",
         "react": "catalog:",
         "react-dom": "catalog:",
+        "react-virtuoso": "~4.18.0",
       },
       "devDependencies": {
         "@types/bun": "catalog:",
@@ -1394,6 +1395,8 @@
     "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
 
     "react-refresh": ["react-refresh@0.18.0", "", {}, "sha512-QgT5//D3jfjJb6Gsjxv0Slpj23ip+HtOpnNgnb2S5zU3CB26G/IDPGoy4RJB42wzFE46DRsstbW6tKHoKbhAxw=="],
+
+    "react-virtuoso": ["react-virtuoso@4.18.20", "", { "peerDependencies": { "react": ">=16 || >=17 || >= 18 || >= 19", "react-dom": ">=16 || >=17 || >= 18 || >=19" } }, "sha512-2G/Hdi/QHRtJtzSZOkAwJFdUzBmhNIQCAmw6gLGUZTGbjVL6+TOBIFJOCnpm6xgWGBfrrMiZV5rJNkQ9gEgAdQ=="],
 
     "readable-stream": ["readable-stream@3.6.2", "", { "dependencies": { "inherits": "^2.0.3", "string_decoder": "^1.1.1", "util-deprecate": "^1.0.1" } }, "sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA=="],
 

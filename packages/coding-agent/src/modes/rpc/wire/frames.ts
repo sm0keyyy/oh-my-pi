@@ -16,6 +16,7 @@ export const frameDefs = {
 			"maxFrameBytes?": "number.integer",
 			"maxReassembledFrameBytes?": "number.integer",
 			"host?": "RpcSessionHost",
+			"messagePaging?": doc("'backward'", "Supports newest-first paging, including while streaming."),
 		},
 		"First frame after startup; transport fields are absent on servers without protocol v2.",
 	),

@@ -1646,6 +1646,7 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		supportedProtocolVersions: [1, 2],
 		maxFrameBytes: MAX_RPC_FRAME_BYTES,
 		maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
+		messagePaging: "backward",
 		...(options.readyHost ? { host: options.readyHost } : {}),
 	});
 
@@ -2644,7 +2645,7 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 			}
 
 			case "get_messages_page": {
-				if (session.isStreaming || session.isCompacting)
+				if (!command.backward && (session.isStreaming || session.isCompacting))
 					return error(id, "get_messages_page", RPC_MESSAGES_PAGE_BUSY_ERROR, "session_busy");
 				const messages = session.messages;
 				try {
@@ -2658,7 +2659,7 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 								leafId: session.sessionManager.getLeafId(),
 								messageCount: messages.length,
 							},
-							{ cursor: command.cursor, limit: command.limit },
+							{ cursor: command.cursor, limit: command.limit, backward: command.backward },
 						),
 					);
 				} catch (pageError) {

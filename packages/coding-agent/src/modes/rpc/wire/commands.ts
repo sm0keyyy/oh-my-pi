@@ -346,7 +346,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{
 		name: "get_messages_page",
 		doc: "One stable page of messages.",
-		params: { "cursor?": "string", "limit?": "number.integer" },
+		params: { "cursor?": "string", "limit?": "number.integer", "backward?": "boolean" },
 		result: "MessagesPage",
 	},
 

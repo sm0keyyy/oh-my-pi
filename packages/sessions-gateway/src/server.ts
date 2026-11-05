@@ -15,7 +15,7 @@ import {
 	sanitizeDiagnostic,
 	TOKEN,
 } from "./protocol";
-import { ReplayJournal, type StreamCloseReason } from "./replay";
+import { acceptsGzip, ReplayJournal, type StreamCloseReason } from "./replay";
 
 interface Client {
 	id: string;
@@ -25,6 +25,7 @@ interface Client {
 	hash?: number | bigint;
 	backoff: number;
 	retry?: Timer;
+	expiry?: Timer;
 	ready: boolean;
 }
 interface Session {
@@ -46,6 +47,7 @@ export interface GatewayOptions {
 	hostname?: string;
 	accessCertsUrl?: URL;
 	bridgeGraceMs?: number;
+	clientGraceMs?: number;
 	replayEvents?: number;
 	replayBytes?: number;
 	heartbeatMs?: number;
@@ -117,6 +119,20 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 		}, client.backoff);
 		client.backoff = Math.min(client.backoff * 2, 30_000);
 	};
+	const expireClient = (client: Client, delay = options.clientGraceMs ?? 5 * 60_000): void => {
+		clearTimeout(client.expiry);
+		client.expiry = setTimeout(() => {
+			if (clients.get(client.conn) !== client) return;
+			if (!command({ t: "detach", conn: client.conn })) {
+				expireClient(client, 10_000);
+				return;
+			}
+			clearTimeout(client.retry);
+			clients.delete(client.conn);
+			streams.get(client.instanceId)?.clients.delete(client.id);
+		}, delay);
+		client.expiry.unref();
+	};
 	const closeSession = (instanceId: string): void => {
 		sessions.delete(instanceId);
 		const session = streams.get(instanceId);
@@ -124,6 +140,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 		for (const client of session.clients.values()) {
 			emit(client, '{"type":"gateway","event":"session_gone"}');
 			clearTimeout(client.retry);
+			clearTimeout(client.expiry);
 			clients.delete(client.conn);
 			command({ t: "detach", conn: client.conn });
 		}
@@ -288,9 +305,13 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					const response = session.replay.open(
 						request,
 						id,
-						reason => recordClose("browser", reason, started),
+						reason => {
+							recordClose("browser", reason, started);
+							if (reason !== "replaced" && reason !== "shutdown") expireClient(client);
+						},
 						resync || !cursor ? session.replay.id : cursor,
 					);
+					clearTimeout(client.expiry);
 					if (resync) emit(client, JSON.stringify({ type: "gateway", event: "resync", resetCommands }));
 					if (cursor && !resync) emit(client, '{"type":"gateway","event":"resumed"}');
 					return response;
@@ -302,6 +323,7 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 					if (client && !command({ t: "detach", conn: client.conn })) return error(503, "bridge_backpressure");
 					if (client) {
 						clearTimeout(client.retry);
+						clearTimeout(client.expiry);
 						clients.delete(client.conn);
 						session.clients.delete(id);
 					}
@@ -370,7 +392,22 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 			}
 			if (!target.startsWith(siteDir + path.sep) || !(await fs.stat(target)).isFile())
 				return error(404, "not_found");
-			return new Response(request.method === "HEAD" ? null : Bun.file(target), { headers });
+			const file = Bun.file(target);
+			const assetHeaders: Record<string, string> = {
+				...headers,
+				"content-type": file.type,
+				vary: "Accept-Encoding",
+				"cache-control": /-[a-z0-9]{8,}\.(js|css)$/i.test(path.basename(target))
+					? "private, max-age=31536000, immutable"
+					: "no-store",
+			};
+			if (acceptsGzip(request.headers.get("accept-encoding")) && /\.(html|js|css)$/.test(target)) {
+				const compressed = Bun.gzipSync(await file.arrayBuffer());
+				assetHeaders["content-encoding"] = "gzip";
+				assetHeaders["content-length"] = String(compressed.byteLength);
+				return new Response(request.method === "HEAD" ? null : compressed, { headers: assetHeaders });
+			}
+			return new Response(request.method === "HEAD" ? null : file, { headers: assetHeaders });
 		},
 		error() {
 			logger.error("Sessions gateway request failed");
@@ -391,7 +428,10 @@ export async function startGateway(options: GatewayOptions): Promise<SessionsGat
 		url: `http://127.0.0.1:${server.port}`,
 		stop() {
 			bridgeTicket = undefined;
-			for (const client of clients.values()) clearTimeout(client.retry);
+			for (const client of clients.values()) {
+				clearTimeout(client.retry);
+				clearTimeout(client.expiry);
+			}
 			clearInterval(watchdog);
 			clearInterval(diagnostics);
 			clearTimeout(bridgeDeadline);

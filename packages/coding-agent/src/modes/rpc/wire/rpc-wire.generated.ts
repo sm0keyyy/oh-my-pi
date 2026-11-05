@@ -1071,6 +1071,8 @@ export interface ReadyEvent {
 	maxFrameBytes?: number;
 	maxReassembledFrameBytes?: number;
 	host?: RpcSessionHost;
+	/** Supports newest-first paging, including while streaming. */
+	messagePaging?: "backward";
 }
 
 export type PromptStatus = "completed" | "aborted" | "error";
@@ -1872,6 +1874,7 @@ export interface GetMessagesResult {
 export interface GetMessagesPageParams {
 	cursor?: string;
 	limit?: number;
+	backward?: boolean;
 }
 
 export interface GetLoginProvidersResult {

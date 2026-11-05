@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { Duplex } from "node:stream";
+import { constants, createGzip } from "node:zlib";
 
 export const HEARTBEAT_MS = 10_000;
 const HEARTBEAT = new TextEncoder().encode(":\nevent: heartbeat\ndata:\n\n");
 export type StreamCloseReason = "peer_abort" | "cancelled" | "replaced" | "backpressure" | "shutdown" | "idle_timeout";
 export const SSE_HEADERS = {
 	"content-type": "text/event-stream",
-	"cache-control": "no-cache, no-transform",
+	"cache-control": "no-store, no-transform",
 	"x-accel-buffering": "no",
+	vary: "Accept-Encoding",
 };
 interface Entry {
 	sequence: number;
@@ -17,6 +20,22 @@ interface Subscriber {
 	controller: ReadableStreamDefaultController<Uint8Array>;
 	recipient?: string;
 	close(reason: StreamCloseReason): void;
+}
+
+export function acceptsGzip(header: string | null): boolean {
+	const encodings = (header ?? "")
+		.toLowerCase()
+		.split(",")
+		.map(part => {
+			const [name, ...parameters] = part.trim().split(";");
+			const quality = parameters.find(parameter => parameter.trim().startsWith("q="));
+			const q = quality === undefined ? 1 : Number(quality.trim().slice(2));
+			return { name: name.trim(), q: Number.isFinite(q) && q >= 0 && q <= 1 ? q : 0 };
+		});
+	return (
+		((encodings.find(encoding => encoding.name === "gzip") ?? encodings.find(encoding => encoding.name === "*"))?.q ??
+			0) > 0
+	);
 }
 
 export class ReplayJournal {
@@ -103,8 +122,8 @@ export class ReplayJournal {
 		let subscriber: Subscriber;
 		// A named heartbeat also lets Safari detect a half-open stream after suspension.
 		const heartbeat = setInterval(() => {
-			if ((subscriber.controller.desiredSize ?? 0) < 0) subscriber.close("backpressure");
-			else subscriber.controller.enqueue(HEARTBEAT);
+			// Heartbeats are disposable. Never disconnect a quiet reader because a proxy is draining.
+			if ((subscriber.controller.desiredSize ?? 0) > 0) subscriber.controller.enqueue(HEARTBEAT);
 		}, this.heartbeatMs);
 		heartbeat.unref();
 		const cleanup = (reason: StreamCloseReason): void => {
@@ -138,6 +157,14 @@ export class ReplayJournal {
 			},
 			new ByteLengthQueuingStrategy({ highWaterMark: this.maxBytes }),
 		);
+		if (acceptsGzip(request.headers.get("accept-encoding"))) {
+			// Node's adapter and the browser type lib declare different versions of the same Web stream API.
+			const gzip = Duplex.toWeb(createGzip({ flush: constants.Z_SYNC_FLUSH })) as unknown as ReadableWritablePair<
+				Uint8Array,
+				Uint8Array
+			>;
+			return new Response(body.pipeThrough(gzip), { headers: { ...SSE_HEADERS, "content-encoding": "gzip" } });
+		}
 		return new Response(body, { headers: SSE_HEADERS });
 	}
 	close(reason: StreamCloseReason = "shutdown"): void {

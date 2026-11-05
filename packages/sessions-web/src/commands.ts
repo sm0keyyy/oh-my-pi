@@ -194,12 +194,28 @@ export type RpcCommand =
 	  }
 	| {
 			id?: string;
+			type: "live_connect";
+			sdpOffer: string;
+			voice?: string;
+			instructions?: string;
+	  }
+	| {
+			id?: string;
 			type: "live_stop";
 	  }
 	| {
 			id?: string;
 			type: "live_mute";
 			muted?: boolean;
+	  }
+	| {
+			id?: string;
+			type: "dictation_start";
+			captureId: string;
+	  }
+	| {
+			id?: string;
+			type: "dictation_stop";
 	  }
 	| {
 			id?: string;
@@ -282,6 +298,11 @@ export type RpcCommand =
 	  }
 	| {
 			id?: string;
+			type: "get_session_lease";
+			sessionIds: string[];
+	  }
+	| {
+			id?: string;
 			type: "export_html";
 			outputPath?: string;
 	  }
@@ -301,6 +322,23 @@ export type RpcCommand =
 			id?: string;
 			type: "fork";
 			entryId?: string;
+	  }
+	| {
+			id?: string;
+			type: "navigate_tree";
+			entryId: string;
+			summarize?: boolean;
+			customInstructions?: string;
+	  }
+	| {
+			id?: string;
+			type: "abort_branch_summary";
+	  }
+	| {
+			id?: string;
+			type: "set_label";
+			entryId: string;
+			label?: string;
 	  }
 	| {
 			id?: string;
@@ -329,6 +367,7 @@ export type RpcCommand =
 			type: "get_messages_page";
 			cursor?: string;
 			limit?: number;
+			backward?: boolean;
 	  }
 	| {
 			id?: string;
@@ -498,8 +537,13 @@ export const terminalCommands = [
 		source: "builtin",
 	},
 	{
+		name: "local",
+		description: "Open a session local:// file in $EDITOR (picker when no name given)",
+		source: "builtin",
+	},
+	{
 		name: "hub",
-		description: "Open the live Agent Hub",
+		description: "Open the live Agent Hub (subagents, including finished ones)",
 		source: "builtin",
 	},
 	{

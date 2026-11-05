@@ -826,6 +826,7 @@ impl Client {
 				supported_protocol_versions: None,
 				max_frame_bytes:             None,
 				max_reassembled_frame_bytes: None,
+				message_paging:              None,
 			},
 			shared,
 			child,
@@ -1048,8 +1049,11 @@ impl Client {
 		let mut total = None;
 		let mut cursor = None;
 		loop {
-			let page = self
-				.call(&GetMessagesPageCommand { cursor: cursor.take(), limit: Some(PAGE_LIMIT) })?;
+			let page = self.call(&GetMessagesPageCommand {
+				cursor:   cursor.take(),
+				limit:    Some(PAGE_LIMIT),
+				backward: None,
+			})?;
 			if total.is_some_and(|total| total != page.total_messages) {
 				return Err(Error::Protocol(
 					"RPC message pagination returned an inconsistent total".to_owned(),

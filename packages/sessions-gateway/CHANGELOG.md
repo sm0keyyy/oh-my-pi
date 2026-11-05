@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Keep chats ordered with older TUIs, preserve loaded history during live output, and restore scrollbar detach.
+- Resume state polling after catalog failures and prevent proxies from transforming SSE.
+- Open chats at the newest page, load older messages on demand, and bound retained messages and mounted cards.
+- Keep slow hydration and catalog failures from restarting the stream.
+- Compress negotiated SSE without buffering heartbeats, skip heartbeats at backpressure, and cache content-hashed web assets.
 - Keep the iPhone transcript still after any upward gesture, with a Jump to latest button and bottom reattachment.
 - Keep the composer above the keyboard without page jumps, and lock zoom with 16px editable controls.
 - Preserve partial replies across reconnect controls, recover stale Safari streams, and rebuild malformed streams without replay loops.

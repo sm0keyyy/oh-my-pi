@@ -21,7 +21,7 @@ import { EventBus } from "../../src/utils/event-bus";
 import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
 import { SessionManager } from "../../src/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
 import type { SocketTuiReady } from "./socket-tui-fixture";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
@@ -187,6 +187,46 @@ function screen(term: VirtualTerminal): string {
 }
 
 describe("A3 RPC socket", () => {
+	it("serves newest pages while streaming without changing strict forward paging", async () => {
+		const { session, discovery } = await fixture();
+		session.agent.replaceMessages([
+			{ role: "user", content: "oldest", timestamp: 1 },
+			{ role: "user", content: "middle", timestamp: 2 },
+			{ role: "user", content: "newest", timestamp: 3 },
+		]);
+		const server = await startRpcSocketServer(session, {}, { dir: discovery });
+		cleanups.push(() => server.close());
+		const client = await attach(server, discovery);
+		expect(await client.next(frame => frame.type === "ready")).toHaveProperty("messagePaging", "backward");
+		await client.next(frame => frame.type === "available_commands_update");
+		session.agent.state.isStreaming = true;
+		try {
+			client.send({ id: "latest", type: "get_messages_page", backward: true, limit: 1 });
+			const latest = await client.next(frame => frame.id === "latest");
+			expect(latest).toMatchObject({ success: true, data: { messages: [{ content: "newest" }], totalMessages: 3 } });
+			if (!isRecord(latest.data) || typeof latest.data.nextCursor !== "string")
+				throw new Error("Missing older cursor");
+			client.send({
+				id: "older",
+				type: "get_messages_page",
+				backward: true,
+				limit: 1,
+				cursor: latest.data.nextCursor,
+			});
+			expect(await client.next(frame => frame.id === "older")).toMatchObject({
+				success: true,
+				data: { messages: [{ content: "middle" }] },
+			});
+			client.send({ id: "strict", type: "get_messages_page", limit: 1 });
+			expect(await client.next(frame => frame.id === "strict")).toMatchObject({
+				success: false,
+				code: "session_busy",
+			});
+		} finally {
+			session.agent.state.isStreaming = false;
+		}
+	});
+
 	it("publishes owner-only artifacts and authenticates before sending any frame", async () => {
 		const { session, discovery } = await fixture();
 		const server = await startRpcSocketServer(session, {}, { dir: discovery });

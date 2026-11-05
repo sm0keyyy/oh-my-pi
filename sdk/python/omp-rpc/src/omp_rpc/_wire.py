@@ -1280,6 +1280,8 @@ class ReadyEvent:
     max_frame_bytes: int | None = None
     max_reassembled_frame_bytes: int | None = None
     host: RpcSessionHost | None = None
+    message_paging: Literal["backward"] | None = None
+    """Supports newest-first paging, including while streaming."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2776,6 +2778,7 @@ def parse_ready_event(value: object, path: str = "ReadyEvent") -> ReadyEvent:
         max_frame_bytes=optional(payload, "maxFrameBytes", decode_int, path),
         max_reassembled_frame_bytes=optional(payload, "maxReassembledFrameBytes", decode_int, path),
         host=optional(payload, "host", parse_rpc_session_host, path),
+        message_paging=optional(payload, "messagePaging", cast('Decoder[Literal["backward"]]', literal(frozenset({"backward"}))), path),
     )
 
 
@@ -3789,13 +3792,15 @@ class WireClient:
         data = self._command("handoff", params)
         return None if data is None else parse_handoff_result(data, "handoff")
 
-    def get_messages_page(self, *, cursor: str | None = None, limit: int | None = None) -> MessagesPage:
+    def get_messages_page(self, *, cursor: str | None = None, limit: int | None = None, backward: bool | None = None) -> MessagesPage:
         """One stable page of messages."""
         params: dict[str, object] = {}
         if cursor is not None:
             params["cursor"] = cursor
         if limit is not None:
             params["limit"] = limit
+        if backward is not None:
+            params["backward"] = backward
         return parse_messages_page(self._command("get_messages_page", params), "get_messages_page")
 
     def get_login_providers(self) -> tuple[LoginProvider, ...]:

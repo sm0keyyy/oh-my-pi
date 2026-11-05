@@ -38,15 +38,28 @@ export interface RpcMessagesPage {
 interface RpcMessageCursorPayload extends RpcMessageSnapshot {
 	version: 1;
 	offset: number;
+	backward?: boolean;
+	anchor?: string;
 }
 
 export interface RpcMessagesPageOptions {
 	cursor?: string;
 	limit?: number;
+	backward?: boolean;
 }
 
-function encodeCursor(snapshot: RpcMessageSnapshot, offset: number): string {
-	const payload: RpcMessageCursorPayload = { version: 1, ...snapshot, offset };
+function encodeCursor(
+	snapshot: RpcMessageSnapshot,
+	offset: number,
+	messages: readonly AgentMessage[],
+	backward: boolean,
+): string {
+	const payload: RpcMessageCursorPayload = {
+		version: 1,
+		...snapshot,
+		offset,
+		...(backward ? { backward, anchor: Bun.hash(JSON.stringify(messages[offset - 1])).toString() } : {}),
+	};
 	return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
@@ -78,7 +91,16 @@ function decodeCursor(cursor: string): RpcMessageCursorPayload {
 		offset > messageCount
 	)
 		throw new Error("Invalid RPC message cursor");
-	return { version, sessionId, leafId, messageCount, offset };
+	if (value.backward !== undefined && (value.backward !== true || typeof value.anchor !== "string"))
+		throw new Error("Invalid RPC message cursor");
+	return {
+		version,
+		sessionId,
+		leafId,
+		messageCount,
+		offset,
+		...(value.backward === true ? { backward: true, anchor: value.anchor as string } : {}),
+	};
 }
 
 function sameSnapshot(cursor: RpcMessageCursorPayload, snapshot: RpcMessageSnapshot): boolean {
@@ -100,28 +122,41 @@ export function pageRpcMessages(
 	const limit = options.limit ?? DEFAULT_RPC_MESSAGE_PAGE_LIMIT;
 	if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RPC_MESSAGE_PAGE_LIMIT)
 		throw new Error(`RPC message page limit must be between 1 and ${MAX_RPC_MESSAGE_PAGE_LIMIT}`);
-	let offset = 0;
+	const backward = options.backward ?? false;
+	if (typeof backward !== "boolean") throw new Error("Invalid RPC message page direction");
+	let offset = backward ? messages.length : 0;
 	if (options.cursor !== undefined) {
 		const cursor = decodeCursor(options.cursor);
-		if (!sameSnapshot(cursor, snapshot))
+		if (
+			Boolean(cursor.backward) !== backward ||
+			(backward
+				? cursor.sessionId !== snapshot.sessionId ||
+					cursor.messageCount > messages.length ||
+					cursor.offset === 0 ||
+					Bun.hash(JSON.stringify(messages[cursor.offset - 1])).toString() !== cursor.anchor
+				: !sameSnapshot(cursor, snapshot))
+		)
 			throw new RpcMessagesPageError(RPC_MESSAGES_PAGE_STALE_ERROR, "stale_cursor");
 		offset = cursor.offset;
 	}
 
 	const page: AgentMessage[] = [];
 	let pageBytes = 2;
-	while (offset + page.length < messages.length && page.length < limit) {
-		const message = messages[offset + page.length];
+	while ((backward ? offset - page.length > 0 : offset + page.length < messages.length) && page.length < limit) {
+		const message = messages[backward ? offset - page.length - 1 : offset + page.length];
 		const messageBytes = Buffer.byteLength(JSON.stringify(message), "utf8") + (page.length === 0 ? 0 : 1);
 		if (page.length > 0 && pageBytes + messageBytes > MAX_RPC_MESSAGE_PAGE_BYTES) break;
 		page.push(message);
 		pageBytes += messageBytes;
 	}
 
-	const nextOffset = offset + page.length;
+	const nextOffset = backward ? offset - page.length : offset + page.length;
+	if (backward) page.reverse();
 	return {
 		messages: page,
-		...(nextOffset < messages.length ? { nextCursor: encodeCursor(snapshot, nextOffset) } : {}),
+		...((backward ? nextOffset > 0 : nextOffset < messages.length)
+			? { nextCursor: encodeCursor(snapshot, nextOffset, messages, backward) }
+			: {}),
 		totalMessages: messages.length,
 	};
 }

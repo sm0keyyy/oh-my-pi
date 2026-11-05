@@ -72,7 +72,7 @@ const gatewayProcess = Bun.spawn(
 		process.execPath,
 		import.meta.path,
 		"--gateway",
-		path.join(root, "packages/sessions-web/dist"),
+		process.env.SESSIONS_PERF_SITE_DIR ?? path.join(root, "packages/sessions-web/dist"),
 		access.certsUrl.href,
 	],
 	{ stdout: "pipe", stderr: "inherit" },
@@ -117,7 +117,7 @@ const responder = (async () => {
 			const encoder = new RpcFrameEncoder();
 			encoder.setProtocolVersion(2);
 			encoders.set(frame.conn, encoder);
-			await post({ t: "frame", conn: frame.conn, line: '{"type":"ready"}' });
+			await post({ t: "frame", conn: frame.conn, line: '{"type":"ready","messagePaging":"backward"}' });
 		} else if (frame.t === "detach") encoders.delete(frame.conn);
 		else if (frame.t === "frame") {
 			const command = JSON.parse(frame.line);

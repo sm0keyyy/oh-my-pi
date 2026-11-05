@@ -1071,6 +1071,8 @@ export interface ReadyEvent {
 	maxFrameBytes?: number;
 	maxReassembledFrameBytes?: number;
 	host?: RpcSessionHost;
+	/** Supports newest-first paging, including while streaming. */
+	messagePaging?: "backward";
 }
 
 export type PromptStatus = "completed" | "aborted" | "error";

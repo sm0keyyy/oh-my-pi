@@ -51,6 +51,21 @@ async function measure(page: Page, label: string): Promise<void> {
 	await page.goto(`${base}/session/0123456789abcdef`);
 	await page.waitForSelector('[data-message-key="user:19999:"]', { timeout: 30000 });
 	await page.waitForFunction(() => !document.querySelector('[role="status"].banner'), { timeout: 30000 });
+	await page.waitForFunction(
+		() => {
+			const root = document.querySelector<HTMLElement>(".scroll");
+			const newest = document.querySelector<HTMLElement>('[data-message-key="user:19999:"]');
+			if (!root || !newest || getComputedStyle(newest).visibility !== "visible") return false;
+			const viewport = root.getBoundingClientRect();
+			const entry = newest.getBoundingClientRect();
+			return (
+				root.scrollHeight - root.clientHeight - root.scrollTop < 2 &&
+				entry.bottom > viewport.top &&
+				entry.top < viewport.bottom
+			);
+		},
+		{ timeout: 30000 },
+	);
 	const paint = await page.evaluate(async () => {
 		for (let frame = 0; frame < 2; frame++) {
 			const ready = Promise.withResolvers<void>();
@@ -82,8 +97,10 @@ try {
 		await closed.promise;
 	} else {
 		// Alternate fresh pages on the same corpus; discard the first pair as warm-up.
+		const comparePlain = process.env.SESSIONS_PERF_COMPARE_PLAIN !== "0";
 		for (let repetition = 0; repetition < 11; repetition++) {
-			for (const label of repetition % 2 ? ["virtual", "plain"] : ["plain", "virtual"]) {
+			const labels = comparePlain ? (repetition % 2 ? ["virtual", "plain"] : ["plain", "virtual"]) : ["virtual"];
+			for (const label of labels) {
 				await request(`/fixture/plain?enabled=${label === "plain" ? 1 : 0}`, "POST");
 				const page = await browser.newPage();
 				await page.setViewport({ width: 1440, height: 1000 });
@@ -101,9 +118,9 @@ try {
 		await page.evaluate(() => {
 			const node = document.querySelector<HTMLElement>(".scroll")!;
 			node.scrollTop = 80;
-			node.dispatchEvent(new WheelEvent("wheel", { deltaY: -1, bubbles: true }));
 		});
 		await request("/fixture/older");
+		await page.waitForSelector(".jump-latest", { timeout: 5000 });
 		await page.waitForFunction(() => {
 			const root = document.querySelector(".scroll")!.getBoundingClientRect();
 			return [...document.querySelectorAll<HTMLElement>("[data-message-key]")].some(
@@ -132,6 +149,7 @@ try {
 			`prepend anchor shifted: ${anchor.top} -> ${anchorAfter}`,
 		);
 		results.push({ label: "prepend-anchor", before: anchor, after: anchorAfter });
+		results.push({ label: "scroll-detach", jumpVisible: true, olderPageRequested: true });
 		await page.evaluate(() => document.querySelector<HTMLButtonElement>(".jump-latest")?.click());
 		const legacy = await request("/fixture/legacy", "POST");
 		assert.ok(Array.isArray(legacy) && legacy.every(isRecord));

@@ -4747,6 +4747,8 @@ type ReadyEvent struct {
 	MaxFrameBytes             *int64          `json:"maxFrameBytes,omitempty"`
 	MaxReassembledFrameBytes  *int64          `json:"maxReassembledFrameBytes,omitempty"`
 	Host                      *RpcSessionHost `json:"host,omitempty"`
+	// Supports newest-first paging, including while streaming.
+	MessagePaging *ReadyEventMessagePaging `json:"messagePaging,omitempty"`
 }
 
 func (v *ReadyEvent) UnmarshalJSON(data []byte) error {
@@ -4762,6 +4764,7 @@ func (v *ReadyEvent) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("maxFrameBytes", &out.MaxFrameBytes)
 	d.optional("maxReassembledFrameBytes", &out.MaxReassembledFrameBytes)
 	d.optional("host", &out.Host)
+	d.optional("messagePaging", &out.MessagePaging)
 	if d.err != nil {
 		return d.err
 	}
@@ -4772,6 +4775,25 @@ func (v *ReadyEvent) decodeFrom(raw map[string]json.RawMessage) error {
 func (v ReadyEvent) MarshalJSON() ([]byte, error) {
 	type plain ReadyEvent
 	return encodeObject(plain(v), `"type":"ready"`, nil)
+}
+
+type ReadyEventMessagePaging string
+
+const (
+	ReadyEventMessagePagingBackward ReadyEventMessagePaging = "backward"
+)
+
+func (v *ReadyEventMessagePaging) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "ReadyEventMessagePaging")
+	if err != nil {
+		return err
+	}
+	switch value := ReadyEventMessagePaging(s); value {
+	case ReadyEventMessagePagingBackward:
+		*v = value
+		return nil
+	}
+	return unknownValue("ReadyEventMessagePaging", s)
 }
 
 type PromptStatus string

@@ -1646,6 +1646,7 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		supportedProtocolVersions: [1, 2],
 		maxFrameBytes: MAX_RPC_FRAME_BYTES,
 		maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
+		messagePaging: "backward",
 		...(options.readyHost ? { host: options.readyHost } : {}),
 	});
 

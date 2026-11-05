@@ -6,9 +6,28 @@ import { messageText, text, type Message, type Snapshot, type SessionClient } fr
 import { renderCustomMessage } from "./custom-message";
 import { ScrollFollow } from "./scroll-follow";
 
-const TranscriptList = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>((props, ref) => (
-	<div {...props} ref={ref} className="transcript transcript-virtual" />
-));
+const TranscriptList = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> & { context?: TranscriptContext }>(
+	({ context: _context, ...props }, ref) => (
+		<div {...props} ref={ref} className="transcript transcript-virtual" />
+	),
+);
+
+interface TranscriptContext {
+	history: Snapshot["history"];
+	loadOlder(): void;
+}
+
+// Paging controls must not change an item's measured height when older rows are prepended.
+function TranscriptHeader({ context }: { context: TranscriptContext }): ReactNode {
+	if (!context.history?.olderCursor) return null;
+	return (
+		<div className="transcript transcript-virtual">
+			<button className="btn" type="button" disabled={context.history.loading} onClick={context.loadOlder}>
+				{context.history.loading ? "Loading older messages…" : "Load older messages"}
+			</button>
+		</div>
+	);
+}
 
 export function Transcript({
 	snapshot,
@@ -190,7 +209,14 @@ export function Transcript({
 					firstItemIndex={firstItemIndex}
 					initialTopMostItemIndex={{ index: "LAST", align: "end" }}
 					computeItemKey={(_index, message) => message.key}
-					components={{ List: TranscriptList }}
+					components={{ List: TranscriptList, Header: TranscriptHeader }}
+					context={{
+						history: snapshot.history,
+						loadOlder: () => {
+							detach();
+							void client?.loadOlder();
+						},
+					}}
 					alignToBottom
 					initialItemCount={1}
 					followOutput={() => (follower.current.isFollowing ? "auto" : false)}
@@ -203,26 +229,9 @@ export function Transcript({
 						if (atBottom) {
 							follower.current.isFollowing = true;
 							setFollowing(true);
-						}
+						} else detach();
 					}}
-					itemContent={(index, message) => (
-						<div className="virtual-entry">
-							{index === firstItemIndex && snapshot.history?.olderCursor && (
-								<button
-									className="btn"
-									type="button"
-									disabled={snapshot.history.loading}
-									onClick={() => {
-										detach();
-										void client?.loadOlder();
-									}}
-								>
-									{snapshot.history.loading ? "Loading older messages…" : "Load older messages"}
-								</button>
-							)}
-							{renderMessage(message)}
-						</div>
-					)}
+					itemContent={(_index, message) => <div className="virtual-entry">{renderMessage(message)}</div>}
 				/>
 			) : (
 				<p className="empty" role="region" aria-label="Transcript">

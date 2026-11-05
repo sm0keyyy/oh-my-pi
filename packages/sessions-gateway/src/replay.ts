@@ -7,7 +7,7 @@ const HEARTBEAT = new TextEncoder().encode(":\nevent: heartbeat\ndata:\n\n");
 export type StreamCloseReason = "peer_abort" | "cancelled" | "replaced" | "backpressure" | "shutdown" | "idle_timeout";
 export const SSE_HEADERS = {
 	"content-type": "text/event-stream",
-	"cache-control": "no-store",
+	"cache-control": "no-store, no-transform",
 	"x-accel-buffering": "no",
 	vary: "Accept-Encoding",
 };

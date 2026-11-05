@@ -218,7 +218,7 @@ test("sets unbuffered SSE headers, isolates principals, and rejects cross-origin
 	const { browser } = await attach();
 	const response = await browser.opened.promise;
 	expect(response.headers.get("content-type")).toBe("text/event-stream");
-	expect(response.headers.get("cache-control")).toBe("no-store");
+	expect(response.headers.get("cache-control")).toBe("no-store, no-transform");
 	expect(response.headers.get("x-accel-buffering")).toBe("no");
 	for (const route of [`/events/session/${snapshot.instanceId}`, `/api/session/${snapshot.instanceId}`]) {
 		expect((await access.fetch(gateway.url + route, { headers: { origin: "https://foreign.example" } })).status).toBe(
@@ -397,7 +397,7 @@ test("gzip flushes each SSE event and heartbeat before the stream ends", async (
 			signal: controller.signal,
 		});
 		expect(response.headers.get("content-encoding")).toBe("gzip");
-		expect(response.headers.get("cache-control")).toBe("no-store");
+		expect(response.headers.get("cache-control")).toBe("no-store, no-transform");
 		const reader = response.body!.getReader();
 		const decoder = new TextDecoder();
 		let output = decoder.decode((await reader.read()).value);

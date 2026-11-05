@@ -33,11 +33,14 @@ Gateway control events bypass RPC chunk assembly. A transport resume preserves t
 Invalid frames request an explicit attachment resync instead of replay of the same invalid event.
 Page restoration, foreground return, and network recovery resume stale browser streams from the last accepted cursor.
 Named heartbeats drive a 45 s stale-stream watchdog. A brief reconnect retains the current view and does not show a banner.
-The initial view requests the newest 50 messages with `get_messages_page` and `backward: true`, not the full transcript.
-Older pages load on upward scroll or the history button. The browser retains at most 150 messages; Jump to latest reloads the newest page after newer pages are evicted.
+The initial view requests the newest 50 messages with `get_messages_page` and `backward: true` only when the TUI advertises `messagePaging: "backward"` in `ready`.
+Without that capability, the browser uses the legacy full `get_messages` snapshot and retains its chronological history.
+Older pages load on upward scroll or the history button. With backward paging, the browser retains at most 150 messages.
+Live output preserves an older window or an in-flight older page; Jump to latest reloads the newest page when newer messages are not displayed.
 The virtual list keeps only visible message cards mounted. Its stable keys and `firstItemIndex` retain the reading position across prepends.
 Backwards cursors tolerate appended output and reject a replaced boundary. The RPC handler reads the in-memory message array, including while streaming.
 Page requests have no response deadline. Transport recovery retains the pending request and partial decoder; an RPC or catalog error is shown without closing the SSE stream or restarting hydration.
+The 5 s state poll continues after catalog or refresh failures.
 Forward paging retains its stable-snapshot contract for existing RPC callers.
 
 ## Bridge lifecycle
@@ -51,7 +54,7 @@ Only confirmed exits send `session_gone`. Temporary local attachment failures re
 
 ## Proxy behavior and diagnostics
 
-SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-store`, `Vary: Accept-Encoding`, and `X-Accel-Buffering: no`.
+SSE responses use `Content-Type: text/event-stream`, `Cache-Control: no-store, no-transform`, `Vary: Accept-Encoding`, and `X-Accel-Buffering: no`.
 Clients that accept gzip receive a streaming gzip response with a synchronous flush for each SSE write. Heartbeats never wait for another event or the end of the stream.
 The gateway disables Bun's request idle timeout for each stream and sends a heartbeat every 10 s.
 When a consumer's queue is full, the gateway skips disposable heartbeats rather than closing a quiet stream. Actual RPC output still uses the bounded backpressure close and replay path.
@@ -70,13 +73,15 @@ Build the web bundle, then run `bun packages/sessions-web/test/performance-probe
 The probe uses a signed local Access fixture, the gateway, a fake bridge, and a synthetic transcript. It does not open live sessions or read their journals.
 `SESSIONS_SOAK_SECONDS` sets the real-time soak duration (3660 s by default). `SESSIONS_PERF_OUTPUT` sets the JSON evidence path.
 For a virtual-list comparison, put the pre-virtualization web build in `.sessions-perf-before` before running the probe.
+Set `SESSIONS_PERF_COMPARE_PLAIN=0` to measure only the current UI without a baseline bundle. `SESSIONS_PERF_SITE_DIR` selects an ephemeral web bundle instead of `packages/sessions-web/dist`.
 The probe records first-page render times, mounted DOM nodes, JS heap, wire bytes, serialization times, memory samples, and stream-open counts.
-It also checks that an older-page prepend keeps the visible message anchored.
+Readiness requires the newest card to be visible at the bottom after virtualizer layout, not merely present in the DOM.
+The probe also checks scroll-only detach and an older-page prepend that keeps the visible message anchored.
 
 
 ## iPhone viewport and transcript
 
-An upward touch movement, wheel event, or navigation key detaches the transcript immediately.
+An upward touch movement, wheel event, navigation key, or scroll away from the bottom detaches the transcript.
 New output does not move a detached transcript. Jump to latest or a downward scroll to the bottom restores follow.
 The transcript disables scroll anchoring and overscroll. Viewport resize changes the visible area without a page scroll reset.
 The app follows the visual viewport height and offset, so the composer remains above the keyboard.

@@ -197,6 +197,7 @@ describe("A3 RPC socket", () => {
 		const server = await startRpcSocketServer(session, {}, { dir: discovery });
 		cleanups.push(() => server.close());
 		const client = await attach(server, discovery);
+		expect(await client.next(frame => frame.type === "ready")).toHaveProperty("messagePaging", "backward");
 		await client.next(frame => frame.type === "available_commands_update");
 		session.agent.state.isStreaming = true;
 		try {

@@ -1280,6 +1280,8 @@ class ReadyEvent:
     max_frame_bytes: int | None = None
     max_reassembled_frame_bytes: int | None = None
     host: RpcSessionHost | None = None
+    message_paging: Literal["backward"] | None = None
+    """Supports newest-first paging, including while streaming."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2776,6 +2778,7 @@ def parse_ready_event(value: object, path: str = "ReadyEvent") -> ReadyEvent:
         max_frame_bytes=optional(payload, "maxFrameBytes", decode_int, path),
         max_reassembled_frame_bytes=optional(payload, "maxReassembledFrameBytes", decode_int, path),
         host=optional(payload, "host", parse_rpc_session_host, path),
+        message_paging=optional(payload, "messagePaging", cast('Decoder[Literal["backward"]]', literal(frozenset({"backward"}))), path),
     )
 
 

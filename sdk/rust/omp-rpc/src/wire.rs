@@ -4106,6 +4106,9 @@ pub struct ReadyEvent {
 	pub max_reassembled_frame_bytes: Option<i64>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub host: Option<RpcSessionHost>,
+	/// Supports newest-first paging, including while streaming.
+	#[serde(rename = "messagePaging", default, skip_serializing_if = "Option::is_none")]
+	pub message_paging: Option<LitBackward>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -5968,6 +5971,27 @@ impl LogoutAccountType {
 		match self {
 			Self::ApiKey => "api_key",
 			Self::Oauth => "oauth",
+		}
+	}
+}
+
+/// The constant `"backward"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitBackward;
+
+impl Serialize for LitBackward {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("backward")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitBackward {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("backward") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"backward\", got {value}")))
 		}
 	}
 }

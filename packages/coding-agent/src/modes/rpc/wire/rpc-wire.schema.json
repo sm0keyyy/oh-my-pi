@@ -4580,6 +4580,10 @@
 				},
 				"host": {
 					"$ref": "#/$defs/RpcSessionHost"
+				},
+				"messagePaging": {
+					"const": "backward",
+					"description": "Supports newest-first paging, including while streaming."
 				}
 			},
 			"required": [

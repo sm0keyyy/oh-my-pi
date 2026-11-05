@@ -401,6 +401,7 @@ export interface RpcReadyFrame {
 	supportedProtocolVersions: [1, 2];
 	maxFrameBytes: number;
 	maxReassembledFrameBytes: number;
+	messagePaging?: "backward";
 	host?: Pick<RpcSessionSnapshot, "instanceId" | "pid" | "cwd" | "startedAt">;
 }
 

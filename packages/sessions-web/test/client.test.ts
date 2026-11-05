@@ -191,6 +191,7 @@ const fixtureState = {
 	queuedMessages: { steering: [], followUp: [] },
 	todoPhases: [],
 };
+const fixtureReady = { type: "ready", messagePaging: "backward" };
 interface FixtureStream {
 	send(line: string): void;
 	close(): void;
@@ -200,6 +201,7 @@ interface FixtureStream {
 }
 function fixtureClient(
 	handle: (stream: FixtureStream, command: RecordValue, respond: (data: RecordValue) => void) => boolean | void,
+	ready: RecordValue = fixtureReady,
 ): SessionClient {
 	let journal = new ReplayJournal();
 	let started = false;
@@ -238,7 +240,7 @@ function fixtureClient(
 					);
 				if (!started || resync) {
 					started = true;
-					stream.send('{"type":"ready"}');
+					stream.send(JSON.stringify(ready));
 				} else stream.send('{"type":"gateway","event":"resumed"}');
 				return response;
 			}
@@ -516,7 +518,7 @@ test("rebuilds full state after resync even when the replay gap interrupted RPC 
 		}),
 	);
 	transport!.send('{"type":"gateway","event":"resync"}');
-	transport!.send('{"type":"ready"}');
+	transport!.send(JSON.stringify(fixtureReady));
 	await waitForSnapshot(
 		client,
 		snapshot => snapshot.phase === "connected" && snapshot.messages[0]?.content === "after",
@@ -830,3 +832,214 @@ test("a refused first page stops buffering and retries only on an explicit load 
 	expect(TestEventSource.latest).toBe(source);
 	expect(client.getSnapshot().messages[0]?.content).toBe("recovered page");
 });
+
+test.each([false, true])("old forward-only TUIs load ordered full history while streaming=%s", async isStreaming => {
+	const messages = Array.from({ length: 160 }, (_, timestamp) => ({
+		role: "user",
+		timestamp,
+		content: String(timestamp),
+	}));
+	let pages = 0;
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_messages_page") {
+			pages++;
+			if (isStreaming)
+				stream.send(
+					JSON.stringify({
+						type: "response",
+						id: command.id,
+						command: command.type,
+						success: false,
+						code: "session_busy",
+						error: "Cannot page messages while the session is changing",
+					}),
+				);
+			else respond({ messages: messages.slice(0, 50), nextCursor: "forward-50", totalMessages: 160 });
+			return true;
+		}
+		if (command.type === "get_messages") {
+			stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "stale" } }));
+			respond({ messages });
+			stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "live" } }));
+			return true;
+		}
+		if (command.type === "get_state") {
+			respond({ ...fixtureState, isStreaming });
+			return true;
+		}
+	}, { type: "ready", supportedProtocolVersions: [1, 2] });
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" || snapshot.error !== null);
+	expect(client.getSnapshot().error).toBeNull();
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual([
+		...Array.from({ length: 159 }, (_, index) => String(index)),
+		"live",
+	]);
+	await client.loadOlder();
+	await client.loadLatest();
+	await waitForSnapshot(client, snapshot => snapshot.messages.at(-1)?.content === "live");
+	expect(client.getSnapshot().messages[0]?.content).toBe("0");
+	expect(client.getSnapshot().messages.at(-1)?.content).toBe("live");
+	expect(pages).toBe(0);
+});
+
+function historyPage(end: number): RecordValue {
+	const start = Math.max(0, end - 50);
+	return {
+		messages: Array.from({ length: end - start }, (_, index) => ({
+			role: "user",
+			timestamp: start + index,
+			content: String(start + index),
+		})),
+		totalMessages: 400,
+		nextCursor: start ? String(start) : undefined,
+	};
+}
+
+test("two older pages stay intact when live messages arrive", async () => {
+	let transport: FixtureStream | undefined;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		respond(historyPage(command.cursor === undefined ? 300 : Number(command.cursor)));
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.loadOlder();
+	await client.loadOlder();
+	transport!.send(
+		JSON.stringify({
+			type: "message_start",
+			message: { role: "user", timestamp: 300, content: "live" },
+		}),
+	);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual(
+		Array.from({ length: 150 }, (_, index) => String(150 + index)),
+	);
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "150", newer: true, loading: false });
+});
+
+test("a live append racing loadOlder never trims a gap into the window", async () => {
+	let transport: FixtureStream | undefined;
+	let finish: ((data: RecordValue) => void) | undefined;
+	let hold = false;
+	const requested = Promise.withResolvers<void>();
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		if (command.cursor && hold) {
+			finish = respond;
+			requested.resolve();
+		} else respond(historyPage(command.cursor === undefined ? 300 : Number(command.cursor)));
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	for (let timestamp = 300; timestamp < 400; timestamp++)
+		transport!.send(
+			JSON.stringify({
+				type: "message_start",
+				message: { role: "user", timestamp, content: String(timestamp) },
+			}),
+		);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().messages).toHaveLength(150);
+	hold = true;
+	const older = client.loadOlder();
+	await requested.promise;
+	transport!.send(
+		JSON.stringify({
+			type: "message_start",
+			message: { role: "user", timestamp: 400, content: "live" },
+		}),
+	);
+	await client.request({ type: "get_state" });
+	finish!(historyPage(250));
+	await older;
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual(
+		Array.from({ length: 150 }, (_, index) => String(200 + index)),
+	);
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "200", newer: true, loading: false });
+});
+
+test("an older page started during rebuild cannot merge an obsolete cursor into the new window", async () => {
+	let transport: FixtureStream | undefined;
+	let latest: ((data: RecordValue) => void) | undefined;
+	let older: ((data: RecordValue) => void) | undefined;
+	let rebuild = false;
+	const latestRequested = Promise.withResolvers<void>();
+	const olderRequested = Promise.withResolvers<void>();
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		if (!rebuild) respond(historyPage(300));
+		else if (command.cursor) {
+			older = respond;
+			olderRequested.resolve();
+		} else {
+			latest = respond;
+			latestRequested.resolve();
+		}
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	rebuild = true;
+	transport!.send('{"type":"session_changed"}');
+	await latestRequested.promise;
+	const pending = client.loadOlder();
+	await olderRequested.promise;
+	latest!(historyPage(400));
+	await waitForSnapshot(client, snapshot => snapshot.messages[0]?.content === "350");
+	older!(historyPage(250));
+	await pending;
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual(
+		Array.from({ length: 50 }, (_, index) => String(350 + index)),
+	);
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "350", newer: false, loading: false });
+});
+
+test.each(["get_available_commands", "get_session_stats"])(
+	"state polling resumes after a failed %s without rebuilding history",
+	async failedCommand => {
+		let fail = true;
+		let polling = false;
+		const client = fixtureClient((stream, command, respond) => {
+			if (command.type === failedCommand && fail) {
+				fail = false;
+				stream.send(
+					JSON.stringify({
+						type: "response",
+						id: command.id,
+						command: command.type,
+						success: false,
+						error: "Refresh unavailable",
+					}),
+				);
+				return true;
+			}
+			if (command.type === "get_state" && polling) {
+				respond({ ...fixtureState, sessionName: "polled" });
+				return true;
+			}
+			if (command.type === "get_session_stats" && polling) {
+				respond({ tokens: 123 });
+				return true;
+			}
+		});
+		vi.useFakeTimers();
+		client.connect();
+		await waitForSnapshot(client, snapshot => snapshot.error?.includes("Refresh unavailable") === true);
+		const source = TestEventSource.latest;
+		await client.request({ type: "prompt", message: "recover command delivery" });
+		await waitForSnapshot(client, snapshot => snapshot.error === null);
+		polling = true;
+		vi.advanceTimersByTime(5000);
+		await waitForSnapshot(client, snapshot => snapshot.stats.tokens === 123);
+		expect(client.getSnapshot().state.sessionName).toBe("polled");
+		expect(client.getSnapshot().phase).toBe("connected");
+		expect(TestEventSource.latest).toBe(source);
+	},
+);

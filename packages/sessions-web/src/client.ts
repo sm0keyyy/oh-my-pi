@@ -179,6 +179,8 @@ export class SessionClient {
 	#historyRequest = 0;
 	#loadingHistory = false;
 	#pageEvents: RecordValue[] | null = null;
+	#backwardPaging = false;
+	#readingHistory = false;
 	#resume = (event: Event): void => {
 		if (typeof document !== "undefined" && document.hidden) return;
 		if (
@@ -482,15 +484,28 @@ export class SessionClient {
 			history: { ...this.#snapshot.history, newer: this.#snapshot.history?.newer ?? false, loading: true },
 		});
 		try {
-			const result = await this.#request({ type: "get_messages_page", backward: true, limit: 50, cursor }, 0);
-			if (request !== this.#historyRequest || hydration !== this.#hydration || this.#stopped) return;
+			const result = await this.#request(
+				this.#backwardPaging
+					? { type: "get_messages_page", backward: true, limit: 50, cursor }
+					: { type: "get_messages" },
+				0,
+			);
+			if (
+				request !== this.#historyRequest ||
+				hydration !== this.#hydration ||
+				this.#stopped ||
+				(cursor !== undefined && this.#snapshot.history?.olderCursor !== cursor)
+			)
+				return;
 			const page = this.#page(result);
+			this.#readingHistory = cursor !== undefined;
+			this.#loadingHistory = false;
 			const keys = new Set(page.messages.map(message => message.key));
 			const messages = cursor
 				? [...page.messages, ...this.#snapshot.messages.filter(message => !keys.has(message.key))]
 				: page.messages;
 			this.#publish({
-				messages: messages.slice(0, 150),
+				messages: this.#backwardPaging ? messages.slice(0, 150) : messages,
 				history: {
 					olderCursor: page.olderCursor,
 					newer: Boolean(cursor && (this.#snapshot.history?.newer || messages.length > 150)),
@@ -515,6 +530,8 @@ export class SessionClient {
 		}
 	}
 	#page(result: RecordValue): { messages: Message[]; olderCursor?: string } {
+		if (!this.#backwardPaging)
+			return { messages: records(result.messages).map((message, index) => messageOf(message, `snapshot-${index}`)) };
 		if (
 			!Number.isSafeInteger(result.totalMessages) ||
 			Number(result.totalMessages) < 0 ||
@@ -563,11 +580,18 @@ export class SessionClient {
 			await this.#request({ type: "set_ask_dialog", enabled: true }, 0);
 			await this.#request({ type: "set_subagent_subscription", level: "events" }, 0);
 			if (this.#stopped || hydration !== this.#hydration) return;
-			const result = await this.#request({ type: "get_messages_page", backward: true, limit: 50 }, 0, hydration);
+			const result = await this.#request(
+				this.#backwardPaging
+					? { type: "get_messages_page", backward: true, limit: 50 }
+					: { type: "get_messages" },
+				0,
+				hydration,
+			);
 			if (this.#stopped || hydration !== this.#hydration) return;
 			const state = await this.#request({ type: "get_state" }, 0, hydration);
 			if (this.#stopped || hydration !== this.#hydration) return;
 			const page = this.#page(result);
+			this.#readingHistory = false;
 			const events = this.#events ?? [];
 			this.#events = null;
 			this.#setState(state);
@@ -582,12 +606,11 @@ export class SessionClient {
 			this.#publish({ phase: "connected", error: null });
 			this.#hasState = true;
 			this.#recovered();
+			this.#refresh = window.setInterval(() => {
+				void this.refresh().catch(error => this.#publish({ error: String(error) }));
+			}, 5000);
 			await this.loadCatalog();
 			await this.refresh();
-			if (!this.#stopped && hydration === this.#hydration)
-				this.#refresh = window.setInterval(() => {
-					void this.refresh().catch(error => this.#publish({ error: String(error) }));
-				}, 5000);
 		} catch (error) {
 			if (this.#stopped || hydration !== this.#hydration) return;
 			this.#events = null;
@@ -662,6 +685,7 @@ export class SessionClient {
 			return;
 		}
 		if (frame.type === "ready") {
+			this.#backwardPaging = frame.messagePaging === "backward";
 			this.#streamReady = true;
 			this.#recovered(true);
 			void this.#rebuild();
@@ -675,11 +699,16 @@ export class SessionClient {
 			if (frame.command !== pending.command) throw new Error("RPC response command mismatch");
 			clearTimeout(pending.timer);
 			this.#pending.delete(frame.id);
-			if (frame.success && pending.command === "get_messages_page" && this.#pageEvents) this.#pageEvents = [];
+			if (
+				frame.success &&
+				(pending.command === "get_messages_page" || pending.command === "get_messages") &&
+				this.#pageEvents
+			)
+				this.#pageEvents = [];
 			if (frame.success && this.#events && pending.hydration === this.#hydration) {
 				// The synchronous RPC response separates the snapshot from later stream events.
 				const replaced =
-					pending.command === "get_messages_page"
+					pending.command === "get_messages_page" || pending.command === "get_messages"
 						? ["message_start", "message_update", "message_end"]
 						: ["agent_start", "agent_end", "session_settled", "queue_update"];
 				this.#events = this.#events.filter(event => !replaced.includes(text(event.type)));
@@ -720,11 +749,17 @@ export class SessionClient {
 			}
 			if (snapshot.history?.newer) return;
 			const index = snapshot.messages.findIndex(m => m.key === message.key);
+			if (index < 0 && (this.#readingHistory || this.#loadingHistory)) {
+				this.#publish({
+					history: { ...snapshot.history, newer: true, loading: snapshot.history?.loading ?? false },
+				});
+				return;
+			}
 			const messages = [...snapshot.messages];
 			if (index < 0) messages.push(message);
 			else messages[index] = message;
-			this.#publish({ messages: messages.slice(-150) });
-			if (messages.length > 150) void this.loadLatest();
+			this.#publish({ messages: this.#backwardPaging ? messages.slice(-150) : messages });
+			if (this.#backwardPaging && messages.length > 150) void this.loadLatest();
 		} else if (frame.type === "queue_update") {
 			const queuedMessages = { steering: strings(frame.steering), followUp: strings(frame.followUp) };
 			this.#publish({

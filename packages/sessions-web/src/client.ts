@@ -468,6 +468,13 @@ export class SessionClient {
 	}
 	resumeLive(): void {
 		this.#readingHistory = false;
+		if (this.#loadingHistory && this.#pageEvents === null) {
+			this.#historyRequest++;
+			this.#loadingHistory = false;
+			this.#publish({
+				history: { ...this.#snapshot.history, newer: this.#snapshot.history?.newer ?? false, loading: false },
+			});
+		}
 		if (this.#snapshot.history?.newer) void this.loadLatest();
 	}
 	async loadLatest(): Promise<void> {

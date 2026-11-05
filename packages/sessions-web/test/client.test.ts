@@ -973,6 +973,39 @@ test("returning to the bottom resumes live appends after a full history window",
 	]);
 });
 
+test("resuming live discards an in-flight older page and keeps subsequent appends", async () => {
+	let transport: FixtureStream | undefined;
+	let finish: ((data: RecordValue) => void) | undefined;
+	const requested = Promise.withResolvers<void>();
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type !== "get_messages_page") return;
+		if (command.cursor) {
+			finish = respond;
+			requested.resolve();
+		} else respond(historyPage(300));
+		return true;
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	const older = client.loadOlder();
+	await requested.promise;
+	expect(client.getSnapshot().history?.loading).toBe(true);
+	client.resumeLive();
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "250", newer: false, loading: false });
+	finish!(historyPage(250));
+	await older;
+	transport!.send(
+		JSON.stringify({ type: "message_start", message: { role: "user", timestamp: 300, content: "live" } }),
+	);
+	await client.request({ type: "get_state" });
+	expect(client.getSnapshot().messages.map(message => message.content)).toEqual([
+		...Array.from({ length: 50 }, (_, index) => String(250 + index)),
+		"live",
+	]);
+	expect(client.getSnapshot().history).toEqual({ olderCursor: "250", newer: false, loading: false });
+});
+
 test("a live append racing loadOlder never trims a gap into the window", async () => {
 	let transport: FixtureStream | undefined;
 	let finish: ((data: RecordValue) => void) | undefined;

@@ -409,6 +409,7 @@ export function createPersistedSubagentReviverFactory(
 					spawns: init.spawns ?? "",
 					hasUI: false,
 					enableLsp: restrictToolNames ? false : ctx.enableLsp,
+					lspReadOnly: init.readOnly === true || undefined,
 					...(restrictToolNames
 						? {
 								enableIrc: false,

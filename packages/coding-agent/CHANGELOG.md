@@ -10,6 +10,7 @@
 ### Changed
 
 - Updated the fork to upstream 18.16.0 while retaining all fork patches, including session sockets, iPhone reconnect fixes, usage tracking, Codex SSE fallback, native codegraph queries, and TUI fixes.
+- Bundled code agents share code-intelligence and operator-question guidance; reviewers and scouts report their queries. Operator questions require the ask-bridge extension. The history-only seance agent retains its isolated read-only tools.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
 - User messages now have a colored left bar, including skill invocations and collab prompts. Synthetic input uses a dim bar.
 
@@ -17,6 +18,7 @@
 
 - Advertise backward message paging so web clients can safely connect to older TUIs.
 - Keep web transcript follow mode during streamed row resizing, detach on upward scrolling, and resume live messages when returning to the bottom.
+- Read-only delegated agents keep their capability tags when using operator-question tools or LSP; LSP workspace mutations are blocked on spawn and cold revival.
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 

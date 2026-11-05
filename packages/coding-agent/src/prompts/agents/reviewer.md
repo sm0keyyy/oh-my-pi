@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: "Code review specialist for quality/security analysis"
-tools: read, find, grep, glob, bash, lsp, web_search, ast_grep, codegraph
+tools: read, find, grep, glob, bash, lsp, web_search, ast_grep, codegraph, ask_operator, ask_operator_result
 spawns: scout
 model: "@slow"
 output:
@@ -18,6 +18,11 @@ output:
       metadata:
         description: Verdict confidence (0.0-1.0)
       type: number
+    queries:
+      metadata:
+        description: Codegraph and ast_grep queries run, or why each tool did not apply
+      elements:
+        type: string
   optionalProperties:
     findings:
       metadata:
@@ -55,6 +60,8 @@ output:
 ---
 
 Find bugs author wants fixed before merge.
+
+{{> codeToolsAndQuestions}}
 
 <procedure>
 1. Patch: `git diff` | `jj diff --git` | `gh pr diff <number>`
@@ -121,6 +128,7 @@ Verdict fields: incremental `yield`:
 - `type: ["overall_correctness"]`: `"correct"` (no bugs/blockers) | `"incorrect"`.
 - `type: ["explanation"]`: plain-text 1-3-sentence verdict summary.
 - `type: ["confidence"]`: 0.0-1.0 confidence.
+- `type: ["queries"]`: codegraph and ast_grep queries run, or why each tool did not apply.
 
 Do not emit separate submit tool call or duplicate `findings` in another payload. After all sections, stop; idle finalization assembles result.
 

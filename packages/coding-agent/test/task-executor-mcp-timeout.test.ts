@@ -10,12 +10,14 @@ import { ToolAbortError } from "../src/tools/tool-errors";
 function createFakeConnection() {
 	let capturedSignal: AbortSignal | undefined;
 	const { promise: requestPromise, reject } = Promise.withResolvers<never>();
+	const requestStarted = Promise.withResolvers<void>();
 	let isRequestCalled = false;
 
 	const transport: MCPTransport = {
 		async request(_method: string, _params?: Record<string, unknown>, options?: MCPRequestOptions) {
 			isRequestCalled = true;
 			capturedSignal = options?.signal;
+			requestStarted.resolve();
 			if (capturedSignal?.aborted) {
 				reject(new Error("aborted"));
 				return requestPromise;
@@ -42,6 +44,7 @@ function createFakeConnection() {
 		connection,
 		getCapturedSignal: () => capturedSignal,
 		requestPromise,
+		requestStarted: requestStarted.promise,
 		rejectRequest: reject,
 		requestCalled: () => isRequestCalled,
 	};
@@ -73,10 +76,7 @@ test("MCP proxy tool aborts underlying operation on caller abort", async () => {
 	const ac = new AbortController();
 	const executePromise = proxyTool.execute("call_1", {}, () => {}, {} as CustomToolContext, ac.signal);
 
-	// Let the promise reach transport.request
-	await Promise.resolve();
-	await Promise.resolve();
-	await Promise.resolve();
+	await fake.requestStarted;
 
 	expect(fake.requestCalled()).toBe(true);
 	const capturedSignal = fake.getCapturedSignal();

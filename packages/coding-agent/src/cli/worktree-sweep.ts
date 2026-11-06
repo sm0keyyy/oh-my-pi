@@ -243,7 +243,6 @@ async function run(
 		const action = args[offset];
 		const reads: Record<string, true> = {
 			"rev-parse": true,
-			"symbolic-ref": true,
 			status: true,
 			"ls-files": true,
 			"merge-base": true,
@@ -253,6 +252,10 @@ async function run(
 			args[0] !== "--no-optional-locks" ||
 			!(
 				Object.hasOwn(reads, action) ||
+				(action === "symbolic-ref" &&
+					args.length === offset + 3 &&
+					args[offset + 1] === "--quiet" &&
+					args[offset + 2] === "HEAD") ||
 				((action === "worktree" || action === "stash") && args[offset + 1] === "list")
 			)
 		) {
@@ -430,6 +433,7 @@ async function proveWorktree(
 	if (!sandbox && ageDays < ctx.maxAgeDays) throw new Error("too-young");
 	const mergedInto = await proveMerged(main, mergeHeads ?? [head], ctx);
 	const stashes = await git(entry.path, ["stash", "list", "--format=%gs", "-z"], ctx);
+	if (sandbox && gitMetadata.isDirectory() && stashes !== "") throw new Error("sandbox-has-stash");
 	for (const stash of stashes.split("\0").filter(Boolean)) {
 		const match = /^(?:WIP on|On) ([^:]+):/.exec(stash.trim());
 		if (!match || !entry.branch || match[1] === "(no branch)") throw new Error("stash-provenance-unknown");
@@ -622,12 +626,14 @@ async function proveSandbox(target: string, ctx: ScanContext): Promise<Extract<S
 				rethrowBudget(error);
 				throw new Error("source-alternates-unreadable");
 			}
-			const tips = await git(
-				mount,
-				["for-each-ref", "--format=%(objectname)", "refs/heads", "refs/tags", "refs/remotes"],
-				ctx,
-			);
-			mergeHeads = [...new Set([entry.head ?? "", ...tips.trim().split("\n")])];
+			const refs = await git(mount, ["for-each-ref", "--format=%(refname) %(objectname)"], ctx);
+			const tips: string[] = [];
+			for (const record of refs.trim().split("\n").filter(Boolean)) {
+				const match = /^(refs\/\S+) ([0-9a-f]{40}|[0-9a-f]{64})$/.exec(record);
+				if (!match) throw new Error("checkout-refs-unreadable");
+				if (match[1] !== "refs/stash") tips.push(match[2]);
+			}
+			mergeHeads = [...new Set([entry.head ?? "", ...tips])];
 			if (mergeHeads.some(head => !/^[0-9a-f]{40,64}$/.test(head))) throw new Error("checkout-refs-unreadable");
 		}
 		await proveWorktree(entry, mergeRepo, ctx, true, [target], mergeHeads);

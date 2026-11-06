@@ -202,6 +202,24 @@ describe("worktree sweep", () => {
 			await git(mount, "commit", "-m", "Unpublished private commit");
 			if (target === sideBranch) await git(mount, "checkout", "main");
 		}
+		const td = await sandbox("td");
+		const notes = await sandbox("tnotes");
+		for (const target of [td, notes]) {
+			const mount = path.join(target, "m");
+			await fs.cp(source, mount, { recursive: true });
+			expect(await vcs.detachGitDir(mount, path.join(repo, ".git"))).toBe("detached");
+			await git(mount, "config", "user.name", "Sweep test");
+			await git(mount, "config", "user.email", "sweep@example.invalid");
+			await git(mount, "checkout", "-B", "main");
+			if (target === td) {
+				await git(mount, "checkout", "-b", "stash-other");
+				await Bun.write(path.join(mount, "tracked.txt"), "valuable stashed data\n");
+				await git(mount, "stash", "push", "-m", "Keep private stash");
+				await git(mount, "checkout", "main");
+			} else {
+				await git(mount, "notes", "add", "-m", "Keep private notes", "HEAD");
+			}
+		}
 		const noSource = await sandbox("tnosource");
 		await git(repo, "clone", "--local", repo, path.join(noSource, "m"));
 		const retained = await sandbox("tretained");
@@ -230,6 +248,8 @@ describe("worktree sweep", () => {
 			[noSource, "source-alternates-unreadable"],
 			[retained, "needs-native-teardown"],
 			[badBackend, "retained-backend-unreadable"],
+			[td, "sandbox-has-stash"],
+			[notes, "merge-state-unknown"],
 		]) {
 			expect(report.blocked).toContainEqual({ kind: "sandbox", path: target, reason });
 		}
@@ -300,6 +320,7 @@ describe("worktree sweep", () => {
 			const command = args[1] === "-c" ? args[3] : args[1];
 			expect(Object.hasOwn(reads, command)).toBe(true);
 			if (command === "worktree" || command === "stash") expect(args[args.indexOf(command) + 1]).toBe("list");
+			if (command === "symbolic-ref") expect(args.slice(args.indexOf(command) + 1)).toEqual(["--quiet", "HEAD"]);
 			const options = call[2] as childProcess.ExecFileOptions;
 			for (const key of overrideKeys) expect(options.env?.[key]).toBeUndefined();
 		}

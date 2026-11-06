@@ -192,6 +192,31 @@ describe("pane manager", () => {
 		expect(h.manager.paneUi("a")).toBe(h.panes.get("a")![1]!.ui);
 	});
 
+	it("hints collection once when the last pane closes and once on idempotent disposal", async () => {
+		const h = harness();
+		const collected = Promise.withResolvers<void>();
+		const gc = spyOn(Bun, "gc").mockImplementation(() => collected.resolve());
+		try {
+			h.start("a");
+			h.start("b");
+			await h.until(() => h.opened.length === 2);
+			h.registry.setStatus("a", "parked");
+			await h.until(() => h.calls.at(-1)?.[4] === "omp: a");
+			expect(h.panes.get("a")![0]!.disposed).toBe(true);
+			expect(gc).not.toHaveBeenCalled();
+			h.registry.setStatus("b", "parked");
+			await collected.promise;
+			expect(h.sessions.size).toBe(0);
+			expect(gc.mock.calls).toEqual([[false]]);
+			await h.manager.dispose();
+			await h.manager.dispose();
+			expect(gc.mock.calls).toEqual([[false], [false]]);
+		} finally {
+			await h.manager.dispose();
+			gc.mockRestore();
+		}
+	});
+
 	it("reopen waits for the next agent event and keeps the original tab", async () => {
 		const h = harness();
 		for (const id of ["a", "b", "c", "d", "e"]) h.start(id);

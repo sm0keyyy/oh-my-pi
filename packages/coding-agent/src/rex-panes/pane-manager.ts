@@ -203,7 +203,12 @@ class Manager implements PaneManager {
 		const sessionId = group.sessionId;
 		group.sessionId = undefined;
 		group.label = undefined;
-		await this.deps.rex.killSession(sessionId);
+		try {
+			await this.deps.rex.killSession(sessionId);
+		} finally {
+			// Request collection of closed pane trees without blocking the main TUI.
+			Bun.gc(false);
+		}
 	}
 
 	async #label(group: Group): Promise<void> {
@@ -319,6 +324,7 @@ class Manager implements PaneManager {
 		this.#disposePromise = Promise.all([...this.#groups.values()].map(group => group.tail)).then(() => {
 			this.#members.clear();
 			this.#groups.clear();
+			Bun.gc(false);
 		});
 		return this.#disposePromise;
 	}

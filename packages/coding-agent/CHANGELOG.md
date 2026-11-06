@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- Request non-blocking memory collection when a Rex subagent pane group closes or its manager shuts down.
 - Advertise backward message paging so web clients can safely connect to older TUIs.
 - Keep web transcript follow mode during streamed row resizing, detach on upward scrolling, and resume live messages when returning to the bottom.
 - Read-only delegated agents keep their capability tags when using operator-question tools or LSP; LSP workspace mutations are blocked on spawn and cold revival.

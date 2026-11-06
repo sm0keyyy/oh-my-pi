@@ -299,17 +299,18 @@ export function diffBeads(
 				]);
 		}
 		if (closed && (epic?.status !== "closed" || reopen))
-			appendClose(changes.closeEpics, phase.id, epic, "all tasks closed");
+			appendClose(changes.closeEpics, phase.id, reopen ? undefined : epic, "all tasks closed");
 	}
 	for (const phase of prev) {
 		for (const task of phase.tasks) {
 			const old = task.id ? all.get(task.id) : undefined;
 			const parent = old?.parent ?? old?.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
-			if (task.id && !ids.has(task.id) && old && phase.id && parent === phase.id)
+			if (task.id && !ids.has(task.id) && old && old.status !== "closed" && phase.id && parent === phase.id)
 				appendClose(changes.batch, task.id, old, "removed from omp list");
 		}
-		if (phase.id && !ids.has(phase.id) && all.has(phase.id))
-			appendClose(changes.closeEpics, phase.id, all.get(phase.id), "all tasks closed");
+		const epic = phase.id ? all.get(phase.id) : undefined;
+		if (phase.id && !ids.has(phase.id) && epic && epic.status !== "closed")
+			appendClose(changes.closeEpics, phase.id, epic, "all tasks closed");
 	}
 	return changes;
 }

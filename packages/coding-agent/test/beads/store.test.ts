@@ -345,7 +345,7 @@ describe("beads store", () => {
 		expect((await restarted.refresh(offline, undefined)).phases).toEqual(offline);
 	});
 	for (const outage of ["store", "binary"] as const)
-		it(`[F3 F6] retains the pending marker through two restarts with ${outage} absent`, async () => {
+		it(`[F3 F6] retains the pending marker through two restarts with ${outage} absent (I4)`, async () => {
 			const f = await fixture();
 			let now = 700_000;
 			spyOn(Date, "now").mockImplementation(() => now);
@@ -359,17 +359,23 @@ describe("beads store", () => {
 			if (outage === "store") f.setFault(undefined);
 			const firstRestart = openTodoStore(f.options);
 			const first = await firstRestart.refresh(offline, []);
+			expect(f.notices).toHaveLength(outage === "binary" ? 1 : 0);
+			now += 60_000;
+			await firstRestart.refresh(offline, []);
+			expect(f.notices).toHaveLength(outage === "binary" ? 1 : 0);
+			const previousNotices = f.notices.length;
 			const persistedBase: TodoPhase[] | undefined = first.info.state === "pending" ? [] : undefined;
 			const secondRestart = openTodoStore(f.options);
 			const second = await secondRestart.refresh(offline, persistedBase);
 			expect(second.info.state).toBe("pending");
 			expect(second.phases).toEqual(offline);
-			expect(f.notices).toEqual([]);
+			expect(f.notices.slice(previousNotices)).toHaveLength(outage === "binary" ? 1 : 0);
 			f.setFault(undefined);
 			now += 60_000;
 			expect((await secondRestart.write(offline, offline)).state).toBe("synced");
 			expect(f.remote().map(bead => bead.title)).toEqual(["Offline", "Unsent work"]);
 			expect((await secondRestart.refresh(offline, undefined)).phases).toEqual(offline);
+			expect(f.notices.filter(notice => notice.level === "warning")).toHaveLength(outage === "binary" ? 2 : 0);
 		});
 	it("[F6] treats an uninitialized store as empty without warnings or read-side initialization", async () => {
 		for (const missingRoot of [false, true]) {

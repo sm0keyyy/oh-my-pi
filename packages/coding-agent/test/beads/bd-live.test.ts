@@ -18,7 +18,7 @@ import { Settings } from "../../src/config/settings";
 
 const binary = process.env.OMP_TEST_BD;
 it.skipIf(!binary)(
-	"[F1 F9 F10 F13] round-trips the pinned bd store without changing git status or history",
+	"[N1 N2 F1 F9 F10 F13] round-trips the pinned bd store without changing git status or history",
 	async () => {
 		const parent = path.resolve(process.env.OMP_TEST_BD_ROOT ?? os.tmpdir());
 		await fs.mkdir(parent, { recursive: true });
@@ -136,6 +136,50 @@ it.skipIf(!binary)(
 				adapter = phases[0]!.tasks[0]!.id!,
 				tests = phases[0]!.tasks[1]!.id!,
 				docs = phases[1]!.tasks[0]!.id!;
+			await commit([
+				...phases,
+				{
+					name: "Archived",
+					tasks: [
+						{ content: "Finished normally", status: "completed" },
+						{ content: "Dropped intentionally", status: "abandoned" },
+						{ content: "Closed by operator", status: "pending" },
+					],
+				},
+			]);
+			const archived = phases[2]!;
+			const archivedId = archived.id!,
+				doneId = archived.tasks[0]!.id!,
+				droppedId = archived.tasks[1]!.id!,
+				customId = archived.tasks[2]!.id!;
+			for (const [id, reason] of [
+				[customId, "fixed in PR 12"],
+				[archivedId, "archived by operator"],
+			]) {
+				const result = await runner(
+					["--sandbox", "close", id!, "--reason", reason!, "--actor", "operator", "--json"],
+					{ cwd: repo, env, timeoutMs: 10_000 },
+				);
+				expect(result.exitCode).toBe(0);
+			}
+			phases = (await beads.refresh(phases, undefined)).phases;
+			await commit(phases.filter(phase => phase.id !== archivedId));
+			const preserved = new Map(
+				parseBeads(
+					await cli.call([
+						"list",
+						"--all",
+						"-n",
+						"0",
+						"--id",
+						[archivedId, doneId, droppedId, customId].join(","),
+					]),
+				).map(bead => [bead.id, bead]),
+			);
+			expect(preserved.get(doneId)).toMatchObject({ status: "closed", close_reason: "done" });
+			expect(preserved.get(droppedId)).toMatchObject({ status: "closed", close_reason: "dropped" });
+			expect(preserved.get(customId)).toMatchObject({ status: "closed", close_reason: "fixed in PR 12" });
+			expect(preserved.get(archivedId)).toMatchObject({ status: "closed", close_reason: "archived by operator" });
 			await commit(
 				phases.map((phase, i) =>
 					i
@@ -152,6 +196,25 @@ it.skipIf(!binary)(
 					bead => bead.id === epic,
 				),
 			).toMatchObject({ status: "closed", close_reason: "all tasks closed" });
+			await commit(
+				phases.map((phase, i) =>
+					i ? phase : { ...phase, tasks: [...phase.tasks, { content: "Already finished", status: "completed" }] },
+				),
+			);
+			const finishedId = phases[0]!.tasks[2]!.id!;
+			expect(parseBeads(await cli.call(["list", "--all", "-n", "0", "--id", epic]))[0]).toMatchObject({
+				status: "closed",
+				close_reason: "all tasks closed",
+			});
+			await commit(
+				phases.map((phase, i) =>
+					i ? phase : { ...phase, tasks: phase.tasks.filter(task => task.id !== finishedId) },
+				),
+			);
+			expect(parseBeads(await cli.call(["list", "--all", "-n", "0", "--id", finishedId]))[0]).toMatchObject({
+				status: "closed",
+				close_reason: "done",
+			});
 			await commit(
 				phases.map((phase, i) =>
 					i ? phase : { ...phase, tasks: phase.tasks.map(task => ({ ...task, status: "completed" })) },

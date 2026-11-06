@@ -76,6 +76,7 @@ class BeadsStore implements TodoStore {
 	#initAttempted = false;
 	#healthy = false;
 	#reconcilePending = false;
+	#failureWarned = false;
 	#unknownWarned = false;
 	#droppedWarned = false;
 	#suffixes = new Map<string, number>();
@@ -102,7 +103,8 @@ class BeadsStore implements TodoStore {
 	#fail(error: unknown): void {
 		this.#healthy = false;
 		const reason = error instanceof Error ? error.message : "Unknown bd failure";
-		if (this.#info.state !== "pending") {
+		if (!this.#failureWarned) {
+			this.#failureWarned = true;
 			const message = `beads: ${reason}. Changes stay in this session. Run bd doctor.`;
 			this.notice("warning", message);
 			logger.warn(message);
@@ -116,6 +118,7 @@ class BeadsStore implements TodoStore {
 		this.#info = { state: "synced", store: this.route.kind };
 		this.#missing = false;
 		this.#reconcilePending = false;
+		this.#failureWarned = false;
 	}
 	#canProbe(writing: boolean): boolean {
 		return (

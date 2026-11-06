@@ -225,10 +225,7 @@ describe("todo bead mapping", () => {
 			]);
 		}
 		const current = [beads[0]!, { ...beads[1]!, status: "closed", close_reason: "done" }, beads[2]!];
-		expect(diffBeads(base, [{ ...base[0]!, tasks: [base[0]!.tasks[1]!] }], current).batch).toEqual([
-			"update omp-abc123.1 status=open",
-			'close omp-abc123.1 "removed from omp list"',
-		]);
+		expect(diffBeads(base, [{ ...base[0]!, tasks: [base[0]!.tasks[1]!] }], current).batch).toEqual([]);
 	});
 	it("[F10] sends non-batch-safe title escapes through literal argv", () => {
 		for (const title of ["tab\there", "line\nbreak", "control\u0001char"]) {
@@ -241,6 +238,58 @@ describe("todo bead mapping", () => {
 				["update", "omp-abc123", "--title", title],
 				["update", "omp-abc123.1", "--title", title],
 			]);
+		}
+	});
+	it("[N1] removes already-closed tasks and epics from the list without rewriting their reasons", () => {
+		const previous: TodoPhase[] = [
+			{
+				id: "omp-archived",
+				name: "Archived",
+				tasks: [
+					{ id: "omp-archived.1", content: "Done", status: "completed" },
+					{ id: "omp-archived.2", content: "Dropped", status: "abandoned" },
+					{ id: "omp-archived.3", content: "Custom", status: "completed" },
+				],
+			},
+		];
+		const current: Bead[] = [
+			{
+				id: "omp-archived",
+				title: "Archived",
+				issue_type: "epic",
+				status: "closed",
+				priority: 2,
+				close_reason: "archived by operator",
+			},
+			...previous[0]!.tasks.map((task, index) => ({
+				id: task.id!,
+				title: task.content,
+				status: "closed",
+				priority: 2,
+				parent: "omp-archived",
+				close_reason: ["done", "dropped", "fixed in PR 12"][index]!,
+			})),
+		];
+		const changes = diffBeads(previous, [], current);
+		expect(changes.batch).toEqual([]);
+		expect(changes.closeEpics).toEqual([]);
+	});
+	it("[N2] closes an epic again after reopening it to append an already-completed task", () => {
+		for (const closeReason of ["all tasks closed", "custom reason"]) {
+			const previous: TodoPhase[] = [{ ...base[0]!, tasks: [{ ...base[0]!.tasks[0]!, status: "completed" }] }];
+			const current: Bead[] = [
+				{ ...beads[0]!, status: "closed", close_reason: closeReason },
+				{ ...beads[1]!, status: "closed", close_reason: "done" },
+			];
+			const next = assignBeadIds(
+				previous,
+				[{ ...previous[0]!, tasks: [...previous[0]!.tasks, { content: "Already finished", status: "completed" }] }],
+				"omp",
+			);
+			const changes = diffBeads(previous, next, current);
+			expect(changes.reopen).toEqual(["omp-abc123"]);
+			expect(changes.batch).toEqual(['close omp-abc123.2 "done"']);
+			expect(changes.closeEpics).toEqual(['close omp-abc123 "all tasks closed"']);
 		}
 	});
 });

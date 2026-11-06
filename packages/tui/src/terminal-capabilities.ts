@@ -627,8 +627,8 @@ const KNOWN_TERMINALS = Object.freeze({
 	// OSC 99, and OSC 66 text sizing are outside rio's supported set and keep
 	// the conservative defaults.
 	rio: new TerminalInfo("rio", ImageProtocol.Kitty, true, true),
-	// Rex (TERM_PROGRAM=rex / TERM=xterm-rex): only Kitty graphics is confirmed.
-	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, false),
+	// Rex documents OSC 9 and OSC 8: https://www.superlogical.com/rex/docs/reference/mac-settings#system-notifications and #links.
+	rex: new TerminalInfo("rex", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9),
 	// Tern (Stencil's terminal, `stencil-term`) sets TERM_PROGRAM=tern and
 	// implements Kitty graphics, OSC 8 and OSC 9/99 notifications. Whether omp
 	// renders natively (Tern Surface Protocol) is decided by the `hello`

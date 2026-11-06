@@ -399,6 +399,8 @@ export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "a
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	/** Bead ID when the list is stored in beads. */
+	id?: string;
 	/** What a `blocked` task is waiting on. */
 	blocker?: string;
 	details?: string;
@@ -408,6 +410,8 @@ export interface TodoItem {
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+	/** Epic bead ID when the list is stored in beads. */
+	id?: string;
 }
 
 export interface ContextUsage {

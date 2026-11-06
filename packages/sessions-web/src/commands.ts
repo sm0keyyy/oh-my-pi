@@ -36,6 +36,7 @@ export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" |
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	id?: string;
 	blocker?: string;
 	details?: string;
 	notes?: string[];
@@ -43,6 +44,7 @@ export interface TodoItem {
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+	id?: string;
 }
 export type CacheWarmingMode = "off" | "streaming" | "idle";
 export type RpcGoalOp = "get" | "create" | "resume" | "pause" | "drop";

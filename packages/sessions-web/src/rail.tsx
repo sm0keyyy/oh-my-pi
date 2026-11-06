@@ -1,6 +1,6 @@
 import { isRecord, shortenPath, type ToolRenderHost } from "@oh-my-pi/web-render";
 import { useEffect, useState, type ReactNode } from "react";
-import type { RpcCommand, TodoStatus } from "./commands";
+import type { RpcCommand, TodoPhase, TodoStatus } from "./commands";
 import {
 	messageOf,
 	number,
@@ -14,6 +14,24 @@ import {
 } from "./client";
 import { Modal } from "./dialogs";
 import { Transcript } from "./transcript";
+
+export function todoPhasesForSave(phases: RecordValue[]): TodoPhase[] {
+	return phases.map(phase => ({
+		name: text(phase.name),
+		id: typeof phase.id === "string" ? phase.id : undefined,
+		tasks: records(phase.tasks).map(task => ({
+			content: text(task.content),
+			id: typeof task.id === "string" ? task.id : undefined,
+			status:
+				(["pending", "in_progress", "completed", "abandoned", "blocked"] as TodoStatus[]).find(
+					status => status === task.status,
+				) ?? "pending",
+			blocker: typeof task.blocker === "string" ? task.blocker : undefined,
+			details: typeof task.details === "string" ? task.details : undefined,
+			notes: task.notes === undefined ? undefined : strings(task.notes),
+		})),
+	}));
+}
 
 export function Rail({
 	client,
@@ -123,6 +141,7 @@ export function Rail({
 					{todos.map((phase, index) => (
 						<div key={`${phase.name}-${index}`}>
 							<b>{text(phase.name)}</b>
+							{typeof phase.id === "string" && <small style={{ color: "var(--fg-muted)" }}> {phase.id}</small>}
 							<ul className="todo">
 								{records(phase.tasks).map((task, i) => (
 									<li
@@ -138,6 +157,9 @@ export function Rail({
 										<span className="box" aria-hidden="true" />
 										<span>
 											{text(task.content)}
+											{typeof task.id === "string" && (
+												<small style={{ color: "var(--fg-muted)" }}> {task.id}</small>
+											)}
 											{task.status === "blocked" && <small> · blocked: {text(task.blocker)}</small>}
 										</span>
 									</li>
@@ -652,20 +674,7 @@ export function Rail({
 						className="dlg-q"
 						onSubmit={event => {
 							event.preventDefault();
-							const next = phases.map(phase => ({
-								name: text(phase.name),
-								tasks: records(phase.tasks).map(task => ({
-									content: text(task.content),
-									status:
-										(["pending", "in_progress", "completed", "abandoned", "blocked"] as TodoStatus[]).find(
-											status => status === task.status,
-										) ?? "pending",
-									blocker: typeof task.blocker === "string" ? task.blocker : undefined,
-									details: typeof task.details === "string" ? task.details : undefined,
-									notes: task.notes === undefined ? undefined : strings(task.notes),
-								})),
-							}));
-							void run({ type: "set_todos", phases: next })
+							void run({ type: "set_todos", phases: todoPhasesForSave(phases) })
 								.then(() => setPhases(null))
 								.catch(() => {
 									/* The rail retains the error. */

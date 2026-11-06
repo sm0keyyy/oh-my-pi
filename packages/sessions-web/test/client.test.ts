@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readSseEvents } from "../../utils/src/stream";
 import { ReplayJournal } from "../../sessions-gateway/src/replay";
 import { FrameDecoder, messageOf, SessionClient, sortSessions, type RecordValue, type Snapshot } from "../src/client";
-import { Rail } from "../src/rail";
+import { Rail, todoPhasesForSave } from "../src/rail";
 
 const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
 class TestEventSource extends EventTarget {
@@ -1152,6 +1152,51 @@ function renderRail(client: SessionClient, snapshot: Snapshot = client.getSnapsh
 		}),
 	);
 }
+
+test.each([true, false])("todo IDs render and survive Edit todos serialization (IDs: %s)", async withIds => {
+	const phases = [
+		{
+			name: "Build",
+			...(withIds ? { id: "omp-abc123" } : {}),
+			tasks: [
+				{
+					content: "Keep bead history",
+					status: "blocked",
+					blocker: "Review",
+					details: "Preserve task metadata",
+					notes: ["Existing note"],
+					...(withIds ? { id: "omp-abc123.1" } : {}),
+				},
+			],
+		},
+	];
+	let saved: unknown;
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type === "get_state") {
+			respond({ ...fixtureState, todoPhases: phases });
+			return true;
+		}
+		if (command.type === "set_todos") {
+			saved = command.phases;
+			respond({ phases: command.phases });
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.state.todoPhases !== undefined);
+	const rail = renderRail(client);
+	expect(rail).toContain("<b>Build</b>");
+	expect(rail).toContain("Keep bead history");
+	expect(rail).toContain("blocked: Review");
+	if (withIds) {
+		expect(rail).toContain('<small style="color:var(--fg-muted)"> omp-abc123</small>');
+		expect(rail).toContain('<small style="color:var(--fg-muted)"> omp-abc123.1</small>');
+	} else expect(rail).not.toContain("omp-abc123");
+	const edited = structuredClone(phases);
+	edited[0]!.tasks[0]!.status = "completed";
+	await client.request({ type: "set_todos", phases: todoPhasesForSave(edited) });
+	expect(saved).toEqual(edited);
+});
 
 test("review capability and verdicts round-trip, while older hosts still attach", async () => {
 	let transport: FixtureStream | undefined;

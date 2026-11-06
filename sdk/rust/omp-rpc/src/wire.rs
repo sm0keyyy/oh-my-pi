@@ -2884,6 +2884,9 @@ impl SubagentStatus {
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
+	/// Bead ID when the list is stored in beads.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
 	/// What a `blocked` task is waiting on.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub blocker: Option<String>,
@@ -2897,6 +2900,9 @@ pub struct TodoItem {
 pub struct TodoPhase {
 	pub name: String,
 	pub tasks: Vec<TodoItem>,
+	/// Epic bead ID when the list is stored in beads.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

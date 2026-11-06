@@ -1316,3 +1316,75 @@ test("session_changed removes the previous session's finished rows from the rail
 	expect(rail).not.toContain("previous-completed");
 	expect(rail).not.toContain("previous-aborted");
 });
+
+test.each(["different", "same"] as const)(
+	"fresh ready with a %s session scopes terminal agent history",
+	async relation => {
+		let transport: FixtureStream | undefined;
+		let hasReconnected = false;
+		let readySnapshots = 0;
+		const client = fixtureClient((stream, command, respond) => {
+			transport = stream;
+			if (command.type === "get_messages_page") {
+				readySnapshots++;
+				respond({ messages: [] });
+				return true;
+			}
+			if (command.type === "get_state") {
+				respond({
+					...fixtureState,
+					sessionId: hasReconnected && relation === "different" ? "current" : "previous",
+					sessionName: hasReconnected ? "after-ready" : "before-ready",
+				});
+				return true;
+			}
+			if (command.type === "get_subagents") {
+				respond({
+					subagents: hasReconnected
+						? []
+						: [{ id: "previous-completed", agent: "task", status: "completed", followUpAvailable: true }],
+				});
+				return true;
+			}
+		});
+		client.connect();
+		await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 1);
+		await client.loadCatalog();
+		await client.refresh();
+		transport!.send(
+			JSON.stringify({
+				type: "subagent_lifecycle",
+				payload: { subagentId: "previous-aborted", agent: "task", status: "aborted" },
+			}),
+		);
+		await waitForSnapshot(client, snapshot => snapshot.agents.length === 2);
+		const beforeReconnect = readySnapshots;
+		hasReconnected = true;
+		transport!.restart();
+		await waitForSnapshot(
+			client,
+			snapshot =>
+				readySnapshots > beforeReconnect &&
+				snapshot.phase === "connected" &&
+				snapshot.reviewDialogEnabled &&
+				snapshot.state.sessionName === "after-ready",
+		);
+		await client.loadCatalog();
+		await client.refresh();
+		expect(readySnapshots).toBe(beforeReconnect + 1);
+		const snapshot = client.getSnapshot();
+		const rail = renderRail(client);
+		if (relation === "different") {
+			expect(snapshot.state.sessionId).toBe("current");
+			expect(snapshot.agents).toEqual([]);
+			expect(rail).not.toContain("previous-completed");
+			expect(rail).not.toContain("previous-aborted");
+		} else {
+			expect(snapshot.state.sessionId).toBe("previous");
+			expect(snapshot.agents.map(agent => agent.id)).toEqual(["previous-completed", "previous-aborted"]);
+			expect(snapshot.agents.every(agent => agent.followUpAvailable === false)).toBe(true);
+			expect(rail).toContain("previous-completed");
+			expect(rail).toContain("previous-aborted");
+		}
+	},
+);

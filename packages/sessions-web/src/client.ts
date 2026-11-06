@@ -632,6 +632,7 @@ export class SessionClient {
 			this.#readingHistory = false;
 			const events = this.#events ?? [];
 			this.#events = null;
+			if (state.sessionId !== this.#snapshot.state.sessionId) this.#publish({ agents: [] });
 			this.#setState(state);
 			this.#publish({
 				messages: page.messages,

@@ -4,7 +4,7 @@
 		"review": "deferred to plan-approval main ui.review integration",
 		"commands": [
 			{
-				"id": "e4a45f8a-558e-4e46-af72-e07c2dd95c5e",
+				"id": "ec633cc3-41aa-4831-8088-d3f1545529b6",
 				"type": "response",
 				"command": "stop_subagent",
 				"success": true,
@@ -13,7 +13,7 @@
 				}
 			},
 			{
-				"id": "ead75cfe-0360-4d5c-89d0-ab3f85823d11",
+				"id": "594136c3-2654-45b9-868b-64ae55e77a09",
 				"type": "response",
 				"command": "abort_subagent",
 				"success": true,
@@ -22,7 +22,7 @@
 				}
 			},
 			{
-				"id": "36e876cb-2e28-4764-8abf-ef3c7942b0f6",
+				"id": "7d8f798c-ff06-4ec5-846a-b5d1542f03a1",
 				"type": "response",
 				"command": "follow_up_subagent",
 				"success": true,
@@ -37,7 +37,7 @@
 		"review": "deferred to plan-approval main ui.review integration",
 		"commands": [
 			{
-				"id": "2991d383-f35e-4e83-95bf-d3332ce8ee6a",
+				"id": "52d4cbcf-6f22-427c-89e8-cad41e67ba79",
 				"type": "response",
 				"command": "stop_subagent",
 				"success": true,
@@ -46,7 +46,7 @@
 				}
 			},
 			{
-				"id": "80451797-a2a7-491c-b3b9-a27952e27ee1",
+				"id": "d07366c9-1707-4161-bb64-12231eae2365",
 				"type": "response",
 				"command": "abort_subagent",
 				"success": true,
@@ -55,7 +55,7 @@
 				}
 			},
 			{
-				"id": "782de7ff-e8ce-4262-a560-2c97ed19c85f",
+				"id": "ac078c38-2a8d-44e5-bf81-88c7575b42b6",
 				"type": "response",
 				"command": "follow_up_subagent",
 				"success": true,
@@ -70,7 +70,7 @@
 		"review": "deferred to plan-approval main ui.review integration",
 		"commands": [
 			{
-				"id": "131af3a0-56be-4b7b-aec4-ca82bb90894b",
+				"id": "d0bd9bed-109f-4250-bb85-acba1423d33b",
 				"type": "response",
 				"command": "stop_subagent",
 				"success": true,
@@ -79,7 +79,7 @@
 				}
 			},
 			{
-				"id": "3076dfa8-0dec-48b3-b7fe-9cda5b4ec8b4",
+				"id": "ee75f9fd-930b-4966-b8ca-0e62617e222d",
 				"type": "response",
 				"command": "abort_subagent",
 				"success": true,
@@ -88,7 +88,7 @@
 				}
 			},
 			{
-				"id": "205acb29-c2c3-4ba7-bb70-3b154506986e",
+				"id": "880c988c-5e9e-4236-8d07-e08f83ae98b0",
 				"type": "response",
 				"command": "follow_up_subagent",
 				"success": true,

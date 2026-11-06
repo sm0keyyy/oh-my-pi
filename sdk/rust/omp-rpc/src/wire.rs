@@ -3432,6 +3432,8 @@ pub struct SubagentSnapshot {
 	pub progress: Option<Map<String, Value>>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
 	pub parent_tool_call_id: Option<String>,
+	#[serde(rename = "followUpAvailable", default, skip_serializing_if = "Option::is_none")]
+	pub follow_up_available: Option<bool>,
 }
 
 /// Incremental subagent transcript read.
@@ -4093,6 +4095,65 @@ impl<'de> Deserialize<'de> for RpcAgentEvent {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StopSubagentOutcome {
+	pub ok: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<StopSubagentOutcomeReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortSubagentOutcome {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ok: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<AbortSubagentOutcomeReason>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cancelled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpSubagentOutcome {
+	pub ok: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<FollowUpSubagentOutcomeReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewSection {
+	pub id: String,
+	pub heading: String,
+	pub excerpt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewComment {
+	pub section: String,
+	pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewAnswer {
+	pub verdict: ReviewAnswerVerdict,
+	pub comments: Vec<ReviewComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewUiRequest {
+	pub id: String,
+	pub path: String,
+	pub title: String,
+	pub sections: Vec<ReviewSection>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub timeout: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewUiResponse {
+	pub id: String,
+	pub review: ReviewAnswer,
+}
+
 /// First frame after startup; transport fields are absent on servers without protocol v2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadyEvent {
@@ -4639,6 +4700,7 @@ pub enum ExtensionUiRequest {
 	Editor(EditorUiRequest),
 	/// Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it.
 	Ask(AskUiRequest),
+	Review(ReviewUiRequest),
 	/// Close the dialog opened by request `targetId`; a later answer to it is ignored.
 	Cancel(CancelUiRequest),
 	Notify(NotifyUiRequest),
@@ -4660,6 +4722,7 @@ impl ExtensionUiRequest {
 			Some("input") => |value| serde_json::from_value(value).map(Self::Input),
 			Some("editor") => |value| serde_json::from_value(value).map(Self::Editor),
 			Some("ask") => |value| serde_json::from_value(value).map(Self::Ask),
+			Some("review") => |value| serde_json::from_value(value).map(Self::Review),
 			Some("cancel") => |value| serde_json::from_value(value).map(Self::Cancel),
 			Some("notify") => |value| serde_json::from_value(value).map(Self::Notify),
 			Some("setStatus") => |value| serde_json::from_value(value).map(Self::SetStatus),
@@ -4684,6 +4747,7 @@ impl Serialize for ExtensionUiRequest {
 			Self::Input(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "input")], serializer),
 			Self::Editor(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "editor")], serializer),
 			Self::Ask(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "ask")], serializer),
+			Self::Review(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "review")], serializer),
 			Self::Cancel(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "cancel")], serializer),
 			Self::Notify(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "notify")], serializer),
 			Self::SetStatus(member) => serialize_tagged(member, &[("type", "extension_ui_request"), ("method", "setStatus")], serializer),
@@ -4753,6 +4817,7 @@ pub enum ExtensionUiResponse {
 	CancelUiResponse(CancelUiResponse),
 	/// Answers an `ask` request: one `AskAnswer` per question, in question order.
 	AnswersUiResponse(AnswersUiResponse),
+	ReviewUiResponse(ReviewUiResponse),
 }
 
 impl ExtensionUiResponse {
@@ -4770,6 +4835,9 @@ impl ExtensionUiResponse {
 		if let Ok(member) = AnswersUiResponse::deserialize(&value) {
 			return Ok(Self::AnswersUiResponse(member));
 		}
+		if let Ok(member) = ReviewUiResponse::deserialize(&value) {
+			return Ok(Self::ReviewUiResponse(member));
+		}
 		Err(serde_json::Error::custom("no ExtensionUiResponse variant matches"))
 	}
 }
@@ -4781,6 +4849,7 @@ impl Serialize for ExtensionUiResponse {
 			Self::ConfirmUiResponse(member) => serialize_tagged(member, &[("type", "extension_ui_response")], serializer),
 			Self::CancelUiResponse(member) => serialize_tagged(member, &[("type", "extension_ui_response")], serializer),
 			Self::AnswersUiResponse(member) => serialize_tagged(member, &[("type", "extension_ui_response")], serializer),
+			Self::ReviewUiResponse(member) => serialize_tagged(member, &[("type", "extension_ui_response")], serializer),
 		}
 	}
 }
@@ -5319,6 +5388,28 @@ pub struct SetAskDialogResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetReviewDialogParams {
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetReviewDialogResult {
+	pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TogglePaneParams {
+	pub pane: TogglePaneParamsPane,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub shape: Option<TogglePaneParamsShape>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TogglePaneResult {
+	pub open: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GetAvailableCommandsResult {
 	pub commands: Vec<AvailableSlashCommand>,
 }
@@ -5415,6 +5506,28 @@ pub struct CancelSubagentResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SteerSubagentParams {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StopSubagentParams {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortSubagentParams {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpSubagentParams {
 	#[serde(rename = "subagentId")]
 	pub subagent_id: String,
 	pub message: String,
@@ -5975,6 +6088,84 @@ impl LogoutAccountType {
 	}
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StopSubagentOutcomeReason {
+	#[serde(rename = "unknown-agent")]
+	UnknownAgent,
+	#[serde(rename = "not-running")]
+	NotRunning,
+	#[serde(rename = "no-driven-run")]
+	NoDrivenRun,
+}
+
+impl StopSubagentOutcomeReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::UnknownAgent => "unknown-agent",
+			Self::NotRunning => "not-running",
+			Self::NoDrivenRun => "no-driven-run",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AbortSubagentOutcomeReason {
+	#[serde(rename = "unknown-agent")]
+	UnknownAgent,
+	#[serde(rename = "not-live")]
+	NotLive,
+}
+
+impl AbortSubagentOutcomeReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::UnknownAgent => "unknown-agent",
+			Self::NotLive => "not-live",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FollowUpSubagentOutcomeReason {
+	#[serde(rename = "unknown-agent")]
+	UnknownAgent,
+	#[serde(rename = "running")]
+	Running,
+	#[serde(rename = "not-accepted")]
+	NotAccepted,
+}
+
+impl FollowUpSubagentOutcomeReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::UnknownAgent => "unknown-agent",
+			Self::Running => "running",
+			Self::NotAccepted => "not-accepted",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReviewAnswerVerdict {
+	#[serde(rename = "approve")]
+	Approve,
+	#[serde(rename = "request-changes")]
+	RequestChanges,
+}
+
+impl ReviewAnswerVerdict {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Approve => "approve",
+			Self::RequestChanges => "request-changes",
+		}
+	}
+}
+
 /// The constant `"backward"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct LitBackward;
@@ -6076,6 +6267,42 @@ impl HostUriResultContentType {
 			Self::TextMarkdown => "text/markdown",
 			Self::ApplicationJson => "application/json",
 			Self::TextPlain => "text/plain",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TogglePaneParamsPane {
+	#[serde(rename = "todo")]
+	Todo,
+	#[serde(rename = "agents")]
+	Agents,
+}
+
+impl TogglePaneParamsPane {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Todo => "todo",
+			Self::Agents => "agents",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TogglePaneParamsShape {
+	#[serde(rename = "dock")]
+	Dock,
+	#[serde(rename = "float")]
+	Float,
+}
+
+impl TogglePaneParamsShape {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Dock => "dock",
+			Self::Float => "float",
 		}
 	}
 }
@@ -6466,6 +6693,40 @@ impl Command for SetAskDialogCommand {
 	}
 }
 
+/// Opt in to blocking plan-review requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SetReviewDialogCommand {
+	pub enabled: bool,
+}
+
+impl Command for SetReviewDialogCommand {
+	const NAME: &'static str = "set_review_dialog";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = bool;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<SetReviewDialogResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.enabled)
+	}
+}
+
+/// Toggle a todo or agents pane in an interactive Rex TUI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TogglePaneCommand {
+	pub pane: TogglePaneParamsPane,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub shape: Option<TogglePaneParamsShape>,
+}
+
+impl Command for TogglePaneCommand {
+	const NAME: &'static str = "toggle_pane";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = TogglePaneResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<TogglePaneResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
 /// List the slash-command catalog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GetAvailableCommandsCommand {}
@@ -6660,6 +6921,61 @@ impl Command for SteerSubagentCommand {
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		let _ = data;
 		Ok(())
+	}
+}
+
+/// Request a driven subagent's final summary with an operator reason.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StopSubagentCommand {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	pub reason: String,
+}
+
+impl Command for StopSubagentCommand {
+	const NAME: &'static str = "stop_subagent";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = StopSubagentOutcome;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<StopSubagentOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Abort with an operator reason; without one, use legacy cancellation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortSubagentCommand {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+}
+
+impl Command for AbortSubagentCommand {
+	const NAME: &'static str = "abort_subagent";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = AbortSubagentOutcome;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<AbortSubagentOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Send literal text to an idle, accepted, unparked subagent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowUpSubagentCommand {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+	pub message: String,
+}
+
+impl Command for FollowUpSubagentCommand {
+	const NAME: &'static str = "follow_up_subagent";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = FollowUpSubagentOutcome;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<FollowUpSubagentOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

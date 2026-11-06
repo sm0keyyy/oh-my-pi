@@ -735,6 +735,7 @@ export interface SubagentSnapshot {
 	/** Raw `AgentProgress` record. */
 	progress?: Record<string, unknown>;
 	parentToolCallId?: string;
+	followUpAvailable?: boolean;
 }
 
 /** Incremental subagent transcript read. */
@@ -1062,6 +1063,54 @@ export interface QueueUpdateEvent {
 
 /** A session event, discriminated by `type`; `set_event_filter` selects which are sent. */
 export type RpcAgentEvent = AgentStartEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | ManualCompactionStartEvent | ManualCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent;
+
+export interface StopSubagentOutcome {
+	ok: boolean;
+	reason?: "unknown-agent" | "not-running" | "no-driven-run";
+}
+
+export interface AbortSubagentOutcome {
+	ok?: boolean;
+	reason?: "unknown-agent" | "not-live";
+	cancelled?: boolean;
+}
+
+export interface FollowUpSubagentOutcome {
+	ok: boolean;
+	reason?: "unknown-agent" | "running" | "not-accepted";
+}
+
+export interface ReviewSection {
+	id: string;
+	heading: string;
+	excerpt: string;
+}
+
+export interface ReviewComment {
+	section: string;
+	text: string;
+}
+
+export interface ReviewAnswer {
+	verdict: "approve" | "request-changes";
+	comments: ReviewComment[];
+}
+
+export interface ReviewUiRequest {
+	type: "extension_ui_request";
+	id: string;
+	method: "review";
+	path: string;
+	title: string;
+	sections: ReviewSection[];
+	timeout?: number;
+}
+
+export interface ReviewUiResponse {
+	type: "extension_ui_response";
+	id: string;
+	review: ReviewAnswer;
+}
 
 /** First frame after startup; transport fields are absent on servers without protocol v2. */
 export interface ReadyEvent {
@@ -1412,7 +1461,7 @@ export interface OpenUrlUiRequest {
 }
 
 /** Extension UI request, discriminated by `method`. */
-export type ExtensionUiRequest = SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest;
+export type ExtensionUiRequest = SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | ReviewUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest;
 
 /** Answer to one `ask` question: exact option labels, plus optional free text. */
 export interface AskAnswer {
@@ -1451,7 +1500,7 @@ export interface AnswersUiResponse {
 }
 
 /** Host reply to an extension UI request; variants share `type` and differ by their payload key. */
-export type ExtensionUiResponse = ValueUiResponse | ConfirmUiResponse | CancelUiResponse | AnswersUiResponse;
+export type ExtensionUiResponse = ValueUiResponse | ConfirmUiResponse | CancelUiResponse | AnswersUiResponse | ReviewUiResponse;
 
 export interface HostToolCallRequest {
 	type: "host_tool_call";
@@ -1645,6 +1694,23 @@ export interface SetAskDialogResult {
 	enabled: boolean;
 }
 
+export interface SetReviewDialogParams {
+	enabled: boolean;
+}
+
+export interface SetReviewDialogResult {
+	enabled: boolean;
+}
+
+export interface TogglePaneParams {
+	pane: "todo" | "agents";
+	shape?: "dock" | "float";
+}
+
+export interface TogglePaneResult {
+	open: boolean;
+}
+
 export interface GetAvailableCommandsResult {
 	commands: AvailableSlashCommand[];
 }
@@ -1714,6 +1780,21 @@ export interface CancelSubagentResult {
 }
 
 export interface SteerSubagentParams {
+	subagentId: string;
+	message: string;
+}
+
+export interface StopSubagentParams {
+	subagentId: string;
+	reason: string;
+}
+
+export interface AbortSubagentParams {
+	subagentId: string;
+	reason?: string;
+}
+
+export interface FollowUpSubagentParams {
 	subagentId: string;
 	message: string;
 }
@@ -1961,6 +2042,8 @@ export interface RpcWireCommands {
 	set_slow_mode: { params: SetSlowModeParams; result: SetSlowModeResult };
 	goal: { params: GoalParams; result: GoalResult };
 	set_ask_dialog: { params: SetAskDialogParams; result: SetAskDialogResult };
+	set_review_dialog: { params: SetReviewDialogParams; result: SetReviewDialogResult };
+	toggle_pane: { params: TogglePaneParams; result: TogglePaneResult };
 	get_available_commands: { params: undefined; result: GetAvailableCommandsResult };
 	get_entries: { params: GetEntriesParams; result: SessionEntries };
 	get_tree: { params: undefined; result: SessionTree };
@@ -1973,6 +2056,9 @@ export interface RpcWireCommands {
 	get_subagent_messages: { params: GetSubagentMessagesParams; result: SubagentMessages };
 	cancel_subagent: { params: CancelSubagentParams; result: CancelSubagentResult };
 	steer_subagent: { params: SteerSubagentParams; result: undefined };
+	stop_subagent: { params: StopSubagentParams; result: StopSubagentOutcome };
+	abort_subagent: { params: AbortSubagentParams; result: AbortSubagentOutcome };
+	follow_up_subagent: { params: FollowUpSubagentParams; result: FollowUpSubagentOutcome };
 	live_start: { params: LiveStartParams; result: LiveStartResult };
 	live_connect: { params: LiveConnectParams; result: LiveConnectResult };
 	live_stop: { params: undefined; result: undefined };

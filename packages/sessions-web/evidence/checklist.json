@@ -1,6 +1,41 @@
 {
-	"allowed": 65,
+	"allowed": 70,
 	"rows": [
+		{
+			"command": "set_review_dialog",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "automatic",
+			"screenshots": []
+		},
+		{
+			"command": "stop_subagent",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "browser",
+			"screenshots": []
+		},
+		{
+			"command": "abort_subagent",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "browser",
+			"screenshots": []
+		},
+		{
+			"command": "follow_up_subagent",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "browser",
+			"screenshots": []
+		},
+		{
+			"command": "toggle_pane",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "transport: interactive Rex host required",
+			"screenshots": []
+		},
 		{
 			"command": "negotiate_protocol",
 			"desktop": "pass",

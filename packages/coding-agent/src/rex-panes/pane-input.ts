@@ -19,6 +19,27 @@ export function isPaneFollowUp(session: AgentSession): boolean {
 	return true;
 }
 
+export type FollowUpOutcome = { ok: true } | { ok: false; reason: "unknown-agent" | "running" | "not-accepted" };
+
+export async function followUpSubagent(agentId: string, text: string): Promise<FollowUpOutcome> {
+	const ref = AgentRegistry.global().get(agentId);
+	if (!ref || ref.kind !== "sub") return { ok: false, reason: "unknown-agent" };
+	if (ref.status === "running" || ref.session?.isStreaming) return { ok: false, reason: "running" };
+	if (ref.status !== "idle" || !ref.session || ref.lifecycle?.acceptedAt === undefined) {
+		return { ok: false, reason: "not-accepted" };
+	}
+	const outcome = await submitPanePrompt(agentId, text, true);
+	if (outcome.kind === "refused") {
+		const current = AgentRegistry.global().get(agentId);
+		if (current !== ref) return { ok: false, reason: "unknown-agent" };
+		if (current.status === "running" || current.session?.isStreaming) return { ok: false, reason: "running" };
+		if (current.status !== "idle" || !current.session || current.lifecycle?.acceptedAt === undefined)
+			return { ok: false, reason: "not-accepted" };
+		throw new Error(outcome.message);
+	}
+	return { ok: true };
+}
+
 export async function routePaneInput(agentId: string, text: string): Promise<PaneInputOutcome> {
 	text = text.trim();
 	if (!text) return { kind: "refused", message: "Enter a message or use /stop <reason> or /abort <reason>." };
@@ -39,6 +60,10 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 					: `Cannot ${command.slice(1)} ${agentId}: ${outcome.reason}`,
 		};
 	}
+	return submitPanePrompt(agentId, text);
+}
+
+async function submitPanePrompt(agentId: string, text: string, followUpOnly = false): Promise<PaneInputOutcome> {
 	const registry = AgentRegistry.global();
 	const ref = registry.get(agentId);
 	if (!ref || ref.kind !== "sub" || !ref.session || (ref.status !== "running" && ref.status !== "idle")) {
@@ -54,6 +79,7 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 			return { kind: "refused", message: `Subagent is no longer live: ${agentId}` };
 		}
 		const followUp = ref.status === "idle" && !session.isStreaming;
+		if (followUpOnly && !followUp) return { kind: "refused", message: "The agent is no longer idle." };
 		if (followUp && ref.lifecycle?.acceptedAt === undefined) {
 			return { kind: "refused", message: "The agent has no accepted result to follow up." };
 		}

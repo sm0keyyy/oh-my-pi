@@ -17,7 +17,7 @@ import type {
 	ToolExample,
 } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
-import type { ContextUsage } from "../../extensibility/extensions/types";
+import type { ContextUsage, ExtensionReviewSection } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
@@ -73,6 +73,7 @@ export type RpcCommand =
 			token_budget?: number;
 	  }
 	| { id?: string; type: "set_ask_dialog"; enabled: boolean }
+	| { id?: string; type: "set_review_dialog"; enabled: boolean }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "get_entries"; since?: string }
 	| { id?: string; type: "get_tree" }
@@ -85,6 +86,10 @@ export type RpcCommand =
 	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
 	| { id?: string; type: "cancel_subagent"; subagentId: string }
 	| { id?: string; type: "steer_subagent"; subagentId: string; message: string }
+	| { id?: string; type: "stop_subagent"; subagentId: string; reason: string }
+	| { id?: string; type: "abort_subagent"; subagentId: string; reason?: string }
+	| { id?: string; type: "follow_up_subagent"; subagentId: string; message: string }
+	| { id?: string; type: "toggle_pane"; pane: "todo" | "agents"; shape?: "dock" | "float" }
 	// Live voice (GPT live bound to this session)
 	| { id?: string; type: "live_start"; voice?: string; instructions?: string }
 	| { id?: string; type: "live_connect"; sdpOffer: string; voice?: string; instructions?: string }
@@ -433,6 +438,7 @@ export interface RpcSubagentSnapshot {
 	lastUpdate: number;
 	progress?: AgentProgress;
 	parentToolCallId?: string;
+	followUpAvailable?: boolean;
 }
 
 export interface RpcSubagentMessagesResult {
@@ -555,6 +561,29 @@ export type RpcResponse =
 			data: { cancelled: boolean };
 	  }
 	| { id?: string; type: "response"; command: "steer_subagent"; success: true }
+	| { id?: string; type: "response"; command: "set_review_dialog"; success: true; data: { enabled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "stop_subagent";
+			success: true;
+			data: { ok: true } | { ok: false; reason: "unknown-agent" | "not-running" | "no-driven-run" };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "abort_subagent";
+			success: true;
+			data: { cancelled: boolean } | { ok: true } | { ok: false; reason: "unknown-agent" | "not-live" };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "follow_up_subagent";
+			success: true;
+			data: { ok: true } | { ok: false; reason: "unknown-agent" | "running" | "not-accepted" };
+	  }
+	| { id?: string; type: "response"; command: "toggle_pane"; success: true; data: { open: boolean } }
 
 	// Model
 	| {
@@ -854,6 +883,15 @@ export type RpcExtensionUIRequest =
 			questions: RpcAskDialogQuestion[];
 			timeout?: number;
 	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "review";
+			path: string;
+			title: string;
+			sections: ExtensionReviewSection[];
+			timeout?: number;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "cancel"; targetId: string }
 	| {
 			type: "extension_ui_request";
@@ -1004,6 +1042,11 @@ export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true; timedOut?: boolean }
+	| {
+			type: "extension_ui_response";
+			id: string;
+			review: { verdict: "approve" | "request-changes"; comments: Array<{ section: string; text: string }> };
+	  }
 	/** Answers to an `ask` request, one per question in request order. */
 	| {
 			type: "extension_ui_response";

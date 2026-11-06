@@ -186,6 +186,28 @@
 				"clientOmit": []
 			},
 			{
+				"name": "set_review_dialog",
+				"doc": "Opt in to blocking plan-review requests.",
+				"params": "SetReviewDialogParams",
+				"result": "SetReviewDialogResult",
+				"nullable": false,
+				"unwrap": "enabled",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "toggle_pane",
+				"doc": "Toggle a todo or agents pane in an interactive Rex TUI.",
+				"params": "TogglePaneParams",
+				"result": "TogglePaneResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_available_commands",
 				"doc": "List the slash-command catalog.",
 				"params": null,
@@ -313,6 +335,39 @@
 				"doc": "Send a message to a running subagent as its user.",
 				"params": "SteerSubagentParams",
 				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "stop_subagent",
+				"doc": "Request a driven subagent's final summary with an operator reason.",
+				"params": "StopSubagentParams",
+				"result": "StopSubagentOutcome",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "abort_subagent",
+				"doc": "Abort with an operator reason; without one, use legacy cancellation.",
+				"params": "AbortSubagentParams",
+				"result": "AbortSubagentOutcome",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "follow_up_subagent",
+				"doc": "Send literal text to an idle, accepted, unparked subagent.",
+				"params": "FollowUpSubagentParams",
+				"result": "FollowUpSubagentOutcome",
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
@@ -3447,6 +3502,9 @@
 				},
 				"parentToolCallId": {
 					"type": "string"
+				},
+				"followUpAvailable": {
+					"type": "boolean"
 				}
 			},
 			"required": [
@@ -4557,6 +4615,174 @@
 			],
 			"description": "A session event, discriminated by `type`; `set_event_filter` selects which are sent."
 		},
+		"StopSubagentOutcome": {
+			"type": "object",
+			"properties": {
+				"ok": {
+					"type": "boolean"
+				},
+				"reason": {
+					"enum": [
+						"unknown-agent",
+						"not-running",
+						"no-driven-run"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"ok"
+			]
+		},
+		"AbortSubagentOutcome": {
+			"type": "object",
+			"properties": {
+				"ok": {
+					"type": "boolean"
+				},
+				"reason": {
+					"enum": [
+						"unknown-agent",
+						"not-live"
+					],
+					"type": "string"
+				},
+				"cancelled": {
+					"type": "boolean"
+				}
+			}
+		},
+		"FollowUpSubagentOutcome": {
+			"type": "object",
+			"properties": {
+				"ok": {
+					"type": "boolean"
+				},
+				"reason": {
+					"enum": [
+						"unknown-agent",
+						"running",
+						"not-accepted"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"ok"
+			]
+		},
+		"ReviewSection": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"heading": {
+					"type": "string"
+				},
+				"excerpt": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"id",
+				"heading",
+				"excerpt"
+			]
+		},
+		"ReviewComment": {
+			"type": "object",
+			"properties": {
+				"section": {
+					"type": "string"
+				},
+				"text": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"section",
+				"text"
+			]
+		},
+		"ReviewAnswer": {
+			"type": "object",
+			"properties": {
+				"verdict": {
+					"enum": [
+						"approve",
+						"request-changes"
+					],
+					"type": "string"
+				},
+				"comments": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ReviewComment"
+					}
+				}
+			},
+			"required": [
+				"verdict",
+				"comments"
+			]
+		},
+		"ReviewUiRequest": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "extension_ui_request"
+				},
+				"id": {
+					"type": "string"
+				},
+				"method": {
+					"const": "review"
+				},
+				"path": {
+					"type": "string"
+				},
+				"title": {
+					"type": "string"
+				},
+				"sections": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ReviewSection"
+					}
+				},
+				"timeout": {
+					"type": "integer"
+				}
+			},
+			"required": [
+				"type",
+				"id",
+				"method",
+				"path",
+				"title",
+				"sections"
+			]
+		},
+		"ReviewUiResponse": {
+			"type": "object",
+			"properties": {
+				"type": {
+					"const": "extension_ui_response"
+				},
+				"id": {
+					"type": "string"
+				},
+				"review": {
+					"$ref": "#/$defs/ReviewAnswer"
+				}
+			},
+			"required": [
+				"type",
+				"id",
+				"review"
+			]
+		},
 		"ReadyEvent": {
 			"type": "object",
 			"properties": {
@@ -5646,6 +5872,9 @@
 					"$ref": "#/$defs/AskUiRequest"
 				},
 				{
+					"$ref": "#/$defs/ReviewUiRequest"
+				},
+				{
 					"$ref": "#/$defs/CancelUiRequest"
 				},
 				{
@@ -5793,6 +6022,9 @@
 				},
 				{
 					"$ref": "#/$defs/AnswersUiResponse"
+				},
+				{
+					"$ref": "#/$defs/ReviewUiResponse"
 				}
 			],
 			"description": "Host reply to an extension UI request; variants share `type` and differ by their payload key."
@@ -6451,6 +6683,61 @@
 				"enabled"
 			]
 		},
+		"SetReviewDialogParams": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"enabled"
+			]
+		},
+		"SetReviewDialogResult": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"enabled"
+			]
+		},
+		"TogglePaneParams": {
+			"type": "object",
+			"properties": {
+				"pane": {
+					"enum": [
+						"todo",
+						"agents"
+					],
+					"type": "string"
+				},
+				"shape": {
+					"enum": [
+						"dock",
+						"float"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"pane"
+			]
+		},
+		"TogglePaneResult": {
+			"type": "object",
+			"properties": {
+				"open": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"open"
+			]
+		},
 		"GetAvailableCommandsResult": {
 			"type": "object",
 			"properties": {
@@ -6678,6 +6965,50 @@
 			]
 		},
 		"SteerSubagentParams": {
+			"type": "object",
+			"properties": {
+				"subagentId": {
+					"type": "string"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"subagentId",
+				"message"
+			]
+		},
+		"StopSubagentParams": {
+			"type": "object",
+			"properties": {
+				"subagentId": {
+					"type": "string"
+				},
+				"reason": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"subagentId",
+				"reason"
+			]
+		},
+		"AbortSubagentParams": {
+			"type": "object",
+			"properties": {
+				"subagentId": {
+					"type": "string"
+				},
+				"reason": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"subagentId"
+			]
+		},
+		"FollowUpSubagentParams": {
 			"type": "object",
 			"properties": {
 				"subagentId": {

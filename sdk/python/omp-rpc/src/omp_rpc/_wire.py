@@ -191,8 +191,8 @@ _WIDGET_PLACEMENT_VALUES: Final[frozenset[str]] = frozenset({"aboveEditor", "bel
 _decode_widget_placement = cast("Decoder[WidgetPlacement]", literal(_WIDGET_PLACEMENT_VALUES))
 
 
-ExtensionUiMethod: TypeAlias = Literal["select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"]
-_EXTENSION_UI_METHOD_VALUES: Final[frozenset[str]] = frozenset({"select", "confirm", "input", "editor", "ask", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"})
+ExtensionUiMethod: TypeAlias = Literal["select", "confirm", "input", "editor", "ask", "review", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"]
+_EXTENSION_UI_METHOD_VALUES: Final[frozenset[str]] = frozenset({"select", "confirm", "input", "editor", "ask", "review", "cancel", "notify", "setStatus", "setWidget", "snapshot", "setTitle", "set_editor_text", "open_url"})
 _decode_extension_ui_method = cast("Decoder[ExtensionUiMethod]", literal(_EXTENSION_UI_METHOD_VALUES))
 
 
@@ -919,6 +919,7 @@ class SubagentSnapshot:
     progress: JsonObject | None = None
     """Raw `AgentProgress` record."""
     parent_tool_call_id: str | None = None
+    follow_up_available: bool | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1269,6 +1270,43 @@ class QueueUpdateEvent:
     follow_up: tuple[str, ...]
     live_steered: int = 0
     """Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class StopSubagentOutcome:
+    ok: bool
+    reason: Literal["unknown-agent", "not-running", "no-driven-run"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AbortSubagentOutcome:
+    ok: bool | None = None
+    reason: Literal["unknown-agent", "not-live"] | None = None
+    cancelled: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class FollowUpSubagentOutcome:
+    ok: bool
+    reason: Literal["unknown-agent", "running", "not-accepted"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ReviewSection:
+    id: str
+    heading: str
+    excerpt: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ReviewUiRequest:
+    type: Literal["extension_ui_request"] = "extension_ui_request"
+    id: str
+    method: Literal["review"] = "review"
+    path: str
+    title: str
+    sections: tuple[ReviewSection, ...]
+    timeout: int | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1662,6 +1700,8 @@ class ExtensionUiRequest(ExtensionUiRequestMixin):
     prefill: str | None = None
     prompt_style: bool | None = None
     questions: tuple[AskQuestion, ...] | None = None
+    path: str | None = None
+    sections: tuple[ReviewSection, ...] | None = None
     target_id: str | None = None
     notify_type: NotifyType | None = None
     status_key: str | None = None
@@ -1708,6 +1748,11 @@ class HostUriSchemeDefinition:
 @dataclass(slots=True, frozen=True, kw_only=True)
 class NegotiateProtocolResult:
     protocol_version: int
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TogglePaneResult:
+    open: bool
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2373,6 +2418,7 @@ def parse_subagent_snapshot(value: object, path: str = "SubagentSnapshot") -> Su
         session_file=optional(payload, "sessionFile", decode_str, path),
         progress=optional(payload, "progress", decode_json_object, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
+        follow_up_available=optional(payload, "followUpAvailable", decode_bool, path),
     )
 
 
@@ -2766,6 +2812,53 @@ def parse_queue_update_event(value: object, path: str = "QueueUpdateEvent") -> Q
         steering=required(payload, "steering", array(decode_str), path),
         follow_up=required(payload, "followUp", array(decode_str), path),
         live_steered=defaulted(payload, "liveSteered", decode_int, path, 0),
+    )
+
+
+def parse_stop_subagent_outcome(value: object, path: str = "StopSubagentOutcome") -> StopSubagentOutcome:
+    payload = expect_object(value, path)
+    return StopSubagentOutcome(
+        ok=required(payload, "ok", decode_bool, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["unknown-agent", "not-running", "no-driven-run"]]', literal(frozenset({"unknown-agent", "not-running", "no-driven-run"}))), path),
+    )
+
+
+def parse_abort_subagent_outcome(value: object, path: str = "AbortSubagentOutcome") -> AbortSubagentOutcome:
+    payload = expect_object(value, path)
+    return AbortSubagentOutcome(
+        ok=optional(payload, "ok", decode_bool, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["unknown-agent", "not-live"]]', literal(frozenset({"unknown-agent", "not-live"}))), path),
+        cancelled=optional(payload, "cancelled", decode_bool, path),
+    )
+
+
+def parse_follow_up_subagent_outcome(value: object, path: str = "FollowUpSubagentOutcome") -> FollowUpSubagentOutcome:
+    payload = expect_object(value, path)
+    return FollowUpSubagentOutcome(
+        ok=required(payload, "ok", decode_bool, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["unknown-agent", "running", "not-accepted"]]', literal(frozenset({"unknown-agent", "running", "not-accepted"}))), path),
+    )
+
+
+def parse_review_section(value: object, path: str = "ReviewSection") -> ReviewSection:
+    payload = expect_object(value, path)
+    return ReviewSection(
+        id=required(payload, "id", decode_str, path),
+        heading=required(payload, "heading", decode_str, path),
+        excerpt=required(payload, "excerpt", decode_str, path),
+    )
+
+
+def parse_review_ui_request(value: object, path: str = "ReviewUiRequest") -> ReviewUiRequest:
+    payload = expect_object(value, path)
+    required(payload, "type", cast('Decoder[Literal["extension_ui_request"]]', literal(frozenset({"extension_ui_request"}))), path)
+    required(payload, "method", cast('Decoder[Literal["review"]]', literal(frozenset({"review"}))), path)
+    return ReviewUiRequest(
+        id=required(payload, "id", decode_str, path),
+        path=required(payload, "path", decode_str, path),
+        title=required(payload, "title", decode_str, path),
+        sections=required(payload, "sections", array(parse_review_section), path),
+        timeout=optional(payload, "timeout", decode_int, path),
     )
 
 
@@ -3212,6 +3305,8 @@ def parse_extension_ui_request(value: object, path: str = "ExtensionUiRequest") 
         prefill=optional(payload, "prefill", decode_str, path),
         prompt_style=optional(payload, "promptStyle", decode_bool, path),
         questions=optional(payload, "questions", array(parse_ask_question), path),
+        path=optional(payload, "path", decode_str, path),
+        sections=optional(payload, "sections", array(parse_review_section), path),
         target_id=optional(payload, "targetId", decode_str, path),
         notify_type=optional(payload, "notifyType", _decode_notify_type, path),
         status_key=optional(payload, "statusKey", decode_str, path),
@@ -3264,6 +3359,13 @@ def parse_negotiate_protocol_result(value: object, path: str = "NegotiateProtoco
     payload = expect_object(value, path)
     return NegotiateProtocolResult(
         protocol_version=required(payload, "protocolVersion", decode_int, path),
+    )
+
+
+def parse_toggle_pane_result(value: object, path: str = "TogglePaneResult") -> TogglePaneResult:
+    payload = expect_object(value, path)
+    return TogglePaneResult(
+        open=required(payload, "open", decode_bool, path),
     )
 
 
@@ -3510,6 +3612,20 @@ class WireClient:
         params["enabled"] = enabled
         return required(expect_object(self._command("set_ask_dialog", params), "set_ask_dialog"), "enabled", decode_bool, "set_ask_dialog")
 
+    def set_review_dialog(self, enabled: bool) -> bool:
+        """Opt in to blocking plan-review requests."""
+        params: dict[str, object] = {}
+        params["enabled"] = enabled
+        return required(expect_object(self._command("set_review_dialog", params), "set_review_dialog"), "enabled", decode_bool, "set_review_dialog")
+
+    def toggle_pane(self, pane: Literal["todo", "agents"], *, shape: Literal["dock", "float"] | None = None) -> TogglePaneResult:
+        """Toggle a todo or agents pane in an interactive Rex TUI."""
+        params: dict[str, object] = {}
+        params["pane"] = pane
+        if shape is not None:
+            params["shape"] = shape
+        return parse_toggle_pane_result(self._command("toggle_pane", params), "toggle_pane")
+
     def get_available_commands(self) -> tuple[AvailableSlashCommand, ...]:
         """List the slash-command catalog."""
         params: dict[str, object] = {}
@@ -3567,6 +3683,28 @@ class WireClient:
         params["subagentId"] = subagent_id
         params["message"] = message
         self._command("steer_subagent", params)
+
+    def stop_subagent(self, subagent_id: str, reason: str) -> StopSubagentOutcome:
+        """Request a driven subagent's final summary with an operator reason."""
+        params: dict[str, object] = {}
+        params["subagentId"] = subagent_id
+        params["reason"] = reason
+        return parse_stop_subagent_outcome(self._command("stop_subagent", params), "stop_subagent")
+
+    def abort_subagent(self, subagent_id: str, *, reason: str | None = None) -> AbortSubagentOutcome:
+        """Abort with an operator reason; without one, use legacy cancellation."""
+        params: dict[str, object] = {}
+        params["subagentId"] = subagent_id
+        if reason is not None:
+            params["reason"] = reason
+        return parse_abort_subagent_outcome(self._command("abort_subagent", params), "abort_subagent")
+
+    def follow_up_subagent(self, subagent_id: str, message: str) -> FollowUpSubagentOutcome:
+        """Send literal text to an idle, accepted, unparked subagent."""
+        params: dict[str, object] = {}
+        params["subagentId"] = subagent_id
+        params["message"] = message
+        return parse_follow_up_subagent_outcome(self._command("follow_up_subagent", params), "follow_up_subagent")
 
     def live_start(self, *, voice: str | None = None, instructions: str | None = None) -> str:
         """Start a live voice session bound to this session; returns the voice in use."""
@@ -4090,6 +4228,7 @@ class WireClient:
 
 __all__ = [
     "AbortAndRestoreQueueResult",
+    "AbortSubagentOutcome",
     "AdvisorCostChangedEvent",
     "AdvisorYieldedEvent",
     "AgentEndEvent",
@@ -4165,6 +4304,7 @@ __all__ = [
     "FastModeResult",
     "FileMentionItem",
     "FileMentionMessage",
+    "FollowUpSubagentOutcome",
     "GetSessionLeaseResult",
     "Goal",
     "GoalModeState",
@@ -4225,6 +4365,8 @@ __all__ = [
     "RestoredQueuedMessage",
     "RetryFallbackAppliedEvent",
     "RetryFallbackSucceededEvent",
+    "ReviewSection",
+    "ReviewUiRequest",
     "RpcAgentEvent",
     "RpcFrameErrorEvent",
     "RpcNotification",
@@ -4252,6 +4394,7 @@ __all__ = [
     "SnapshotUiRequest",
     "SnapshotWidget",
     "StopReason",
+    "StopSubagentOutcome",
     "StreamingBehavior",
     "SubagentEvent",
     "SubagentEventPayload",
@@ -4275,6 +4418,7 @@ __all__ = [
     "TodoPhase",
     "TodoReminderEvent",
     "TodoStatus",
+    "TogglePaneResult",
     "TokenUsage",
     "ToolCall",
     "ToolDescriptor",
@@ -4296,6 +4440,7 @@ __all__ = [
     "UserMessage",
     "WidgetPlacement",
     "parse_abort_and_restore_queue_result",
+    "parse_abort_subagent_outcome",
     "parse_advisor_cost_changed_event",
     "parse_advisor_yielded_event",
     "parse_agent_end_event",
@@ -4360,6 +4505,7 @@ __all__ = [
     "parse_fast_mode_result",
     "parse_file_mention_item",
     "parse_file_mention_message",
+    "parse_follow_up_subagent_outcome",
     "parse_get_session_lease_result",
     "parse_goal",
     "parse_goal_mode_state",
@@ -4410,6 +4556,8 @@ __all__ = [
     "parse_restored_queued_message",
     "parse_retry_fallback_applied_event",
     "parse_retry_fallback_succeeded_event",
+    "parse_review_section",
+    "parse_review_ui_request",
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
     "parse_rpc_session_host",
@@ -4433,6 +4581,7 @@ __all__ = [
     "parse_slash_subcommand",
     "parse_snapshot_ui_request",
     "parse_snapshot_widget",
+    "parse_stop_subagent_outcome",
     "parse_subagent_event",
     "parse_subagent_event_payload",
     "parse_subagent_lifecycle_event",
@@ -4450,6 +4599,7 @@ __all__ = [
     "parse_todo_item",
     "parse_todo_phase",
     "parse_todo_reminder_event",
+    "parse_toggle_pane_result",
     "parse_token_usage",
     "parse_tool_call",
     "parse_tool_descriptor",

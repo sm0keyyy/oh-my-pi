@@ -1,3 +1,4 @@
+import puppeteer from "puppeteer-core";
 import type { ElementHandle, Page } from "puppeteer-core";
 import * as path from "node:path";
 import { installHttpProbe } from "./http-probe";
@@ -550,5 +551,117 @@ export async function runLobbyQuestionAcceptance(page: Page, base: string, root:
 	} finally {
 		await lobby.close();
 		for (const name of names) await fetch(`${base}/fixture/stop?name=${name}`);
+	}
+}
+
+export async function runSessionsRpcAcceptance(page: Page, base: string, root: string) {
+	const results = [];
+	for (const width of [1440, 768, 390]) {
+		const name = width === 390 ? "phone" : "desktop";
+		await page.setViewport({ width, height: 1000, isMobile: width === 390, hasTouch: width === 390 });
+		const start = await (await fetch(`${base}/fixture/start?name=${name}`)).json();
+		if (!start.pid) throw new Error(JSON.stringify(start));
+		try {
+			let target: { instanceId: string } | undefined;
+			for (let attempt = 0; attempt < 100; attempt++) {
+				const sessions = await (await fetch(`${base}/api/sessions`)).json();
+				target = sessions.sessions.find((session: { cwd: string }) => session.cwd === start.cwd);
+				if (target) break;
+				await Bun.sleep(200);
+			}
+			if (!target) throw new Error("Fixture session not discovered");
+			await page.goto(`${base}/session/${target.instanceId}`);
+			await page.waitForSelector("#message:not(:disabled)");
+			const compose = async (message: string) => {
+				await page.type("#message", message);
+				await page.keyboard.press("Enter");
+			};
+			const button = async (label: string) => {
+				for (const node of await page.$$("button")) {
+					if (await node.evaluate((node, label) => node.textContent?.trim() === label, label)) {
+						await node.click();
+						return;
+					}
+				}
+				throw new Error(`Missing button: ${label}`);
+			};
+			await compose("/web-dialog review");
+			await page.waitForSelector('.dlg textarea[name="review-§4"]');
+			await page.type('.dlg textarea[name="review-§4"]', "merge view and wire");
+			await page.screenshot({
+				path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-review-${width}.png`),
+			});
+			await button("Request changes");
+			await page.waitForFunction(() => document.body.textContent?.includes('"verdict":"request-changes"'));
+			await compose("/web-dialog review");
+			await page.waitForSelector('.dlg textarea[name="review-§4"]');
+			await page.focus('.dlg textarea[name="review-§4"]');
+			await page.keyboard.press("Escape");
+			await page.waitForFunction(() => document.body.textContent?.includes('"kind":"cancelled"'));
+			await compose("[agent] Spawn local agent");
+			await page.waitForSelector(".agent");
+			if (width < 1000) await page.click('[aria-label="Panels"]');
+			await page.waitForSelector('.agent input[name="reason"]');
+			await page.type('.agent input[name="reason"]', "browser stop reason");
+			await button("Stop agent");
+			if (width < 1000) await page.keyboard.press("Escape");
+			await page.waitForFunction(
+				() => document.body.textContent?.includes("Stopped by operator: browser stop reason"),
+				{ timeout: 120000 },
+			);
+			const rows = await (await fetch(`${base}/fixture/receipts`)).json();
+			const response = rows.findLast(
+				(row: { direction: string; frame?: Frame }) =>
+					row.direction === "response" && row.frame?.command === "stop_subagent",
+			)?.frame;
+			if (!response?.success || response.data?.ok !== true) throw new Error("Stop did not reach its driven run");
+			await page.screenshot({
+				path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-stop-${width}.png`),
+			});
+			results.push({ width, review: "request-changes", cancelled: true, stop: response });
+		} finally {
+			await fetch(`${base}/fixture/stop?name=${name}`);
+		}
+	}
+	return results;
+}
+
+if (import.meta.main) {
+	const root = path.resolve(import.meta.dir, "../../..");
+	const fixture = Bun.spawn([process.execPath, path.join(import.meta.dir, "local-fixture.ts")], {
+		cwd: root,
+		stdout: "pipe",
+		stderr: "inherit",
+		timeout: 600000,
+	});
+	let base = "";
+	const reader = fixture.stdout.getReader();
+	try {
+		let output = "";
+		while (!base) {
+			const chunk = await reader.read();
+			if (chunk.done) throw new Error("Fixture exited before READY");
+			output += new TextDecoder().decode(chunk.value);
+			base = /READY (http:\/\/127\.0\.0\.1:\d+)/.exec(output)?.[1] ?? "";
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const browser = await puppeteer.launch({
+		executablePath: process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		headless: true,
+	});
+	try {
+		const page = await browser.newPage();
+		const result = await runSessionsRpcAcceptance(page, base, root);
+		await Bun.write(
+			path.join(root, "packages/sessions-web/evidence/sessions-rpc.json"),
+			JSON.stringify(result, null, 2),
+		);
+		console.log(JSON.stringify({ cases: ["review", "subagent-control"], result }));
+	} finally {
+		await browser.close();
+		await fetch(`${base}/fixture/shutdown`);
+		await fixture.exited;
 	}
 }

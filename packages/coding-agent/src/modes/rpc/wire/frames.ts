@@ -8,6 +8,23 @@ const JSON_OBJECT = "Record<string, unknown>";
 const UI = "'extension_ui_request'";
 
 export const frameDefs = {
+	// Generators dispatch unions on string discriminators; the server enforces the ok/reason relationship.
+	StopSubagentOutcome: { ok: "boolean", "reason?": "'unknown-agent' | 'not-running' | 'no-driven-run'" },
+	AbortSubagentOutcome: { "ok?": "boolean", "reason?": "'unknown-agent' | 'not-live'", "cancelled?": "boolean" },
+	FollowUpSubagentOutcome: { ok: "boolean", "reason?": "'unknown-agent' | 'running' | 'not-accepted'" },
+	ReviewSection: { id: "string", heading: "string", excerpt: "string" },
+	ReviewComment: { section: "string", text: "string" },
+	ReviewAnswer: { verdict: "'approve' | 'request-changes'", comments: "ReviewComment[]" },
+	ReviewUiRequest: {
+		type: UI,
+		id: "string",
+		method: "'review'",
+		path: "string",
+		title: "string",
+		sections: "ReviewSection[]",
+		"timeout?": "number.integer",
+	},
+	ReviewUiResponse: { type: "'extension_ui_response'", id: "string", review: "ReviewAnswer" },
 	ReadyEvent: doc(
 		{
 			type: "'ready'",
@@ -249,7 +266,7 @@ export const frameDefs = {
 		"instructions?": "string",
 	},
 	ExtensionUiRequest: doc(
-		"SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest",
+		"SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | ReviewUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SnapshotUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest",
 		"Extension UI request, discriminated by `method`.",
 	),
 	AskAnswer: doc(
@@ -273,7 +290,7 @@ export const frameDefs = {
 		"Answers an `ask` request: one `AskAnswer` per question, in question order.",
 	),
 	ExtensionUiResponse: doc(
-		"ValueUiResponse | ConfirmUiResponse | CancelUiResponse | AnswersUiResponse",
+		"ValueUiResponse | ConfirmUiResponse | CancelUiResponse | AnswersUiResponse | ReviewUiResponse",
 		"Host reply to an extension UI request; variants share `type` and differ by their payload key.",
 	),
 

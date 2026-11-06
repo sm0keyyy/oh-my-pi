@@ -1,4 +1,5 @@
 import { untilAborted } from "@oh-my-pi/pi-utils";
+import type { SessionManager } from "../session/session-manager";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { indexEnabled, loadConfig, log, POLL_MS, resolveRepo, WAIT_MS, type Config, type Kind } from "./config";
 import { ensure, type Readiness } from "./ensure";
@@ -69,7 +70,11 @@ export function gateCodegraphTool(cwd: string, signal?: AbortSignal): Promise<Ga
 	return gateIndex(cwd, "normal", signal);
 }
 
-export async function gateCodegraphMcp(serverName: string, cwd: string, signal?: AbortSignal): Promise<GateResult> {
+export async function gateCodegraphMcp(
+	serverName: string,
+	sessionManager: Pick<SessionManager, "getCwd"> | undefined,
+	signal?: AbortSignal,
+): Promise<GateResult> {
 	if (!(await indexEnabled())) return { ok: true };
 	let cfg: Config | undefined;
 	try {
@@ -81,5 +86,7 @@ export async function gateCodegraphMcp(serverName: string, cwd: string, signal?:
 			: { ok: true };
 	}
 	if (!cfg || serverName !== cfg.rustServer) return { ok: true };
+	if (!sessionManager) return { ok: false, reason: "codegraph-index: session context unavailable. Use grep or find." };
+	const cwd = sessionManager.getCwd();
 	return gateIndex(cwd, "agentic", signal, undefined, cfg);
 }

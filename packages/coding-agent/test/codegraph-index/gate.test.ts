@@ -14,6 +14,7 @@ import { Settings } from "../../src/config/settings";
 
 let temp: string;
 let root: string;
+const sessionManager = { getCwd: () => root };
 let previous: string | undefined;
 let previousPath: string | undefined;
 let command: string;
@@ -104,7 +105,7 @@ test("native and agentic first-build gates return building within 22 seconds, th
 			() => "unexpected success",
 			error => String(error),
 		),
-		gateCodegraphMcp("codegraph-rs", root),
+		gateCodegraphMcp("codegraph-rs", sessionManager),
 	]);
 	expect(Date.now() - start).toBeLessThan(22_500);
 	expect(normal).toContain("building");
@@ -121,7 +122,7 @@ test("native and agentic first-build gates return building within 22 seconds, th
 			build: { embedder: { provider: "openai", model: "fixture", dimension: 768 } },
 		}),
 	);
-	expect(await gateCodegraphMcp("codegraph-rs", root)).toEqual({ ok: true });
+	expect(await gateCodegraphMcp("codegraph-rs", sessionManager)).toEqual({ ok: true });
 	child.kill();
 	await child.exited;
 	for (const kind of ["normal", "agentic"] as const)
@@ -132,7 +133,20 @@ test("native and agentic first-build gates return building within 22 seconds, th
 }, 30_000);
 
 test("only the configured MCP server gates and neither direct nor deferred calls reach a paused server", async () => {
-	expect(await gateCodegraphMcp("superlogical", root)).toEqual({ ok: true });
+	expect(
+		await gateCodegraphMcp("superlogical", {
+			getCwd: () => {
+				throw new Error("unrelated cwd read");
+			},
+		}),
+	).toEqual({
+		ok: true,
+	});
+	expect(await gateCodegraphMcp("superlogical", undefined)).toEqual({ ok: true });
+	expect(await gateCodegraphMcp("codegraph-rs", undefined)).toMatchObject({
+		ok: false,
+		reason: expect.stringContaining("session context unavailable"),
+	});
 	expect(fs.existsSync(useMarker(root))).toBe(false);
 	let calls = 0;
 	const connection: MCPServerConnection = {
@@ -178,7 +192,7 @@ for (const failure of ["missing", "exit 2"] as const) {
 test("an absent config leaves MCP calls ungated instead of applying configured-root defaults", async () => {
 	fs.unlinkSync(path.join(temp, "codegraph-index.json"));
 	expect(await config.loadConfig()).toBeUndefined();
-	expect(await gateCodegraphMcp("codegraph-rs", root)).toEqual({ ok: true });
+	expect(await gateCodegraphMcp("codegraph-rs", sessionManager)).toEqual({ ok: true });
 	expect(fs.existsSync(useMarker(root))).toBe(false);
 });
 
@@ -186,10 +200,10 @@ test("an existing malformed or unreadable config still blocks the codegraph MCP 
 	const file = path.join(temp, "codegraph-index.json");
 	fs.writeFileSync(file, "{");
 	expect(await gateCodegraphTool(root)).toEqual({ ok: true });
-	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
+	expect(await gateCodegraphMcp("codegraph-rs", sessionManager)).toMatchObject({ ok: false });
 	fs.unlinkSync(file);
 	fs.mkdirSync(file);
 	expect(await gateCodegraphTool(root)).toEqual({ ok: true });
-	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
-	expect(await gateCodegraphMcp("superlogical", root)).toEqual({ ok: true });
+	expect(await gateCodegraphMcp("codegraph-rs", sessionManager)).toMatchObject({ ok: false });
+	expect(await gateCodegraphMcp("superlogical", sessionManager)).toEqual({ ok: true });
 });

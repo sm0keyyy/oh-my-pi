@@ -782,7 +782,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		signal?: AbortSignal,
 	): Promise<CustomToolResult<MCPToolDetails>> {
 		throwIfAborted(signal);
-		const gate = await gateCodegraphMcp(this.connection.name, _ctx.sessionManager.getCwd(), signal);
+		const gate = await gateCodegraphMcp(this.connection.name, _ctx.sessionManager, signal);
 		if (!gate.ok) throw new Error(gate.reason);
 		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
 		const provider = this.connection._source?.provider;
@@ -930,7 +930,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		signal?: AbortSignal,
 	): Promise<CustomToolResult<MCPToolDetails>> {
 		throwIfAborted(signal);
-		const gate = await gateCodegraphMcp(this.serverName, _ctx.sessionManager.getCwd(), signal);
+		const gate = await gateCodegraphMcp(this.serverName, _ctx.sessionManager, signal);
 		if (!gate.ok) throw new Error(gate.reason);
 		const args = await prepareOutboundArgs(params, this.tool.inputSchema, _ctx);
 		const provider = this.#fallbackProvider;

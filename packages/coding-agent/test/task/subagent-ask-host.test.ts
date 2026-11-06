@@ -152,6 +152,45 @@ describe("subagent ask host", () => {
 		});
 	}
 
+	it("queues external interviews with subagent asks without a mirror, prefix, or fixed deadline", async () => {
+		const main = fakeUi(true);
+		const pane = fakeUi();
+		const host = registerSubagentAskHost({
+			main: main.ui,
+			subagentEventBus: new EventBus(),
+			mirror: () => pane.ui,
+		});
+		hosts.push(host);
+		const first = host.uiFor("first", "First").askDialog!(questions);
+		const onTimeout = vi.fn();
+		const onPresentation = vi.fn();
+		const external = host.externalUi().askDialog!(questions, {
+			timeout: 300_000,
+			onTimeout,
+			onTimeoutStart: onPresentation,
+		});
+		const last = host.uiFor("last", "Last").askDialog!(questions);
+		main.dialogs[0]!.options?.onTimeoutStart?.();
+		main.dialogs[0]!.resolve(answer(main.dialogs[0]!, "SQLite"));
+		await first;
+		const dialog = main.dialogs[1]!;
+		expect(dialog.questions[0]!.question).toBe("Which database?");
+		expect(dialog.options?.timeout).toBe(300_000);
+		const timers = spyOn(globalThis, "setTimeout");
+		dialog.options?.onTimeoutStart?.();
+		expect(timers).not.toHaveBeenCalled();
+		timers.mockRestore();
+		expect(onPresentation).toHaveBeenCalledTimes(1);
+		expect(pane.dialogs).toHaveLength(1);
+		dialog.options?.onTimeout?.();
+		dialog.resolve(undefined);
+		expect(await external).toBeUndefined();
+		expect(onTimeout).toHaveBeenCalledTimes(1);
+		expect(main.dialogs[2]!.questions[0]!.header).toBe("Last: Storage");
+		main.dialogs[2]!.resolve(answer(main.dialogs[2]!, "Postgres"));
+		await last;
+	});
+
 	it("queue presents in call order and mirrors a pane opened while the ask waits", async () => {
 		const main = fakeUi(true);
 		const pane = fakeUi();

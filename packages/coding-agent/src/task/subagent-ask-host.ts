@@ -19,6 +19,8 @@ export interface SubagentAskHost {
 	readonly subagentEventBus: EventBus;
 	/** Source identity need not belong to a live session; external ask sources can use the same queue. */
 	uiFor(agentId: string, displayName: string): ExtensionUIContext;
+	/** External interviews share the FIFO but retain the main dialog's idle timeout. */
+	externalUi(): ExtensionUIContext;
 	mirrorAvailable(agentId: string): void;
 	dispose(): void;
 }
@@ -104,6 +106,13 @@ class AskHost implements SubagentAskHost {
 		};
 	}
 
+	externalUi(): ExtensionUIContext {
+		return {
+			...this.options.main,
+			askDialog: (questions, options) => this.#enqueue("", questions, options, true),
+		};
+	}
+
 	mirrorAvailable(agentId: string): void {
 		if (this.#active?.agentId === agentId) this.#active.mirror();
 	}
@@ -127,6 +136,7 @@ class AskHost implements SubagentAskHost {
 		agentId: string,
 		questions: ExtensionAskDialogQuestion[],
 		dialogOptions?: ExtensionUIDialogOptions,
+		external = false,
 	): Promise<ExtensionAskDialogResult | undefined> {
 		if (this.#disposed || dialogOptions?.signal?.aborted) return Promise.resolve(undefined);
 		const { promise, resolve, reject } = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
@@ -162,7 +172,7 @@ class AskHost implements SubagentAskHost {
 		};
 		const onAbort = (): void => finish(undefined);
 		const mirror = (): void => {
-			if (settled || !presented) return;
+			if (external || settled || !presented) return;
 			try {
 				const ui = this.options.mirror?.(agentId);
 				if (ui === mirrorUi) return;
@@ -196,26 +206,27 @@ class AskHost implements SubagentAskHost {
 			if (settled || presented) return;
 			presented = true;
 			// The deadline is fixed from main presentation, not reset by typing or pane opens.
-			timer = setTimeout(() => {
-				dialogOptions?.onTimeout?.();
-				finish({
-					kind: "submit",
-					results: questions.map(question => {
-						const recommended =
-							question.recommended !== undefined && Number.isInteger(question.recommended)
-								? question.options[question.recommended]
-								: undefined;
-						return {
-							id: question.id,
-							question: question.question,
-							options: question.options.map(option => option.label),
-							multi: question.multi ?? false,
-							selectedOptions: recommended ? [recommended.label] : [],
-							timedOut: true,
-						};
-					}),
-				});
-			}, SUBAGENT_ASK_TIMEOUT_MS);
+			if (!external)
+				timer = setTimeout(() => {
+					dialogOptions?.onTimeout?.();
+					finish({
+						kind: "submit",
+						results: questions.map(question => {
+							const recommended =
+								question.recommended !== undefined && Number.isInteger(question.recommended)
+									? question.options[question.recommended]
+									: undefined;
+							return {
+								id: question.id,
+								question: question.question,
+								options: question.options.map(option => option.label),
+								multi: question.multi ?? false,
+								selectedOptions: recommended ? [recommended.label] : [],
+								timedOut: true,
+							};
+						}),
+					});
+				}, SUBAGENT_ASK_TIMEOUT_MS);
 			dialogOptions?.onTimeoutStart?.();
 			mirror();
 		};
@@ -228,11 +239,11 @@ class AskHost implements SubagentAskHost {
 					const main = this.options.main;
 					if (!main.askDialog) throw new Error("Subagent ask host requires a main ask dialog");
 					// Main owns presentation ordering against all other interactive dialogs.
-					// Its resettable timeout is disabled; this host owns the fixed deadline.
+					// External asks retain the native resettable idle countdown.
 					void main
 						.askDialog(questions, {
+							...(external ? dialogOptions : { acceptImages: dialogOptions?.acceptImages }),
 							signal: controller.signal,
-							acceptImages: dialogOptions?.acceptImages,
 							onTimeoutStart: onPresented,
 						})
 						.then(finish, fail);

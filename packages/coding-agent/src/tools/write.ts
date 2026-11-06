@@ -18,6 +18,7 @@ import {
 	isEnoent,
 	isProbablyBinaryHeader,
 	isRecord,
+	logger,
 	prompt,
 	untilAborted,
 	withFileLock,
@@ -33,6 +34,8 @@ import {
 	writeArchive,
 } from "@oh-my-pi/pi-utils/ar";
 import { detectLineEnding, normalizeToLF, restoreLineEndings } from "../edit/normalize";
+import { formatAfterWrite, scheduleAffectedTest } from "../edit/format-pipeline";
+import { getEditStore } from "../edit/store";
 
 import {
 	extractUriScheme,
@@ -1186,13 +1189,26 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (!deferred || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}
-			const finalContent = diagnostics.finalContent;
+			const formatted = await formatAfterWrite(absolutePath, this.session.settings, signal);
+			let finalContent = diagnostics.finalContent;
+			if (formatted.changed) {
+				getEditStore(this.session).invalidate(absolutePath);
+				this.session.bumpFileMutationVersion?.(absolutePath);
+				finalContent = await Bun.file(absolutePath)
+					.text()
+					.catch(error => {
+						logger.info("edit-pipeline: formatted file could not be read", { error: String(error) });
+						return finalContent;
+					});
+			}
+			scheduleAffectedTest(absolutePath, this.session.settings);
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent, displayPath);
 			const finalBytes = finalContent === writeContent ? writeBytes : Buffer.byteLength(finalContent, "utf8");
 			const writeLine = `Successfully wrote ${finalBytes} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
+			for (const tool of formatted.formatters) resultText += `\nFormatted by ${tool}.`;
 			if (stripped) {
 				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
 			}

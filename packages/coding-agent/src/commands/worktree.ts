@@ -6,6 +6,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { worktreeHelp as commandHelp } from "../cli/command-help";
 import { addWorktree, clearWorktrees, listWorktrees } from "../cli/worktree-cli";
+import { sweepWorktrees } from "../cli/worktree-sweep";
 import { Settings } from "../config/settings";
 
 export default class Worktree extends Command {
@@ -15,9 +16,9 @@ export default class Worktree extends Command {
 	static args = {
 		// A positional action keeps `omp worktree` (the no-arg form) useful.
 		action: Args.string({
-			description: "list (default), clear, or add",
+			description: "list (default), sweep (read-only), clear, or add",
 			required: false,
-			options: ["list", "clear", "add"],
+			options: ["list", "sweep", "clear", "add"],
 			default: "list",
 		}),
 		path: Args.string({
@@ -70,6 +71,7 @@ export default class Worktree extends Command {
 	static examples = [
 		"omp worktree",
 		"omp worktree list --json",
+		"omp worktree sweep --json",
 		"omp worktree add ../feature",
 		"omp worktree add -b feature ../feature origin/main",
 		"omp worktree add --detach ../review HEAD~2",
@@ -107,6 +109,24 @@ export default class Worktree extends Command {
 		}
 
 		await Settings.init({ cwd: getProjectDir() });
+		if (args.action === "sweep") {
+			try {
+				const report = await sweepWorktrees();
+				if (flags.json) {
+					console.log(JSON.stringify(report));
+				} else {
+					for (const candidate of report.candidates) console.log(`candidate  ${candidate.path}`);
+					for (const blocked of report.blocked) console.log(`blocked    ${blocked.path}: ${blocked.reason}`);
+					console.log(
+						`${report.candidates.length} candidates · ${report.blocked.length} blocked · nothing deleted${report.budgetExhausted ? " · scan budget exhausted" : ""}`,
+					);
+				}
+			} catch (error) {
+				console.error(`worktree sweep: ${error instanceof Error ? error.message : String(error)}`);
+				process.exitCode = 1;
+			}
+			return;
+		}
 		if (args.action === "clear") {
 			const { failed } = await clearWorktrees({
 				all: flags.all ?? false,

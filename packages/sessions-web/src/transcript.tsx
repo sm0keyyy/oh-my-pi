@@ -7,9 +7,7 @@ import { renderCustomMessage } from "./custom-message";
 import { ScrollFollow } from "./scroll-follow";
 
 const TranscriptList = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> & { context?: TranscriptContext }>(
-	({ context: _context, ...props }, ref) => (
-		<div {...props} ref={ref} className="transcript transcript-virtual" />
-	),
+	({ context: _context, ...props }, ref) => <div {...props} ref={ref} className="transcript transcript-virtual" />,
 );
 
 interface TranscriptContext {

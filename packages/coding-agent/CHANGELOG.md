@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added isolated docked and floating Rex component panes, agent-pane reveal, and restore records with owning omp pids.
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
 - Added remote subagent stop, reason-bearing abort, idle follow-up, pane toggles, and opt-in plan reviews, with matching sessions-web controls and additive SDK contracts.
@@ -22,6 +23,7 @@
 
 ### Fixed
 
+- Relay restore records now survive disconnects and failed Rex cleanup.
 - MCP tools outside the configured codegraph server do not require a session working directory.
 - Include codegraph index settings in the complete ordered settings list.
 - Show the Rex pane setting under its registered Tasks section.

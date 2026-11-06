@@ -3,8 +3,15 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as natives from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { sweepWorktrees } from "@oh-my-pi/pi-coding-agent/cli/worktree-sweep";
-import { ISOLATION_OWNER_FILE, writeIsolationOwner } from "@oh-my-pi/pi-coding-agent/task/isolation-ownership";
+import {
+	ISOLATION_OWNER_FILE,
+	RETAINED_BACKEND_FILE,
+	writeIsolationOwner,
+	writeRetainedBackend,
+} from "@oh-my-pi/pi-coding-agent/task/isolation-ownership";
 import { $ } from "bun";
 
 describe("worktree sweep", () => {
@@ -63,6 +70,11 @@ describe("worktree sweep", () => {
 		await Bun.write(path.join(dirty, "tracked.txt"), "dirty\n");
 		const untracked = await linked("untracked");
 		await Bun.write(path.join(untracked, "new.txt"), "untracked\n");
+		const ignored = await linked("ignored");
+		await Bun.write(path.join(ignored, ".gitignore"), "secrets/\n");
+		await git(ignored, "add", ".gitignore");
+		await git(ignored, "commit", "-m", "Ignore fixture data");
+		await Bun.write(path.join(ignored, "secrets", "config.txt"), "valuable ignored data\n");
 		await ageDir(untracked);
 		const skip = await linked("skip");
 		await git(skip, "update-index", "--skip-worktree", "tracked.txt");
@@ -97,12 +109,14 @@ describe("worktree sweep", () => {
 				noLiveCwd: true,
 				noLiveSession: true,
 				ageDays: 8,
+				ignoredFiles: 0,
 			},
 		});
 		expect(report.candidates.find(row => row.path === pr)?.kind).toBe("pr-checkout");
 		for (const [target, reason] of [
 			[dirty, "dirty"],
 			[untracked, "dirty"],
+			[ignored, "ignored-files: 1"],
 			[skip, "index-flags-hidden"],
 			[assume, "index-flags-hidden"],
 			[unmerged, "unmerged-or-no-base"],
@@ -158,12 +172,12 @@ describe("worktree sweep", () => {
 			JSON.stringify({ pid: process.pid, id: "reused", startToken: String(-1) }),
 		);
 		const dirty = await sandbox("tdirty");
-		await git(repo, "clone", "--local", repo, path.join(dirty, "m"));
+		await git(repo, "clone", "--shared", repo, path.join(dirty, "m"));
 		await Bun.write(path.join(dirty, "m", "tracked.txt"), "uncaptured\n");
 		const clean = await sandbox("tclean");
-		await git(repo, "clone", "--local", repo, path.join(clean, "m"));
+		await git(repo, "clone", "--shared", repo, path.join(clean, "m"));
 		const unmerged = await sandbox("tunmerged");
-		await git(repo, "clone", "--local", repo, path.join(unmerged, "m"));
+		await git(repo, "clone", "--shared", repo, path.join(unmerged, "m"));
 		await git(path.join(unmerged, "m"), "checkout", "-b", "unique");
 		await git(path.join(unmerged, "m"), "config", "user.name", "Sweep test");
 		await git(path.join(unmerged, "m"), "config", "user.email", "sweep@example.invalid");
@@ -172,6 +186,28 @@ describe("worktree sweep", () => {
 		await git(path.join(unmerged, "m"), "commit", "-m", "Keep unique work");
 		const opaque = await sandbox("topaque");
 		await Bun.write(path.join(opaque, "m", "work.txt"), "no git metadata\n");
+		const source = await linked("sandbox-source");
+		const currentMain = await sandbox("tcurrentmain");
+		const sideBranch = await sandbox("tsidebranch");
+		for (const target of [currentMain, sideBranch]) {
+			const mount = path.join(target, "m");
+			await fs.cp(source, mount, { recursive: true });
+			expect(await vcs.detachGitDir(mount, path.join(repo, ".git"))).toBe("detached");
+			await git(mount, "config", "user.name", "Sweep test");
+			await git(mount, "config", "user.email", "sweep@example.invalid");
+			await git(mount, "checkout", "-B", "main");
+			if (target === sideBranch) await git(mount, "checkout", "-b", "private-side");
+			await Bun.write(path.join(mount, "private.txt"), "keep private commit\n");
+			await git(mount, "add", "private.txt");
+			await git(mount, "commit", "-m", "Unpublished private commit");
+			if (target === sideBranch) await git(mount, "checkout", "main");
+		}
+		const noSource = await sandbox("tnosource");
+		await git(repo, "clone", "--local", repo, path.join(noSource, "m"));
+		const retained = await sandbox("tretained");
+		await writeRetainedBackend(retained, natives.IsoBackendKind.Overlayfs);
+		const badBackend = await sandbox("tbadbackend");
+		await Bun.write(path.join(badBackend, RETAINED_BACKEND_FILE), "{}");
 		const report = await scan();
 		for (const [target, checkout] of [
 			[absent, "absent"],
@@ -181,14 +217,19 @@ describe("worktree sweep", () => {
 		] as const) {
 			const candidate = report.candidates.find(row => row.path === target);
 			expect(candidate?.kind).toBe("sandbox");
-			expect(candidate?.proof).toEqual({ ownerDead: true, checkout });
+			expect(candidate?.proof).toEqual({ ownerDead: true, checkout, ignoredFiles: 0 });
 		}
 		for (const [target, reason] of [
 			[live, "owner-live-or-unknown"],
 			[corrupt, "owner-marker-unreadable"],
 			[dirty, "dirty"],
-			[unmerged, "unmerged-or-no-base"],
+			[unmerged, "merge-state-unknown"],
 			[opaque, "checkout-not-a-repository"],
+			[currentMain, "merge-state-unknown"],
+			[sideBranch, "merge-state-unknown"],
+			[noSource, "source-alternates-unreadable"],
+			[retained, "needs-native-teardown"],
+			[badBackend, "retained-backend-unreadable"],
 		]) {
 			expect(report.blocked).toContainEqual({ kind: "sandbox", path: target, reason });
 		}
@@ -202,6 +243,11 @@ describe("worktree sweep", () => {
 			path.join(sandboxes, "tdead", ISOLATION_OWNER_FILE),
 			JSON.stringify({ pid: dead.pid, startToken: String(-1) }),
 		);
+		await Bun.write(
+			path.join(sandboxes, "tcheckout", ISOLATION_OWNER_FILE),
+			JSON.stringify({ pid: dead.pid, startToken: String(-1) }),
+		);
+		await git(repo, "clone", "--shared", repo, path.join(sandboxes, "tcheckout", "m"));
 		async function listing(dir: string): Promise<Array<[string, number, number]>> {
 			const rows: Array<[string, number, number]> = [];
 			const walk = async (target: string): Promise<void> => {
@@ -215,8 +261,26 @@ describe("worktree sweep", () => {
 		}
 		const before = [await listing(root), await listing(sandboxes)];
 		const spy = vi.spyOn(childProcess, "execFile");
-		const report = await scan();
-		expect(report.candidates.map(row => row.kind).sort()).toEqual(["sandbox", "worktree"]);
+		const overrideKeys = [
+			"GIT_DIR",
+			"GIT_WORK_TREE",
+			"GIT_INDEX_FILE",
+			"GIT_COMMON_DIR",
+			"GIT_OBJECT_DIRECTORY",
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+		];
+		const savedEnv = Object.fromEntries(overrideKeys.map(key => [key, process.env[key]]));
+		let report;
+		try {
+			for (const key of overrideKeys) process.env[key] = path.join(base, "not-a-git-path");
+			report = await scan();
+		} finally {
+			for (const key of overrideKeys) {
+				if (savedEnv[key] === undefined) delete process.env[key];
+				else process.env[key] = savedEnv[key];
+			}
+		}
+		expect(report.candidates.map(row => row.kind).sort()).toEqual(["sandbox", "sandbox", "worktree"]);
 		expect([await listing(root), await listing(sandboxes)]).toEqual(before);
 		const reads: Record<string, true> = {
 			worktree: true,
@@ -225,6 +289,7 @@ describe("worktree sweep", () => {
 			status: true,
 			"ls-files": true,
 			"merge-base": true,
+			"for-each-ref": true,
 			stash: true,
 		};
 		let gitCalls = 0;
@@ -235,6 +300,8 @@ describe("worktree sweep", () => {
 			const command = args[1] === "-c" ? args[3] : args[1];
 			expect(Object.hasOwn(reads, command)).toBe(true);
 			if (command === "worktree" || command === "stash") expect(args[args.indexOf(command) + 1]).toBe("list");
+			const options = call[2] as childProcess.ExecFileOptions;
+			for (const key of overrideKeys) expect(options.env?.[key]).toBeUndefined();
 		}
 		expect(gitCalls).toBeGreaterThan(0);
 	});

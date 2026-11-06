@@ -4,7 +4,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getSessionsDir, getWorktreesDir, isEnoent } from "@oh-my-pi/pi-utils";
-import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE, RETAINED_BACKEND_FILE } from "../task/isolation-ownership";
+import {
+	hasLiveIsolationOwner,
+	ISOLATION_OWNER_FILE,
+	readRetainedMountBackend,
+	RETAINED_BACKEND_FILE,
+} from "../task/isolation-ownership";
 import { scanWorktrees } from "./worktree-cli";
 
 export interface SweepReport {
@@ -33,6 +38,7 @@ export type SweepCandidate =
 				noLiveCwd: true;
 				noLiveSession: true;
 				ageDays: number;
+				ignoredFiles: 0;
 			};
 	  }
 	| {
@@ -40,7 +46,7 @@ export type SweepCandidate =
 			path: string;
 			ownerPid: number;
 			ownerId?: string;
-			proof: { ownerDead: true; checkout: "absent" | "empty" | "clean-merged-no-stash" };
+			proof: { ownerDead: true; checkout: "absent" | "empty" | "clean-merged-no-stash"; ignoredFiles: 0 };
 	  };
 
 interface RegisteredWorktree {
@@ -232,6 +238,45 @@ async function run(
 	cwd?: string,
 ): Promise<{ code: number | null; stdout: string }> {
 	checkBudget(deadline);
+	if (command === "git") {
+		const offset = args[1] === "-c" && args[2] === "core.fsmonitor=false" ? 3 : 1;
+		const action = args[offset];
+		const reads: Record<string, true> = {
+			"rev-parse": true,
+			"symbolic-ref": true,
+			status: true,
+			"ls-files": true,
+			"merge-base": true,
+			"for-each-ref": true,
+		};
+		if (
+			args[0] !== "--no-optional-locks" ||
+			!(
+				Object.hasOwn(reads, action) ||
+				((action === "worktree" || action === "stash") && args[offset + 1] === "list")
+			)
+		) {
+			throw new Error("git-command-not-read-only");
+		}
+	} else if (command !== "lsof" && command !== "ps") {
+		throw new Error("command-not-read-only");
+	}
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		GIT_OPTIONAL_LOCKS: "0",
+		GIT_TERMINAL_PROMPT: "0",
+		GIT_NO_LAZY_FETCH: "1",
+		GIT_NO_REPLACE_OBJECTS: "1",
+	};
+	for (const key of [
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_INDEX_FILE",
+		"GIT_COMMON_DIR",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	])
+		delete env[key];
 	const result = Promise.withResolvers<{ code: number | null; stdout: string }>();
 	childProcess.execFile(
 		command,
@@ -241,13 +286,7 @@ async function run(
 			encoding: "utf8",
 			timeout: Math.min(15_000, deadline - Date.now()),
 			maxBuffer: OUTPUT_CAP,
-			env: {
-				...process.env,
-				GIT_OPTIONAL_LOCKS: "0",
-				GIT_TERMINAL_PROMPT: "0",
-				GIT_NO_LAZY_FETCH: "1",
-				GIT_NO_REPLACE_OBJECTS: "1",
-			},
+			env,
 		},
 		(error, stdout) => {
 			result.resolve({
@@ -343,6 +382,7 @@ async function proveWorktree(
 	ctx: ScanContext,
 	sandbox: boolean,
 	roots: string[],
+	mergeHeads?: string[],
 ): Promise<Extract<SweepCandidate, { kind: "worktree" | "pr-checkout" }>> {
 	if (entry.locked) throw new Error("locked");
 	if (entry.bare) throw new Error("bare-repository");
@@ -371,14 +411,15 @@ async function proveWorktree(
 	if (branchState.code !== 0 && branchState.code !== 1) throw new Error("branch-state-unknown");
 	const branch = branchState.code === 0 ? branchState.stdout.trim().replace(/^refs\/heads\//, "") : undefined;
 	if (branch !== entry.branch) throw new Error("branch-changed-or-unknown");
-	if (
-		(await git(
-			entry.path,
-			["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
-			ctx,
-		)) !== ""
-	)
-		throw new Error("dirty");
+	const status = await git(
+		entry.path,
+		["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none", "--ignored=matching"],
+		ctx,
+	);
+	const ignored = await git(entry.path, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], ctx);
+	const ignoredFiles = ignored.split("\0").filter(Boolean).length;
+	if (ignoredFiles > 0) throw new Error(`ignored-files: ${ignoredFiles}`);
+	if (status !== "") throw new Error("dirty");
 	const flags = await git(entry.path, ["ls-files", "-v", "-z"], ctx);
 	for (const record of flags.split("\0")) {
 		if (!record) continue;
@@ -387,30 +428,8 @@ async function proveWorktree(
 	}
 	const ageDays = Math.max(0, (ctx.now - metadata.mtimeMs) / DAY_MS);
 	if (!sandbox && ageDays < ctx.maxAgeDays) throw new Error("too-young");
-	let mergedInto: string | undefined;
-	for (const ref of ["refs/heads/main", "refs/heads/master", "refs/remotes/origin/HEAD"]) {
-		const resolved = await run(
-			"git",
-			["--no-optional-locks", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-			ctx.deadline,
-			main,
-		);
-		if (resolved.code === 1) continue;
-		if (resolved.code !== 0) throw new Error("merge-ref-unreadable");
-		const merged = await run(
-			"git",
-			["--no-optional-locks", "merge-base", "--is-ancestor", head, resolved.stdout.trim()],
-			ctx.deadline,
-			main,
-		);
-		if (merged.code === 0) {
-			mergedInto = ref.replace(/^refs\/(heads|remotes)\//, "");
-			break;
-		}
-		if (merged.code !== 1) throw new Error("merge-state-unknown");
-	}
-	if (!mergedInto) throw new Error("unmerged-or-no-base");
-	const stashes = await git(main, ["stash", "list", "--format=%gs", "-z"], ctx);
+	const mergedInto = await proveMerged(main, mergeHeads ?? [head], ctx);
+	const stashes = await git(entry.path, ["stash", "list", "--format=%gs", "-z"], ctx);
 	for (const stash of stashes.split("\0").filter(Boolean)) {
 		const match = /^(?:WIP on|On) ([^:]+):/.exec(stash.trim());
 		if (!match || !entry.branch || match[1] === "(no branch)") throw new Error("stash-provenance-unknown");
@@ -431,8 +450,41 @@ async function proveWorktree(
 			noLiveCwd: true,
 			noLiveSession: true,
 			ageDays,
+			ignoredFiles: 0,
 		},
 	};
+}
+
+async function proveMerged(repo: string, heads: string[], ctx: ScanContext): Promise<string> {
+	let mergedInto: string | undefined;
+	for (const head of heads) {
+		let merged = false;
+		for (const ref of ["refs/heads/main", "refs/heads/master", "refs/remotes/origin/HEAD"]) {
+			const resolved = await run(
+				"git",
+				["--no-optional-locks", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+				ctx.deadline,
+				repo,
+			);
+			if (resolved.code === 1) continue;
+			if (resolved.code !== 0) throw new Error("merge-ref-unreadable");
+			const result = await run(
+				"git",
+				["--no-optional-locks", "merge-base", "--is-ancestor", head, resolved.stdout.trim()],
+				ctx.deadline,
+				repo,
+			);
+			if (result.code === 0) {
+				mergedInto ??= ref.replace(/^refs\/(heads|remotes)\//, "");
+				merged = true;
+				break;
+			}
+			if (result.code !== 1) throw new Error("merge-state-unknown");
+		}
+		if (!merged) throw new Error("unmerged-or-no-base");
+	}
+	if (!mergedInto) throw new Error("merge-state-unknown");
+	return mergedInto;
 }
 
 async function processCwds(deadline: number): Promise<ProcessCwd[] | undefined> {
@@ -524,6 +576,14 @@ async function proveSandbox(target: string, ctx: ScanContext): Promise<Extract<S
 		throw new Error("owner-marker-unreadable");
 	if (await withinBudget(ctx.deadline, () => hasLiveIsolationOwner(target))) throw new Error("owner-live-or-unknown");
 	await proveInactive(target, ctx);
+	let retainedBackend: number | undefined;
+	try {
+		retainedBackend = await withinBudget(ctx.deadline, () => readRetainedMountBackend(target));
+	} catch (error) {
+		rethrowBudget(error);
+		throw new Error("retained-backend-unreadable");
+	}
+	if (retainedBackend !== undefined) throw new Error("needs-native-teardown");
 	let checkout: "absent" | "empty" | "clean-merged-no-stash" = "absent";
 	for (const name of await withinBudget(ctx.deadline, () => fs.readdir(target))) {
 		if (name === ISOLATION_OWNER_FILE || name === RETAINED_BACKEND_FILE) continue;
@@ -539,7 +599,38 @@ async function proveSandbox(target: string, ctx: ScanContext): Promise<Extract<S
 		const entries = await registeredWorktrees(mount, ctx);
 		const entry = entries.find(entry => entry.path === mount);
 		if (!entry || !entries[0]) throw new Error("checkout-unregistered");
-		await proveWorktree(entry, entries[0].path, ctx, true, [target]);
+		let mergeRepo = entries[0].path;
+		let mergeHeads: string[] | undefined;
+		const gitDir = path.join(mount, ".git");
+		if ((await optionalStat(gitDir, ctx.deadline))?.isDirectory()) {
+			try {
+				const alternates = (
+					await withinBudget(ctx.deadline, () =>
+						Bun.file(path.join(gitDir, "objects", "info", "alternates")).text(),
+					)
+				)
+					.trim()
+					.split("\n");
+				if (alternates.length !== 1 || !alternates[0]) throw new Error("source-alternates-unreadable");
+				const objects = await withinBudget(ctx.deadline, () =>
+					fs.realpath(path.resolve(gitDir, "objects", alternates[0])),
+				);
+				if (path.basename(objects) !== "objects") throw new Error("source-alternates-unreadable");
+				mergeRepo = path.dirname(objects);
+				if (mergeRepo === gitDir) throw new Error("source-alternates-unreadable");
+			} catch (error) {
+				rethrowBudget(error);
+				throw new Error("source-alternates-unreadable");
+			}
+			const tips = await git(
+				mount,
+				["for-each-ref", "--format=%(objectname)", "refs/heads", "refs/tags", "refs/remotes"],
+				ctx,
+			);
+			mergeHeads = [...new Set([entry.head ?? "", ...tips.trim().split("\n")])];
+			if (mergeHeads.some(head => !/^[0-9a-f]{40,64}$/.test(head))) throw new Error("checkout-refs-unreadable");
+		}
+		await proveWorktree(entry, mergeRepo, ctx, true, [target], mergeHeads);
 		checkout = "clean-merged-no-stash";
 	}
 	if ((await withinBudget(ctx.deadline, () => Bun.file(marker).text())) !== ownerText)
@@ -549,6 +640,6 @@ async function proveSandbox(target: string, ctx: ScanContext): Promise<Extract<S
 		path: target,
 		ownerPid: owner.pid,
 		ownerId: "id" in owner ? (owner.id as string) : undefined,
-		proof: { ownerDead: true, checkout },
+		proof: { ownerDead: true, checkout, ignoredFiles: 0 },
 	};
 }

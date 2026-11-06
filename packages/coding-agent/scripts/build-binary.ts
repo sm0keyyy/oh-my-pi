@@ -3,6 +3,7 @@
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { compileCodingAgent } from "./compile-binary";
+import { buildPaneRelay, resetPaneRelay } from "./pane-relay";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
@@ -76,13 +77,15 @@ async function main(): Promise<void> {
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
 	const outName = crossBuild ? `omp-${crossBuild.id}` : "omp";
 	const outputPath = path.join(packageDir, "dist", outName);
-	// Generate inside the try so the finally always restores the empty checked-in
-	// placeholders (stats client archive, docs index) even on failure.
+	// Restore generated placeholders even when compilation fails.
 	try {
 		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats"]);
 		// Embed metadata for the same content-addressed viewer used by source exports.
 		// Generate here too for clean checkouts that skipped install hooks.
 		await runCommand(["bun", "--cwd=../collab-web", "run", "gen:export-viewer"]);
+		if ((crossBuild?.platform ?? process.platform) === "darwin") {
+			await buildPaneRelay(path.join(packageDir, "src/rex-panes/relay/omp-pane-relay.bin"));
+		}
 		await compileCodingAgent({
 			repoRoot,
 			entrypoint: path.join(packageDir, "src", "cli.ts"),
@@ -106,6 +109,7 @@ async function main(): Promise<void> {
 			]);
 		}
 	} finally {
+		await resetPaneRelay();
 		await runCommand(["bun", "--cwd=../stats", "run", "gen:stats:reset"]);
 	}
 }

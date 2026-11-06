@@ -172,4 +172,99 @@ describe("finalized table scrollback", () => {
 			composer.stop();
 		}
 	});
+
+	for (const nextTurn of [false, true]) {
+		it(`preserves the parked draft anchor after an ask closes${nextTurn ? " and new output fills the screen" : ""}`, async () => {
+			const terminal = new VirtualTerminal(200, 36);
+			const scheduler = new VirtualRenderScheduler();
+			const composer = new Composer({
+				terminal,
+				tuiOptions: { renderScheduler: scheduler },
+				preferences: { quiet: true },
+			});
+			const transcript = new TranscriptContainer();
+			const hud = { render: () => Array.from({ length: 9 }, (_, i) => `HUD ${i}`) };
+			const editor = new Container();
+			const draft = new Text("EDITOR", 0, 0);
+			editor.addChild(draft);
+			const ask = new AskDialogComponent(
+				[
+					{
+						id: "install",
+						question: "Install the reviewed branch?",
+						options: Array.from({ length: 7 }, (_, i) => ({ label: `Option ${i}` })),
+					},
+				],
+				{
+					onSubmit: () => {},
+					onCancel: () => {},
+					onPrompt: () => Promise.resolve(undefined),
+				},
+				{ tui: composer.ui },
+			);
+			composer.setRuntimeChildren([transcript, hud, editor], {
+				transientChrome: [editor],
+				selfClearingChrome: [hud],
+			});
+			composer.start({ playWelcomeIntro: false });
+			composer.setRunActive(true);
+			try {
+				await scheduler.settle(terminal);
+				transcript.addChild({ render: () => Array.from({ length: 20 }, (_, i) => `PRIOR ${i}`) });
+				const message = new AssistantMessageComponent();
+				transcript.addChild(message);
+				message.updateContent(reply(ANSWER), { transient: true });
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				message.updateContent(reply(ANSWER));
+				message.markTranscriptBlockFinalized();
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+
+				draft.setText("EDITOR\nparked draft\nsecond draft line");
+				editor.clear();
+				editor.addChild(ask);
+				editor.addChild(draft);
+				composer.ui.setFocus(ask);
+				composer.setRunActive(false);
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				editor.clear();
+				editor.addChild(draft);
+				composer.ui.setFocus(composer.editor);
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				const floatingRow = terminal.getViewport().findIndex(row => Bun.stripANSI(row).trim() === "EDITOR");
+				expect(floatingRow).toBeLessThan(35);
+				const next = nextTurn ? Array.from({ length: 40 }, (_, i) => `NEXT ${i}`) : [];
+				if (nextTurn) {
+					composer.setRunActive(true);
+					for (const line of next) transcript.addChild(new Text(line, 0, 0));
+					composer.ui.requestRender();
+					await scheduler.settle(terminal);
+					composer.setRunActive(false);
+					await scheduler.advance(terminal, 300);
+				}
+
+				draft.setText(["EDITOR", ...Array.from({ length: 11 }, (_, i) => `draft ${i}`)].join("\n"));
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				draft.setText("EDITOR");
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+
+				const view = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+				expect(view.findIndex(row => row === "EDITOR")).toBe(nextTurn ? 35 : floatingRow);
+				const expected = message.render(200).map(row => Bun.stripANSI(row).trimEnd());
+				const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+				const start = buffer.findIndex(row => row.includes("Subagents can now be watched"));
+				expect(buffer.slice(start, start + expected.length)).toEqual(expected);
+				expect(buffer.filter(row => row.startsWith("NEXT "))).toEqual(next);
+				expect(buffer.filter(row => row.includes("Subagent panes"))).toHaveLength(1);
+			} finally {
+				ask.dispose();
+				composer.stop();
+			}
+		});
+	}
 });

@@ -490,12 +490,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
 		const transientGrew = transientRows > this.#lastTransientRows;
 		const transientFloor = this.#syncTransientFloor(transientRows);
+		const focused = this.ui.getFocused();
+		// A parked draft must not inherit the dialog's retirement bill.
+		if (focused === this.editor) this.#billTransient = false;
 		const promoteTransient =
 			!this.#preferences.completeScrollback &&
 			transientGrew &&
 			transientRows > transientFloor &&
 			(this.#billTransient ||
-				(this.ui.getFocused() instanceof AskDialogComponent && transcript.hasPartlyCommittedFinalizedHead()));
+				(focused instanceof AskDialogComponent && transcript.hasPartlyCommittedFinalizedHead()));
 		if (promoteTransient) this.#billTransient = true;
 		// A finalized reply already split across history and the viewport cannot
 		// hide displaced rows: that would punch a hole through its middle. Bill

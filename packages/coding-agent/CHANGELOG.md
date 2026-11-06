@@ -6,6 +6,7 @@
 
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
+- Added remote subagent stop, reason-bearing abort, idle follow-up, pane toggles, and opt-in plan reviews, with matching sessions-web controls and additive SDK contracts.
 
 ### Changed
 

@@ -869,8 +869,8 @@ class RpcClient(WireClient):
 
         Passive UI methods such as notifications and status updates are ignored.
         Confirm dialogs default to `False`. Select, input, and editor requests
-        are cancelled unless an explicit value is provided; `ask` requests are
-        always cancelled.
+        are cancelled unless an explicit value is provided; `ask` and `review`
+        requests are always cancelled.
         """
 
         def handle(request: ExtensionUiRequest) -> None:
@@ -910,7 +910,7 @@ class RpcClient(WireClient):
                 else:
                     self.cancel_ui_request(request.id)
                 return
-            if request.method == "ask":
+            if request.method in {"ask", "review"}:
                 self.cancel_ui_request(request.id)
 
         return self.on_ui_request(handle)

@@ -3656,7 +3656,7 @@ class WireClient:
         return required(expect_object(self._command("set_event_filter", params), "set_event_filter"), "events", nullable(array(decode_str)), "set_event_filter")
 
     def get_subagents(self) -> tuple[SubagentSnapshot, ...]:
-        """List running subagents."""
+        """List running subagents, plus idle accepted ones marked followUpAvailable"""
         params: dict[str, object] = {}
         return required(expect_object(self._command("get_subagents", params), "get_subagents"), "subagents", array(parse_subagent_snapshot), "get_subagents")
 

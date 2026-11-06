@@ -30,7 +30,7 @@ Behavior notes:
 - RPC/ACP pin neutral defaults for settings declaring the corresponding `protocolDefault`, including task isolation/execution, memory, advisor, and advisor tier settings. RPC additionally pins async-job and bash/eval auto-background defaults. Explicit project/global config, `--config`, and isolated settings remain authoritative; on-disk config changes are watched in long-lived CLI RPC processes. Todo settings are not host-defaulted.
 - The process claims stdin before extension discovery, then parses it one non-empty JSONL line at a time. Malformed JSON emits a recoverable `command: "parse"` failure and does not terminate the loop.
 - At startup it writes a `ready` frame before processing commands. The frame advertises supported protocol versions and transport limits.
-- Extension startup (`session_start`) runs after `ready`. While it runs, only `extension_ui_response` (an extension may be waiting on a dialog) and `set_ask_dialog` are handled; every other valid frame is read and waits, in order, until startup finishes (a malformed line still gets its `parse` failure at once). If stdin closes during startup, dialogs the extension awaits are rejected so startup can finish.
+- Extension startup (`session_start`) runs after `ready`. While it runs, only `extension_ui_response` (an extension may be waiting on a dialog), `set_ask_dialog`, and `set_review_dialog` are handled; every other valid frame is read and waits, in order, until startup finishes (a malformed line still gets its `parse` failure at once). If stdin closes during startup, dialogs the extension awaits are rejected so startup can finish.
 - When stdin closes, pending extension UI, host-tool, and host-URI requests are rejected; accepted commands are drained, the session is disposed, pending stdout is delivered, and normal shutdown exits with code `0`. A session-persistence failure still latched at disposal exits with code `1` after delivering its `notice` frame.
 - Responses/events are written as one JSON object per line.
 
@@ -188,6 +188,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "set_slow_mode", enabled: boolean }`
 - `{ id?, type: "goal", op: "get" | "create" | "resume" | "pause" | "drop", objective?: string, token_budget?: number }`
 - `{ id?, type: "set_ask_dialog", enabled: boolean }`
+- `{ id?, type: "set_review_dialog", enabled: boolean }`
 - `{ id?, type: "get_available_commands" }`
 - `{ id?, type: "get_entries", since?: string }`
 - `{ id?, type: "get_tree" }`
@@ -200,6 +201,10 @@ Important edge behavior from runtime:
 - `{ id?, type: "get_subagent_messages", subagentId?: string, sessionFile?: string, fromByte?: number }`
 - `{ id?, type: "cancel_subagent", subagentId: string }`
 - `{ id?, type: "steer_subagent", subagentId: string, message: string }`
+- `{ id?, type: "stop_subagent", subagentId: string, reason: string }`
+- `{ id?, type: "abort_subagent", subagentId: string, reason?: string }`
+- `{ id?, type: "follow_up_subagent", subagentId: string, message: string }`
+- `{ id?, type: "toggle_pane", pane: "todo" | "agents", shape?: "dock" | "float" }`
 
 ### Model
 
@@ -789,6 +794,21 @@ fallback when enabling fails.
 }
 ```
 
+### `set_review_dialog` payload
+
+`set_review_dialog` opts a headless RPC host in to plan-review requests.
+It returns `{ enabled: boolean }`; an older host returns a failed response.
+Until enabled, the optional extension `ui.review` method is unavailable.
+Session-socket clients enable review on connect and race the local dialog:
+the first answer wins, and losing clients receive `method: "cancel"`.
+Sessions-web records successful opt-in and hides its new subagent controls
+when an older host rejects the capability.
+
+```json
+{ "id": "req_review", "type": "set_review_dialog", "enabled": true }
+{ "id": "req_review", "type": "response", "command": "set_review_dialog", "success": true, "data": { "enabled": true } }
+```
+
 ### `set_todos` payload
 
 Replaces the todo state for the current session and returns `{ todoPhases }`. The list is recorded on the current session branch and restored when that branch is reloaded, compacted, or resumed, like an interactive `/todo` edit.
@@ -1120,7 +1140,10 @@ Subagent forwarding defaults to `"off"`. `set_subagent_subscription` selects:
 - `"progress"`: lifecycle and progress frames
 - `"events"`: lifecycle, progress, and full subagent event frames
 
-`get_subagents` returns the registry snapshot sorted by subagent index and id.
+`get_subagents`: List running subagents, plus idle accepted ones marked `followUpAvailable`.
+The optional `followUpAvailable: true` flag identifies a live, unparked idle
+subagent whose result the parent accepted. Existing snapshot fields and lifecycle
+frames retain their shapes; absence of the flag does not permit follow-up.
 `get_subagent_messages` selects a transcript by `subagentId` or a registered
 `sessionFile` (`subagentId` takes precedence); arbitrary file paths are rejected.
 `fromByte` supports incremental reads, defaults to zero, and is clamped to a
@@ -1133,7 +1156,7 @@ reports `reset: true`.
 
 ### Cancelling subagents
 
-`cancel_subagent` hard-kills one subagent currently listed by `get_subagents`
+`cancel_subagent` hard-kills one running subagent of this session
 (foreground or background, at any nesting depth) without aborting the parent
 turn. It uses the same path as the Agent Hub kill: the subagent's live turn is
 aborted and its registry entry becomes an `aborted` tombstone, so the owning
@@ -1186,6 +1209,42 @@ Failure responses:
 - the subagent drops or rejects the message before accepting it (for example
   an abort or a usage-limit preflight denial lands first) →
   `error: "Subagent refused the message: <reason>"`
+
+### Stopping, aborting and following up subagents
+
+These commands target subagents owned by this session. Their successful command
+responses carry an operation result in `data`; a refused operation returns
+`{ ok: false, reason }`, not a successful stop or follow-up.
+
+- `stop_subagent` requires a nonblank `reason`. It asks a driven run to summarize
+  its partial work, then settles the parent task with `Stopped by operator: <reason>`.
+  Data is `{ ok: true }` or `{ ok: false, reason: "unknown-agent" | "not-running" | "no-driven-run" }`.
+- `abort_subagent` with a reason aborts immediately and returns salvaged activity
+  to the parent with `Aborted by operator: <reason>`. Data is `{ ok: true }` or
+  `{ ok: false, reason: "unknown-agent" | "not-live" }`. Without a reason it uses
+  the unchanged `cancel_subagent` path: data remains `{ cancelled: boolean }`,
+  and the parent cancellation text remains `Cancelled by caller`.
+- `follow_up_subagent` requires a nonblank `message` and a live, idle, unparked
+  subagent whose prior result was accepted. The message is literal: slash
+  commands and prompt templates do not run. It starts one wake turn and the
+  parent receives one IRC reply. Data is `{ ok: true }` or
+  `{ ok: false, reason: "unknown-agent" | "running" | "not-accepted" }`.
+  This does not change `steer_subagent` behavior or error text.
+
+```json
+{ "id": "stop", "type": "stop_subagent", "subagentId": "Worker", "reason": "Need a partial result" }
+{ "id": "stop", "type": "response", "command": "stop_subagent", "success": true, "data": { "ok": true } }
+{ "id": "abort", "type": "abort_subagent", "subagentId": "Worker", "reason": "Wrong approach" }
+{ "id": "follow", "type": "follow_up_subagent", "subagentId": "Worker", "message": "/literal follow-up text" }
+```
+
+### Toggling native panes
+
+`toggle_pane` delegates to the interactive host and returns `{ open: boolean }`.
+`pane` is `"todo"` or `"agents"`; optional `shape` is `"dock"` or `"float"`.
+A host without native pane support returns a failed command response with
+`error: "toggle_pane needs the interactive TUI in Rex"`. Toggling a pane does
+not answer a pending extension dialog.
 
 ### Side questions (`/btw`)
 
@@ -1347,7 +1406,7 @@ Use `--mode rpc --no-ui` for a host without a tool UI surface; use `--mode rpc-u
 
 `RpcExtensionUIRequest` (`type: "extension_ui_request"`) methods:
 
-- `select`, `confirm`, `input`, `editor`, `ask`, `cancel`
+- `select`, `confirm`, `input`, `editor`, `ask`, `review`, `cancel`
    - `select` keeps labels in `options: string[]` and, when any option has a
      description, emits a positionally aligned
      `optionDetails: Array<{ description?: string }>` array. Hosts that do not
@@ -1361,6 +1420,12 @@ Use `--mode rpc --no-ui` for a host without a tool UI surface; use `--mode rpc-u
      `questions: Array<{ id: string, question: string, header?: string, options: Array<{ label: string, description?: string, preview?: string }>, multi?: boolean, recommended?: number }>`
      plus `timeout?: number`. `options` never include an "Other" entry; hosts
      always offer free text.
+   - `review` carries `path: string`, `title: string`,
+     `sections: Array<{ id: string, heading: string, excerpt: string }>`, and
+     optional `timeout?: number`. At most 200 sections are sent, with excerpts
+     truncated to 400 characters each. Full plan markdown is never sent, and
+     the serialized frame must remain below 1 MiB. Headless hosts must first
+     enable `set_review_dialog`; session-socket clients enable it on connect.
 - `notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`
 - `open_url` (emitted by RPC login flows): includes `url`, optional `launchUrl`, and optional `instructions`. When present, `launchUrl` is a short loopback redirect and is the recommended copy target so terminal truncation cannot corrupt OAuth query parameters.
 
@@ -1392,6 +1457,7 @@ Example:
 - `{ type: "extension_ui_response", id: string, confirmed: boolean }`
 - `{ type: "extension_ui_response", id: string, cancelled: true, timedOut?: boolean }`
 - `{ type: "extension_ui_response", id: string, answers: Array<{ id: string, selectedOptions: string[], customInput?: string }> }` (answers an `ask` request)
+- `{ type: "extension_ui_response", id: string, review: { verdict: "approve" | "request-changes", comments: Array<{ section: string, text: string }> } }` (answers a `review` request)
 
 `select` and `input` resolve to `undefined`, and `confirm` to `false`, on
 cancellation, timeout, or signal abort. Signal abort emits a `cancel` request
@@ -1407,6 +1473,17 @@ option, else its first.
 `selectedOptions` holds exact option labels without duplicates; a multi-select may be empty. A single-select
 (`multi` absent or false) takes at most one option and not both an option and `customInput`. `customInput`
 is trimmed and ignored when empty. Any other shape fails the `ask` tool call instead of guessing.
+
+For `review`, each comment's `section` is the exact request section id and heading
+joined by one space, such as `"§4 Slices"`. A section may have at most one
+comment; unknown sections or invalid verdicts are rejected. Cancellation uses
+the existing `{ cancelled: true, timedOut?: boolean }` response and resolves
+the extension review as `{ kind: "cancelled", timedOut?: boolean }`.
+
+```json
+{ "type": "extension_ui_request", "id": "review_1", "method": "review", "path": "/tmp/plan.md", "title": "Plan", "sections": [{ "id": "§4", "heading": "Slices", "excerpt": "Bounded section text" }] }
+{ "type": "extension_ui_response", "id": "review_1", "review": { "verdict": "request-changes", "comments": [{ "section": "§4 Slices", "text": "Merge view and wire" }] } }
+```
 
 ```json
 {

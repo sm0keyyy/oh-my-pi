@@ -603,6 +603,16 @@ FAKE_SERVER = textwrap.dedent(
                     flush=True,
                 )
                 continue
+            if message == "needs review":
+                print(json.dumps({
+                    "type": "extension_ui_request",
+                    "id": "ui-review",
+                    "method": "review",
+                    "path": "/tmp/plan.md",
+                    "title": "Plan",
+                    "sections": [{"id": "§1", "heading": "Scope", "excerpt": "Review the scope."}],
+                }), flush=True)
+                continue
             if message == "side frames":
                 print(json.dumps({"type": "available_commands_update", "commands": [{"name": "plan", "source": "builtin"}]}), flush=True)
                 print(json.dumps({"type": "subagent_lifecycle", "payload": {"id": "Worker", "agent": "task", "agentSource": "bundled", "status": "started", "index": 0}}), flush=True)
@@ -1182,6 +1192,16 @@ class RpcClientTests(unittest.TestCase):
             self.assertEqual(
                 client.request_raw("debug_last_ui_response"),
                 {"type": "extension_ui_response", "id": "ui-ask", "cancelled": True},
+            )
+
+    def test_headless_ui_cancels_review_so_the_prompt_completes(self) -> None:
+        with self.make_client() as client:
+            client.install_headless_ui()
+            turn = client.prompt_and_wait("needs review", timeout=2.0)
+            self.assertEqual(turn.assistant_text, "ui acknowledged")
+            self.assertEqual(
+                client.request_raw("debug_last_ui_response"),
+                {"type": "extension_ui_response", "id": "ui-review", "cancelled": True},
             )
 
     def test_null_command_data_is_distinct_from_an_empty_result(self) -> None:

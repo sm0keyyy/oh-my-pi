@@ -175,7 +175,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	},
 	{
 		name: "get_subagents",
-		doc: "List running subagents.",
+		doc: "List running subagents, plus idle accepted ones marked followUpAvailable",
 		result: { subagents: "SubagentSnapshot[]" },
 		unwrap: "subagents",
 	},

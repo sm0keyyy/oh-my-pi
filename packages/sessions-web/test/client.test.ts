@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { readSseEvents } from "../../utils/src/stream";
 import { ReplayJournal } from "../../sessions-gateway/src/replay";
 import { FrameDecoder, messageOf, SessionClient, sortSessions, type RecordValue, type Snapshot } from "../src/client";
+import { Rail } from "../src/rail";
 
 const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
 class TestEventSource extends EventTarget {
@@ -291,6 +294,9 @@ function fixtureClient(
 						break;
 					case "get_subagents":
 						respond({ subagents: [] });
+						break;
+					case "set_review_dialog":
+						respond({ enabled: command.enabled });
 						break;
 					default:
 						respond({});
@@ -1132,6 +1138,21 @@ test.each(["get_available_commands", "get_session_stats"])(
 	},
 );
 
+function renderRail(client: SessionClient, snapshot: Snapshot = client.getSnapshot()): string {
+	return renderToStaticMarkup(
+		createElement(Rail, {
+			client,
+			snapshot,
+			onModel() {},
+			onThinking() {},
+			async onRefresh() {},
+			host: {},
+			selectedAgentId: null,
+			onAgentClose() {},
+		}),
+	);
+}
+
 test("review capability and verdicts round-trip, while older hosts still attach", async () => {
 	let transport: FixtureStream | undefined;
 	const answers: RecordValue[] = [];
@@ -1144,6 +1165,7 @@ test("review capability and verdicts round-trip, while older hosts still attach"
 	});
 	client.connect();
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(client.getSnapshot().reviewDialogEnabled).toBe(true);
 	transport!.send(
 		JSON.stringify({
 			type: "extension_ui_request",
@@ -1170,7 +1192,16 @@ test("review capability and verdicts round-trip, while older hosts still attach"
 		},
 	]);
 	expect(client.getSnapshot().dialogs).toHaveLength(0);
-	const legacy = fixtureClient((stream, command) => {
+	const legacy = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_subagents") {
+			respond({
+				subagents: [
+					{ id: "running", agent: "task", status: "running" },
+					{ id: "idle", agent: "task", status: "completed", followUpAvailable: true },
+				],
+			});
+			return true;
+		}
 		if (command.type !== "set_review_dialog") return;
 		stream.send(
 			JSON.stringify({
@@ -1184,6 +1215,56 @@ test("review capability and verdicts round-trip, while older hosts still attach"
 		return true;
 	});
 	legacy.connect();
-	await waitForSnapshot(legacy, snapshot => snapshot.phase === "connected");
+	await waitForSnapshot(legacy, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 2);
 	expect(legacy.getSnapshot().error).toBeNull();
+	expect(legacy.getSnapshot().reviewDialogEnabled).toBe(false);
+	const oldRail = renderRail(legacy);
+	expect(oldRail).toContain("Cancel");
+	for (const label of ["Stop agent", "Abort agent", "Send follow-up"]) expect(oldRail).not.toContain(label);
+	const capableRail = renderRail(client, { ...client.getSnapshot(), agents: legacy.getSnapshot().agents });
+	for (const label of ["Stop agent", "Abort agent", "Send follow-up"]) expect(capableRail).toContain(label);
+});
+
+test("Cancel retains the aborted rail row when refresh omits it from the roster", async () => {
+	let roster: RecordValue[] = [
+		{ id: "worker", agent: "task", status: "running", description: "retained task details" },
+		{ id: "completed", agent: "task", status: "completed", followUpAvailable: true },
+		{ id: "missing-running", status: "running" },
+		{ id: "missing-pending", status: "pending" },
+	];
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_subagents") {
+			respond({ subagents: roster });
+			return true;
+		}
+		if (command.type === "cancel_subagent") {
+			roster = [];
+			stream.send(
+				JSON.stringify({
+					type: "subagent_lifecycle",
+					payload: { subagentId: command.subagentId, status: "aborted" },
+				}),
+			);
+			respond({ cancelled: true });
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 4);
+	await client.request({ type: "cancel_subagent", subagentId: "worker" });
+	await client.refresh();
+	await client.loadCatalog();
+	expect(client.getSnapshot().agents).toEqual([
+		{ id: "completed", agent: "task", status: "completed", followUpAvailable: false },
+		expect.objectContaining({
+			id: "worker",
+			status: "aborted",
+			description: "retained task details",
+			followUpAvailable: false,
+		}),
+	]);
+	const rail = renderRail(client);
+	expect(rail).toContain("<b>worker</b>");
+	expect(rail).toContain("aborted");
+	expect(rail).toContain("retained task details");
 });

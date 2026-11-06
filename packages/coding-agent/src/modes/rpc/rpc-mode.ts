@@ -901,21 +901,16 @@ export async function handleRpcSubagentControl(
 	command: SubagentControlCommand,
 	parentFile?: string,
 ): Promise<object> {
-	const owned = ownedSubagentFile(registry, command.subagentId, parentFile);
-	if (command.type === "abort_subagent" && command.reason === undefined) {
-		return { cancelled: await handleRpcCancelSubagent(registry, command.subagentId) };
+	if (command.type === "abort_subagent") {
+		if (command.reason === undefined)
+			return { cancelled: await handleRpcCancelSubagent(registry, command.subagentId) };
+		if (!ownedSubagentFile(registry, command.subagentId, parentFile)) return { ok: false, reason: "unknown-agent" };
+		return abortSubagent(command.subagentId, command.reason);
 	}
-	if (!owned) return { ok: false, reason: "unknown-agent" };
-	switch (command.type) {
-		case "stop_subagent":
-			return stopSubagent(command.subagentId, command.reason);
-		case "abort_subagent":
-			return command.reason === undefined
-				? { cancelled: await handleRpcCancelSubagent(registry, command.subagentId) }
-				: abortSubagent(command.subagentId, command.reason);
-		case "follow_up_subagent":
-			return followUpSubagent(command.subagentId, command.message);
-	}
+	if (!ownedSubagentFile(registry, command.subagentId, parentFile)) return { ok: false, reason: "unknown-agent" };
+	return command.type === "stop_subagent"
+		? stopSubagent(command.subagentId, command.reason)
+		: followUpSubagent(command.subagentId, command.message);
 }
 
 export function rpcSubagentsWithFollowUps(registry: RpcSubagentRegistry, parentFile?: string): RpcSubagentSnapshot[] {

@@ -6853,7 +6853,7 @@ impl Command for SetEventFilterCommand {
 	}
 }
 
-/// List running subagents.
+/// List running subagents, plus idle accepted ones marked followUpAvailable
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GetSubagentsCommand {}
 

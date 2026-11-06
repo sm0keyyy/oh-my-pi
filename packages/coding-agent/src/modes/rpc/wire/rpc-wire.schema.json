@@ -297,7 +297,7 @@
 			},
 			{
 				"name": "get_subagents",
-				"doc": "List running subagents.",
+				"doc": "List running subagents, plus idle accepted ones marked followUpAvailable",
 				"params": null,
 				"result": "GetSubagentsResult",
 				"nullable": false,

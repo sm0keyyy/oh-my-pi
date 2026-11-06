@@ -8531,7 +8531,7 @@ func (c Commands) SetEventFilter(ctx context.Context, p SetEventFilterCommand) (
 	return out.Events, err
 }
 
-// GetSubagents sends "get_subagents": List running subagents.
+// GetSubagents sends "get_subagents": List running subagents, plus idle accepted ones marked followUpAvailable
 func (c Commands) GetSubagents(ctx context.Context) ([]SubagentSnapshot, error) {
 	var out GetSubagentsResult
 	err := c.call(ctx, "get_subagents", nil, 0, &out)

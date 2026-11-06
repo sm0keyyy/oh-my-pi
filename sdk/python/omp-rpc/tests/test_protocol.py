@@ -581,6 +581,25 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertTrue(notification.requires_response())
         self.assertFalse(notification.is_passive())
 
+    def test_review_requires_an_interactive_response(self) -> None:
+        notification = parse_notification(
+            {
+                "type": "extension_ui_request",
+                "id": "review",
+                "method": "review",
+                "path": "/tmp/plan.md",
+                "title": "Plan",
+                "sections": [
+                    {"id": "§1", "heading": "Scope", "excerpt": "Review the scope."}
+                ],
+            }
+        )
+        self.assertIsInstance(notification, ExtensionUiRequest)
+        self.assertTrue(notification.is_interactive())
+        self.assertTrue(notification.requires_response())
+        self.assertFalse(notification.is_passive())
+        self.assertFalse(notification.accepts_text())
+
     def test_parse_select_option_details(self) -> None:
         notification = parse_notification(
             {

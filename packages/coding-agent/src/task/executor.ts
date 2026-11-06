@@ -61,6 +61,7 @@ import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../registry/persisted-agents";
+import { isPaneFollowUp } from "../rex-panes/pane-input";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -113,6 +114,7 @@ import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
+import { operatorAbortReason, registerSubagentRunControl } from "./run-controls";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
@@ -1290,6 +1292,8 @@ interface SubagentRunMonitor {
 	budgetStopRequested(): boolean;
 	/** Resolves when the budget-stop session abort has settled (immediately when no stop fired). */
 	waitForBudgetStop(): Promise<void>;
+	operatorStopReason(): string | undefined;
+	requestOperatorStop(reason: string): boolean;
 	/**
 	 * True when a recorded yield was invalidated by a later async-result
 	 * injection and no fresh yield has landed since: the yield payload
@@ -1400,6 +1404,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const abortController = new AbortController();
 	const abortSignal = abortController.signal;
 	let activeSession: AgentSession | null = null;
+	let runSession: AgentSession | null = null;
 	let completionProbeStarted = false;
 	let yieldCalled = false;
 	let yieldCallPending = false;
@@ -1433,6 +1438,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	let budgetLimitExceeded = false;
 	let budgetStopRequested = false;
 	let budgetStopAbortPromise: Promise<void> | undefined;
+	let operatorStopReason: string | undefined;
 	let terminalError: string | undefined;
 	let consecutiveYieldToolErrors = 0;
 	let lastAssistantSalvageText: string | undefined;
@@ -1517,6 +1523,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				})
 			: Promise.resolve();
 	};
+	const requestOperatorStop = (reason: string) => {
+		if (abortSent || resolved) return false;
+		operatorStopReason ??= reason;
+		requestBudgetStop();
+		return true;
+	};
 
 	const failWithError = (message: string) => {
 		terminalError ??= message;
@@ -1588,6 +1600,9 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		return "Cancelled by caller";
 	};
 	const resolveAbortReasonText = (): string => {
+		const operatorAbort = runSession ? operatorAbortReason(runSession) : undefined;
+		if (operatorAbort) return operatorAbort;
+		if (operatorStopReason) return `Stopped by operator: ${operatorStopReason}`;
 		if (runtimeLimitExceeded) {
 			return `Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`;
 		}
@@ -1796,7 +1811,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	 * the forced final yield never lands.
 	 */
 	const evaluateSoftRequestBudget = () => {
-		if (softRequestBudget <= 0 || abortSent) return;
+		if (softRequestBudget <= 0 || abortSent || operatorStopReason) return;
 		const stopThreshold = softRequestBudget * 1.5;
 		if (budgetStopRequested) {
 			// Grace window after the stop: the forced yield needs a request or
@@ -2320,6 +2335,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			budgetStopRequested,
 		budgetStopRequested: () => budgetStopRequested,
 		waitForBudgetStop: () => budgetStopAbortPromise ?? Promise.resolve(),
+		operatorStopReason: () => operatorStopReason,
+		requestOperatorStop,
 		yieldInvalidatedByAsync: () => yieldInvalidatedByAsync,
 		yieldTurnStopRequested: () => yieldTurnStopRequested,
 		waitForYieldTurnStop: async () => {
@@ -2356,6 +2373,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		resolveAbortReasonText,
 		setActiveSession: session => {
 			activeSession = session;
+			if (session) runSession = session;
 			publishAdvisorState(session);
 			if (session && completionProbe && !completionProbeStarted) {
 				completionProbeStarted = true;
@@ -2460,6 +2478,11 @@ async function driveSessionToResult(
 	const { solutionSpace, onPromptBusy, restore } = options;
 	const structured = options.structured !== false;
 	const abortSignal = monitor.abortSignal;
+	const unregisterControl = registerSubagentRunControl(monitor.progress.id, {
+		session,
+		stop: reason => monitor.requestOperatorStop(reason),
+		abort: () => monitor.requestAbort("signal"),
+	});
 	let exitCode = 0;
 	let error: string | undefined;
 	let aborted = false;
@@ -2592,6 +2615,7 @@ async function driveSessionToResult(
 						retryCount,
 						maxRetries: MAX_YIELD_RETRIES,
 						budgetStop,
+						operatorStopReason: monitor.operatorStopReason(),
 						structured,
 					});
 
@@ -2761,7 +2785,12 @@ async function driveSessionToResult(
 				"Background job results arrived after the subagent's last yield; it did not submit a refreshed yield covering them.";
 		}
 	} catch (err) {
-		if (abortSignal.aborted && monitor.yieldCalled() && !monitor.runtimeLimitExceeded()) {
+		if (
+			abortSignal.aborted &&
+			monitor.yieldCalled() &&
+			!monitor.runtimeLimitExceeded() &&
+			!operatorAbortReason(session)
+		) {
 			exitCode = 0;
 		} else {
 			exitCode = 1;
@@ -2770,8 +2799,12 @@ async function driveSessionToResult(
 			}
 		}
 	} finally {
+		unregisterControl();
 		error ??= monitor.terminalError();
-		if (abortSignal.aborted && (!monitor.yieldCalled() || monitor.runtimeLimitExceeded())) {
+		if (
+			abortSignal.aborted &&
+			(!monitor.yieldCalled() || monitor.runtimeLimitExceeded() || operatorAbortReason(session))
+		) {
 			aborted = monitor.isAbortedRun();
 			if (aborted) {
 				abortReasonText ??= monitor.resolveAbortReasonText();
@@ -2860,6 +2893,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	rawOutput = finalized.rawOutput;
 	exitCode = finalized.exitCode;
 	stderr = finalized.stderr;
+	const operatorAborted = done.aborted && done.abortReason?.startsWith("Aborted by operator:");
+	if (operatorAborted) exitCode = 1;
+	const stopReason = monitor.operatorStopReason();
+	const stopNotice = stopReason ? `Stopped by operator: ${stopReason}\n\n` : "";
 	// Salvage for cancelled/aborted children that produced no completed output:
 	// surface the last assistant text + stats instead of "(no output)" so the
 	// parent doesn't redo work the child already finished.
@@ -2871,13 +2908,18 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	) {
 		rawOutput = `[cancelled after ${progress.requests} req, ${progress.tokens} tok — last activity: "${formatSalvageSnippet(salvageText)}"]`;
 	}
+	if (operatorAborted && !rawOutput.includes("last activity:")) {
+		const activity = salvageText ?? progress.lastIntent ?? "no assistant activity";
+		rawOutput += `\n[cancelled after ${progress.requests} req, ${progress.tokens} tok — last activity: "${formatSalvageSnippet(activity)}"]`;
+	}
 	const lastYield = yieldItems?.[yieldItems.length - 1];
 	const yieldAbortReason = lastYield?.status === "aborted" ? lastYield.error || "Subagent aborted task" : undefined;
 	const { abortedViaYield, hasYield } = finalized;
 	const { content: truncatedOutput, truncated } = truncateTail(rawOutput, {
-		maxBytes: MAX_OUTPUT_BYTES,
-		maxLines: MAX_OUTPUT_LINES,
+		maxBytes: MAX_OUTPUT_BYTES - Buffer.byteLength(stopNotice),
+		maxLines: MAX_OUTPUT_LINES - (stopNotice ? stopNotice.split("\n").length - 1 : 0),
 	});
+	rawOutput = stopNotice + rawOutput;
 
 	// Write output artifact (input and jsonl already written in real-time).
 	// Compute output metadata for agent:// URL integration.
@@ -3008,7 +3050,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		description: progress.description,
 		lastIntent: progress.lastIntent,
 		exitCode,
-		output: truncatedOutput,
+		output: stopNotice + truncatedOutput,
 		stderr,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
@@ -3250,6 +3292,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 	const index = options.index ?? 0;
 	const maxRuntimeMs = options.maxRuntimeMs ?? 0;
 	session.setIrcWakeTurnObserver(records => {
+		const paneFollowUp = isPaneFollowUp(session);
 		// Autonomous IRC wake turns reuse the session's YieldTool just like
 		// runSubagentFollowUpTurn; clear the prior run's incremental-section flag
 		// and retry counters so this wake turn's guards see only its own state.
@@ -3280,7 +3323,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		// parent wake owns the whole turn; a mid-turn parent request owns it only
 		// after its steer is consumed. Otherwise only an accepted yield registers
 		// a job, before the ref goes idle.
-		const ownerId = AgentRegistry.global().get(id)?.parentId;
+		const ownerId = AgentRegistry.global().get(id)?.parentId ?? (paneFollowUp ? MAIN_AGENT_ID : undefined);
 		const ownerWoken = wakeSources(records, id).some(source => source.from === ownerId);
 		// Cancelling the job cancels the turn it stands for.
 		const jobCancel = new AbortController();
@@ -3289,7 +3332,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		let reportJobProgress: ((progress: AgentProgress) => void) | undefined;
 		let wakeJob: { ownerId: string; outcome: PromiseWithResolvers<AsyncJobRunResult> } | undefined;
 		const registerWakeJob = (): void => {
-			if (wakeJob) return;
+			if (wakeJob || paneFollowUp) return;
 			const manager = session.asyncJobManager;
 			if (!ownerId || !manager) return;
 			const outcome = Promise.withResolvers<AsyncJobRunResult>();
@@ -3364,6 +3407,10 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 		emitSubagentFrame(options.eventBus, options.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, startedPayload);
 
 		turnMonitor.setActiveSession(session);
+		const unregisterControl = registerSubagentRunControl(id, {
+			session,
+			abort: () => turnMonitor.requestAbort("signal"),
+		});
 		const unsubscribeTurn = turnMonitor.attach(session);
 		if (ownerWoken) registerWakeJob();
 		// Only a message_end from the agent loop proves the queued parent steer
@@ -3380,6 +3427,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			record.role === "user" ? record.attribution === "user" : record.role === "developer" && record.userInitiated,
 		);
 		return async turnError => {
+			unregisterControl();
 			unsubscribeTurn();
 			unsubscribeParentSteer();
 			const activeSession = turnMonitor.takeActiveSession();
@@ -3387,7 +3435,12 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			const lastAssistant = session.getLastAssistantMessage();
 			const yielded = turnMonitor.yieldCalled();
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
-			const aborted = runtimeLimitExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
+			const aborted =
+				runtimeLimitExceeded ||
+				(turnMonitor.abortSignal.aborted &&
+					turnMonitor.isAbortedRun() &&
+					(!yielded || operatorAbortReason(session) !== undefined)) ||
+				(lastAssistant?.stopReason === "aborted" && !yielded);
 			// Two error lanes. `error` carries full diagnostics (a thrown turn
 			// error's stack) for `done.error`, logs, and lifecycle. `errorForPeer`
 			// carries only the short, attributed message: a stack trace injected
@@ -3468,7 +3521,10 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				// A focused-user result can complete without a registered wake job;
 				// enqueue its delivery without reserving an execution slot.
 				const messageResult =
-					(userPrompted || ownerPrompted) && options.structured === false && result?.outputPath !== undefined;
+					!paneFollowUp &&
+					(userPrompted || ownerPrompted) &&
+					options.structured === false &&
+					result?.outputPath !== undefined;
 				if (messageResult && !wakeJob && ownerId && session.asyncJobManager && result) {
 					const text = formatTaskResultSummary(result, { totalDurationMs: result.durationMs });
 					try {
@@ -3521,6 +3577,27 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				// wake turn must still tell whoever woke it, or a `send await:true`
 				// waiter mistakes a dead peer for a healthy-but-silent one.
 				try {
+					if (paneFollowUp && ownerId) {
+						const receipt = await IrcBus.global().send({
+							from: id,
+							to: ownerId,
+							wakeRelay: true,
+							body: buildWakeRelayBody({
+								id,
+								yielded,
+								result,
+								turnText,
+								error: errorForPeer,
+								aborted,
+								abortReason,
+								finalizeError,
+								alreadyMessaged: false,
+							}),
+						});
+						if (receipt.outcome === "failed") {
+							logger.warn("rex-panes: follow-up relay failed", { id, error: receipt.error });
+						}
+					}
 					await relayWakeTurnOutput({
 						id,
 						records,

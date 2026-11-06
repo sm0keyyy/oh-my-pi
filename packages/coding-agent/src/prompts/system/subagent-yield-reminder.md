@@ -1,7 +1,12 @@
 {{#if budgetStop}}
 {{#if structured}}
 <system-reminder>
+{{#if operatorStopReason}}
+Stopped by operator: {{operatorStopReason}}
+The in-flight turn was stopped. Call `yield` NOW with a partial summary of completed work and the stop reason.
+{{else}}
 Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yield` NOW with best final report from completed work.
+{{/if}}
 
 - Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
 - Do NOT call another tool or resume assignment.
@@ -9,7 +14,12 @@ Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yi
 </system-reminder>
 {{else}}
 <system-reminder>
+{{#if operatorStopReason}}
+Stopped by operator: {{operatorStopReason}}
+The in-flight turn was stopped. Tools disabled. Reply NOW with a partial summary of completed work and the stop reason; this message is your result.
+{{else}}
 Request budget crossed; in-flight turn stopped → forced wrap-up. Tools disabled. Reply NOW with best final report from completed work; this message is your result.
+{{/if}}
 
 - Consolidate all gathered value; mark remaining gaps incomplete, do not investigate further.
 </system-reminder>

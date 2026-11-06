@@ -8,6 +8,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import { isInterruptedTurnAbort } from "./exit-diagnostics";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -16,6 +17,7 @@ import {
 	isEmptyErrorTurn,
 	PREWALK_PLAN_MESSAGE_TYPE,
 	REWIND_REPORT_MESSAGE_TYPE,
+	SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
@@ -416,6 +418,13 @@ export function buildSessionContext(
 		}
 	}
 
+	// Exit recovery's empty abort is bookkeeping, not a reply to the crashed wrap-up.
+	const conversationTail = path.findLast(
+		entry =>
+			(entry.type === "message" && !isInterruptedTurnAbort(entry.message)) ||
+			(entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE),
+	);
+
 	const appendMessage = (entry: SessionEntry) => {
 		handleEntryResetTracking(entry);
 		if (entry.type === "message") {
@@ -432,6 +441,9 @@ export function buildSessionContext(
 				!options?.transcript &&
 				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE || entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE)
 			) {
+				return;
+			}
+			if (!options?.transcript && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE && entry !== conversationTail) {
 				return;
 			}
 			const message = customMessageEntryMessage(entry);

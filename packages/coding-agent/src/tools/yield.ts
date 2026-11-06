@@ -21,6 +21,7 @@ import {
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import yieldDescription from "../prompts/tools/yield.md" with { type: "text" };
 import yieldDataErrorConflictMessage from "../prompts/tools/yield-data-error-conflict.md" with { type: "text" };
+import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "../session/messages";
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ToolSession } from ".";
@@ -40,6 +41,7 @@ export function resolveYieldReportText(messages: readonly AgentMessage[], toolCa
 	if (currentText.trim()) return currentText;
 	for (let index = messages.length - 2; index >= 0; index--) {
 		const previous = messages[index];
+		if (previous.role === "custom" && previous.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) continue;
 		if (previous.role === "developer") {
 			const blocks =
 				typeof previous.content === "string" ? [{ type: "text", text: previous.content }] : previous.content;

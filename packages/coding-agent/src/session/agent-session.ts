@@ -375,6 +375,7 @@ import {
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
 	hasRestorableTurn,
+	pendingSubagentWrapUp,
 	SESSION_EXIT_CUSTOM_TYPE,
 	type SessionExitData,
 	summarizeToolArguments,
@@ -416,6 +417,7 @@ import {
 	REWIND_REPORT_MESSAGE_TYPE,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
+	SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 	sanitizeAssistantForReparentedHistory,
 	USER_INTERRUPT_LABEL,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
@@ -1105,6 +1107,9 @@ export class AgentSession implements SettingsScope {
 	 */
 	#asyncDeliveryEpoch = 0;
 
+	/** A live prompt owns its wrap-up directive through the full retry saga; a restored continuation does not. */
+	#ownedWrapUp: CustomMessage | undefined;
+
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
@@ -1682,6 +1687,7 @@ export class AgentSession implements SettingsScope {
 					logger.debug("IRC wake turn deferred behind the running turn");
 					return;
 				}
+				this.#dropPendingSubagentWrapUp();
 				observation = this.#startTurnObservation(records);
 				return this.agent.prompt(records);
 			})
@@ -5353,7 +5359,40 @@ export class AgentSession implements SettingsScope {
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
-					await this.agent.continue(signal);
+					const wrapUp = this.agent.state.isStreaming
+						? undefined
+						: pendingSubagentWrapUp(this.agent.state.messages);
+					const restoringWrapUp = wrapUp !== undefined;
+					if (restoringWrapUp) {
+						const choice =
+							isRecord(wrapUp.details) && wrapUp.details.structured === true
+								? buildNamedToolChoice("yield", this.model)
+								: "none";
+						if (choice)
+							this.#toolChoiceQueue.pushOnce(choice, { label: SUBAGENT_WRAP_UP_MESSAGE_TYPE, now: true });
+					}
+					try {
+						await this.agent.continue(signal);
+					} finally {
+						if (restoringWrapUp) {
+							this.#toolChoiceQueue.removeByLabel(SUBAGENT_WRAP_UP_MESSAGE_TYPE);
+							const messages = this.agent.state.messages;
+							const wrapUpIndex = messages.indexOf(wrapUp);
+							// Only a live prompt owns cleanup across successful automatic retry attempts.
+							if (
+								!(wrapUp === this.#ownedWrapUp && request.options.source === "automatic-retry") &&
+								wrapUpIndex >= 0 &&
+								messages.some(
+									(message, index) =>
+										index > wrapUpIndex &&
+										message.role === "assistant" &&
+										(message.stopReason === "stop" || message.stopReason === "toolUse"),
+								)
+							) {
+								this.agent.replaceMessages(messages.filter(message => message !== wrapUp));
+							}
+						}
+					}
 					return { status: "completed" };
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
@@ -8817,6 +8856,13 @@ export class AgentSession implements SettingsScope {
 		throw new AgentStartPolicyChangedError();
 	}
 
+	#dropPendingSubagentWrapUp(): void {
+		const wrapUp = pendingSubagentWrapUp(this.agent.state.messages);
+		if (wrapUp) {
+			this.agent.replaceMessages(this.agent.state.messages.filter(candidate => candidate !== wrapUp));
+		}
+	}
+
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
@@ -8833,6 +8879,12 @@ export class AgentSession implements SettingsScope {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		if (message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			this.#ownedWrapUp = message;
+		} else {
+			// A new assignment supersedes a wrap-up that crashed before producing its report.
+			this.#dropPendingSubagentWrapUp();
+		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -9095,6 +9147,11 @@ export class AgentSession implements SettingsScope {
 			}
 			return true;
 		} finally {
+			if (message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+				// Expire before releasing the turn: an IRC wake must not inherit the stop restriction.
+				this.agent.replaceMessages(this.agent.state.messages.filter(candidate => candidate !== message));
+				if (this.#ownedWrapUp === message) this.#ownedWrapUp = undefined;
+			}
 			// The per-turn before_agent_start override lives only for this turn.
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;
@@ -12565,6 +12622,12 @@ export class AgentSession implements SettingsScope {
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
 		if (!model) return false;
+		const wrapUp = pendingSubagentWrapUp(this.agent.state.messages);
+		if (wrapUp) {
+			// Resume the persisted wrap-up itself, not the exploration turn it stopped.
+			this.#scheduleAgentContinue({ source: "manual-retry", turnRecords: [wrapUp] });
+			return true;
+		}
 		const abort = createInterruptedTurnAbortMessage(
 			branch,
 			{ api: model.api, provider: model.provider, model: model.id },

@@ -1,6 +1,7 @@
 {{#if budgetStop}}
 {{#if structured}}
 <system-reminder>
+These restrictions apply only to this forced wrap-up turn. A later parent message starts a new assignment with the agent's normal tools.
 {{#if operatorStopReason}}
 Stopped by operator: {{operatorStopReason}}
 The in-flight turn was stopped. Call `yield` NOW with a partial summary of completed work and the stop reason.
@@ -14,6 +15,7 @@ Request budget crossed; in-flight turn stopped → forced wrap-up. MUST call `yi
 </system-reminder>
 {{else}}
 <system-reminder>
+These restrictions apply only to this forced wrap-up turn. A later parent message starts a new assignment with the agent's normal tools.
 {{#if operatorStopReason}}
 Stopped by operator: {{operatorStopReason}}
 The in-flight turn was stopped. Tools disabled. Reply NOW with a partial summary of completed work and the stop reason; this message is your result.

@@ -12,8 +12,14 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
+	hasRestorableTurn,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	convertToLlm,
+	type CustomMessage,
+	SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -93,16 +99,30 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 	/** A session reopened from `persisted` as `--resume` builds it, its model answering from `responses`. */
 	function reopen(
 		model: Model,
-		persisted: Message[],
+		persisted: (Message | CustomMessage)[],
 		tools: AgentTool[],
 		responses: MockResponse[],
 		evalToolSession?: ToolSession,
 	) {
 		const sessionManager = SessionManager.inMemory();
-		for (const message of persisted) sessionManager.appendMessage(message);
+		for (const message of persisted) {
+			if (message.role === "custom") {
+				sessionManager.appendCustomMessageEntry(
+					message.customType,
+					message.content,
+					message.display,
+					message.details,
+					message.attribution,
+				);
+			} else {
+				sessionManager.appendMessage(message);
+			}
+		}
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
+			getToolChoice: () => session?.nextToolChoiceDirective(),
+			convertToLlm,
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
@@ -202,6 +222,71 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		expect(mock.calls.length).toBe(1);
 		const last = session.agent.state.messages.at(-1);
 		expect(last?.role === "assistant" && last.content).toContainEqual({ type: "text", text: "done after restore" });
+	});
+
+	it.each([false, true])("restores a crash during forced wrap-up (exit-recovered=%s)", async exitRecovered => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled Anthropic test model");
+		const wrapUp: CustomMessage = {
+			role: "custom",
+			customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+			content: "<system-reminder>Tools disabled for this forced wrap-up. Report partial findings.</system-reminder>",
+			display: false,
+			details: { structured: false },
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		const history: (Message | CustomMessage)[] = [
+			{ role: "user", content: "inspect the source", timestamp: Date.now() },
+			assistant(model, { stopReason: "aborted" }),
+			wrapUp,
+		];
+		if (exitRecovered) {
+			history.push(
+				assistant(model, {
+					stopReason: "aborted",
+					errorMessage: "Previous OMP process exited before completing the turn.",
+				}),
+			);
+		}
+		history.push({
+			role: "custom",
+			customType: "memory-recall",
+			content: "memory side context",
+			display: false,
+			timestamp: Date.now(),
+		});
+		const { session, mock } = reopen(model, history, [], [{ content: ["partial findings"] }]);
+		expect(hasRestorableTurn(session.sessionManager.getBranch())).toBe(true);
+		expect(
+			session.sessionManager
+				.buildSessionContext()
+				.messages.find(
+					message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+				),
+		).toMatchObject({
+			role: "custom",
+			customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+		});
+		await expect(session.restoreInterruptedTurn()).resolves.toBe(true);
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(1);
+		expect(mock.calls[0]?.options?.toolChoice).toBe("none");
+		expect(JSON.stringify(mock.calls[0]?.context.messages)).toContain("Report partial findings");
+		expect(JSON.stringify(mock.calls[0]?.context.messages)).toContain("memory side context");
+		expect(
+			session.messages.some(
+				message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+			),
+		).toBe(false);
+		expect(
+			session.sessionManager
+				.buildSessionContext()
+				.messages.some(
+					message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+				),
+		).toBe(false);
+		expect(hasRestorableTurn(session.sessionManager.getBranch())).toBe(false);
 	});
 
 	it("leaves a turn the user interrupted, and one that finished, as they are", async () => {

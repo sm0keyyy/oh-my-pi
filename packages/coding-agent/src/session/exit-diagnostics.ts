@@ -1,5 +1,7 @@
 import { createSyntheticToolResultMessage, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { type CustomMessage, SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "./messages";
 import type { SessionEntry } from "./session-entries";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
@@ -142,6 +144,11 @@ function findUnfinishedTurn(
 	let tail: AgentMessage | undefined;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			tailIndex = index;
+			tail = customMessageEntryMessage(entry);
+			break;
+		}
 		if (entry.type !== "message") continue;
 		tailIndex = index;
 		tail = entry.message;
@@ -181,6 +188,22 @@ export function isInterruptedTurnAbort(message: AgentMessage): boolean {
 	);
 }
 
+/** An unanswered forced wrap-up, ignoring side-channel context and exit bookkeeping. */
+export function pendingSubagentWrapUp(messages: readonly AgentMessage[]): CustomMessage | undefined {
+	const lastMessage = messages.findLastIndex(
+		message =>
+			(message.role === "user" ||
+				message.role === "developer" ||
+				message.role === "assistant" ||
+				message.role === "toolResult") &&
+			!isInterruptedTurnAbort(message),
+	);
+	return messages.findLast(
+		(message, index): message is CustomMessage =>
+			index > lastMessage && message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+	);
+}
+
 /**
  * Whether `omp --restore` has a turn to go on with on this branch: one its last
  * process left unfinished ({@link findUnfinishedTurn}, the exit assumed), or one exit
@@ -191,6 +214,7 @@ export function hasRestorableTurn(entries: readonly SessionEntry[]): boolean {
 		const entry = entries[index]!;
 		const exit = readSessionExit(entry);
 		if (exit?.kind === "normal") return false;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) break;
 		if (entry.type !== "message") continue;
 		if (isInterruptedTurnAbort(entry.message)) return true;
 		break;
@@ -241,6 +265,7 @@ export function createInterruptedTurnAbortMessage(
 export function sessionExitFollowsLastMessage(entries: readonly SessionEntry[]): boolean {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) return false;
 		if (entry.type === "message") return false;
 		if (readSessionExit(entry)) return true;
 	}

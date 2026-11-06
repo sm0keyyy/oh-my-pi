@@ -17,6 +17,7 @@ import * as mnemopiSettings from "../mnemopi/settings";
 import * as hindsightSettings from "../hindsight/settings";
 import * as exportTtsrSettings from "../export/ttsr-settings";
 import * as editSettings from "../edit/settings";
+import * as editFormatSettings from "../edit/format-pipeline/settings";
 import * as toolsSettings from "../tools/settings";
 import * as lspSettings from "../lsp/settings";
 import * as execSettings from "../exec/settings";
@@ -58,6 +59,7 @@ const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	hindsightSettings,
 	exportTtsrSettings,
 	editSettings,
+	editFormatSettings,
 	toolsSettings,
 	lspSettings,
 	execSettings,

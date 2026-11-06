@@ -22,7 +22,11 @@ export class BdError extends Error {
 export function bdEnvironment(root: string, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(inherited))
-		if (value !== undefined && !["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "BEADS_DIR"].includes(key))
+		if (
+			value !== undefined &&
+			!/^(BEADS|BD)_/.test(key) &&
+			!["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].includes(key)
+		)
 			env[key] = value;
 	return {
 		...env,
@@ -58,7 +62,7 @@ export function createBdRunner(binary = "bd"): BdRunner {
 
 const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 export function beadId(id: string): string {
-	if (!idPattern.test(id)) throw new BdError("parse", "Invalid bead ID");
+	if (typeof id !== "string" || !idPattern.test(id)) throw new BdError("parse", "Invalid bead ID");
 	return id;
 }
 
@@ -100,9 +104,11 @@ function allowed(args: readonly string[]): boolean {
 						? ["open", "in_progress", "blocked"].includes(rest[i + 1]!)
 						: value === "--parent"
 							? id(rest[i + 1])
-							: value === "--set-metadata"
-								? rest[i + 1]!.startsWith("omp.blocker=")
-								: value === "--unset-metadata" && rest[i + 1] === "omp.blocker"),
+							: value === "--title"
+								? rest[i + 1] !== undefined
+								: value === "--set-metadata"
+									? rest[i + 1]!.startsWith("omp.blocker=")
+									: value === "--unset-metadata" && rest[i + 1] === "omp.blocker"),
 			);
 	}
 	if (args[0] === "create" && args[1] === "--graph") return args.length === 3;

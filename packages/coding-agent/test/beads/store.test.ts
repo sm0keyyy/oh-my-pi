@@ -2,9 +2,18 @@ import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { Setting } from "../../src/config/registry";
 import { Settings } from "../../src/config/settings";
-import { type Bead, type BdRunner, BeadsUnavailableError, openTodoStore, type TodoPhase } from "../../src/beads";
+import {
+	type Bead,
+	type BdRunner,
+	bdEnvironment,
+	BeadsUnavailableError,
+	openTodoStore,
+	type TodoPhase,
+	type TodoStore,
+} from "../../src/beads";
 
 const scratch: string[] = [];
 afterEach(async () => {
@@ -283,5 +292,171 @@ describe("beads store", () => {
 			expect((await store.refresh(base, undefined)).phases).toEqual(base);
 		}
 		expect(f.calls).toEqual([]);
+	});
+	it("[F2] keeps beads from a reset list open when the next write starts a new list", async () => {
+		const f = await fixture();
+		await f.store.write([], base);
+		const next = f.store.assignIds(
+			[],
+			[{ name: "Separate session", tasks: [{ content: "New work", status: "pending" }] }],
+		);
+		expect((await f.store.write([], next)).state).toBe("synced");
+		expect(f.remote().find(bead => bead.id === "global-abc123.1")!.status).toBe("open");
+		expect(f.remote().find(bead => bead.id === "global-abc123")!.status).toBe("open");
+		expect(f.remote()).toHaveLength(4);
+	});
+	it("[F3] retains the persisted base across a failed restart refresh and a later write", async () => {
+		const f = await fixture();
+		f.setExists();
+		f.setRemote(structuredClone(remote));
+		let now = 500_000;
+		spyOn(Date, "now").mockImplementation(() => now);
+		const offline = f.store.assignIds(base, [
+			{ ...base[0]!, tasks: [...base[0]!.tasks, { content: "Offline work", status: "pending" }] },
+		]);
+		const restarted = openTodoStore(f.options);
+		f.setFault("exit");
+		expect((await restarted.refresh(offline, base)).info.state).toBe("pending");
+		const next = restarted.assignIds(offline, [
+			{ ...offline[0]!, tasks: [...offline[0]!.tasks, { content: "Restart work", status: "pending" }] },
+		]);
+		await restarted.write(offline, next);
+		f.setFault(undefined);
+		now += 60_000;
+		expect((await restarted.write(offline, next)).state).toBe("synced");
+		expect(f.remote().map(bead => bead.title)).toEqual(["Build", "Adapter", "Offline work", "Restart work"]);
+		expect((await restarted.refresh(next, undefined)).phases[0]!.tasks.map(task => task.content)).toEqual([
+			"Adapter",
+			"Offline work",
+			"Restart work",
+		]);
+	});
+	it("[F3 F6] keeps a restored offline base until the first write initializes an empty store", async () => {
+		const f = await fixture();
+		const offline = f.store.assignIds(
+			[],
+			[{ name: "Offline", tasks: [{ content: "Unsent work", status: "pending" }] }],
+		);
+		const restarted = openTodoStore(f.options);
+		expect((await restarted.refresh(offline, [])).info.state).toBe("pending");
+		expect(f.notices).toEqual([]);
+		expect((await restarted.write(offline, offline)).state).toBe("synced");
+		expect(f.remote().map(bead => bead.title)).toEqual(["Offline", "Unsent work"]);
+		expect((await restarted.refresh(offline, undefined)).phases).toEqual(offline);
+	});
+	for (const outage of ["store", "binary"] as const)
+		it(`[F3 F6] retains the pending marker through two restarts with ${outage} absent`, async () => {
+			const f = await fixture();
+			let now = 700_000;
+			spyOn(Date, "now").mockImplementation(() => now);
+			const offline = f.store.assignIds(
+				[],
+				[{ name: "Offline", tasks: [{ content: "Unsent work", status: "pending" }] }],
+			);
+			f.setFault("spawn");
+			expect((await f.store.write([], offline)).state).toBe("pending");
+			f.notices.length = 0;
+			if (outage === "store") f.setFault(undefined);
+			const firstRestart = openTodoStore(f.options);
+			const first = await firstRestart.refresh(offline, []);
+			const persistedBase: TodoPhase[] | undefined = first.info.state === "pending" ? [] : undefined;
+			const secondRestart = openTodoStore(f.options);
+			const second = await secondRestart.refresh(offline, persistedBase);
+			expect(second.info.state).toBe("pending");
+			expect(second.phases).toEqual(offline);
+			expect(f.notices).toEqual([]);
+			f.setFault(undefined);
+			now += 60_000;
+			expect((await secondRestart.write(offline, offline)).state).toBe("synced");
+			expect(f.remote().map(bead => bead.title)).toEqual(["Offline", "Unsent work"]);
+			expect((await secondRestart.refresh(offline, undefined)).phases).toEqual(offline);
+		});
+	it("[F6] treats an uninitialized store as empty without warnings or read-side initialization", async () => {
+		for (const missingRoot of [false, true]) {
+			const f = await fixture();
+			if (missingRoot) await fs.rm(f.root, { recursive: true });
+			const refreshed = await f.store.refresh(base, undefined);
+			expect(refreshed).toEqual({ phases: base, info: { state: "synced", store: "global" }, dropped: [] });
+			expect(await f.store.ready(10)).toEqual([]);
+			await expect(f.store.load("global-abc123")).rejects.toBeInstanceOf(BeadsUnavailableError);
+			expect(f.store.info.state).toBe("synced");
+			expect(f.notices).toEqual([]);
+			expect(f.calls.some(argv => argv.includes("init") || argv.includes("list") || argv.includes("ready"))).toBe(
+				false,
+			);
+		}
+	});
+	it("[F7] rejects invalid public arguments without probing or taking the store offline", async () => {
+		for (const operation of [
+			(store: TodoStore) => store.load("bad id"),
+			(store: TodoStore) => store.dependency("bad id", "global-other", "add"),
+			(store: TodoStore) => store.dependency("global-abc123.1", "-flag", "remove"),
+			(store: TodoStore) => store.file({ title: "- fix parser", priority: 2 }),
+			(store: TodoStore) => store.file({ title: "Found", priority: 2, discoveredFrom: "bad id" }),
+			(store: TodoStore) => store.file({ title: "Found", priority: 5 as 4 }),
+		]) {
+			const f = await fixture();
+			f.setExists();
+			await expect(operation(f.store)).rejects.toBeInstanceOf(BeadsUnavailableError);
+			expect(f.store.info.state).toBe("synced");
+			expect(f.notices).toEqual([]);
+			expect(f.calls).toEqual([]);
+		}
+	});
+	it("[F12] reuses a healthy where probe and invalidates it after a bd failure", async () => {
+		const f = await fixture();
+		f.setExists();
+		f.setRemote(structuredClone(remote));
+		let now = 600_000;
+		spyOn(Date, "now").mockImplementation(() => now);
+		await f.store.refresh(base, undefined);
+		await f.store.write(base, base);
+		await f.store.refresh(base, undefined);
+		expect(f.calls.filter(argv => argv.includes("where"))).toHaveLength(1);
+		f.setFault("exit");
+		await f.store.refresh(base, undefined);
+		expect(f.store.info.state).toBe("pending");
+		f.setFault(undefined);
+		now += 60_000;
+		expect((await f.store.refresh(base, base)).info.state).toBe("synced");
+		expect(f.calls.filter(argv => argv.includes("where"))).toHaveLength(2);
+	});
+	it("[F1] admits bd init only after the dedicated global directory is a checkout", async () => {
+		const f = await fixture();
+		const globalDir = path.join(f.root, "global");
+		const initialized: string[] = [];
+		const runner: BdRunner = async (argv, options) => {
+			if (argv.includes("init")) {
+				initialized.push(options.cwd);
+				expect(options.cwd).toBe(globalDir);
+				const info = vcs.gitInfo(options.cwd);
+				expect(info && (await fs.realpath(info.repoRoot))).toBe(await fs.realpath(globalDir));
+			}
+			return f.options.runner(argv, options);
+		};
+		const store = openTodoStore({ ...f.options, settings: configured(globalDir), runner });
+		const next = store.assignIds([], [{ name: "Global", tasks: [{ content: "Work", status: "pending" }] }]);
+		expect((await store.write([], next)).state).toBe("synced");
+		expect(initialized).toEqual([globalDir]);
+		expect(await Bun.file(path.join(globalDir, ".git/HEAD")).exists()).toBe(true);
+		expect(await Bun.file(path.join(f.root, ".git/HEAD")).exists()).toBe(false);
+	});
+	it("[F1] refuses bd init if an opened repo is no longer a checkout", async () => {
+		const f = await fixture();
+		const child = Bun.spawn(["git", "init", "--quiet"], {
+			cwd: f.root,
+			env: { ...bdEnvironment(f.root), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(await child.exited).toBe(0);
+		const settings = configured(path.join(f.root, "global"));
+		new Setting({ id: "todo.beads.roots", type: "array", default: [] }).override(settings, [f.root]);
+		const store = openTodoStore({ ...f.options, settings });
+		await fs.rename(path.join(f.root, ".git"), path.join(f.root, ".git.parked"));
+		const next = store.assignIds([], [{ name: "Work", tasks: [{ content: "Task", status: "pending" }] }]);
+		expect((await store.write([], next)).state).toBe("pending");
+		expect(f.calls.some(argv => argv.includes("init"))).toBe(false);
+		expect(await Bun.file(path.join(f.root, ".git/HEAD")).exists()).toBe(false);
 	});
 });

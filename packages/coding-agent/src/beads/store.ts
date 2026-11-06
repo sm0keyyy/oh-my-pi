@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isBunTestRuntime, isEnoent, isRecord, logger } from "@oh-my-pi/pi-utils";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { isBunTestRuntime, isEnoent, isRecord, logger, ptree } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import { BD_PIN, BdCli, BdError, type BdRunner, beadId, createBdRunner } from "./cli";
+import { BD_PIN, BdCli, BdError, type BdRunner, bdEnvironment, beadId, createBdRunner } from "./cli";
 import {
 	assignBeadIds,
 	beadToTask,
@@ -16,7 +17,7 @@ import {
 	type TodoItem,
 	type TodoPhase,
 } from "./map";
-import { beadsSettings, type BeadsRoute, routeBeadsStore } from "./route";
+import { beadsSettings, type BeadsRoute, expandBeadsPath, routeBeadsStore } from "./route";
 
 export type BeadsState = "synced" | "pending" | "off";
 export interface TodoBeadsInfo {
@@ -73,6 +74,8 @@ class BeadsStore implements TodoStore {
 	#lastProbe = -Infinity;
 	#missing = false;
 	#initAttempted = false;
+	#healthy = false;
+	#reconcilePending = false;
 	#unknownWarned = false;
 	#droppedWarned = false;
 	#suffixes = new Map<string, number>();
@@ -82,6 +85,7 @@ class BeadsStore implements TodoStore {
 		readonly route: BeadsRoute,
 		readonly notice: (level: "info" | "warning", message: string) => void,
 		runner: BdRunner,
+		readonly globalDir: string,
 	) {
 		this.#cli = new BdCli(route.root, runner);
 		this.#info = { state: "synced", store: route.kind };
@@ -96,6 +100,7 @@ class BeadsStore implements TodoStore {
 		return assigned;
 	}
 	#fail(error: unknown): void {
+		this.#healthy = false;
 		const reason = error instanceof Error ? error.message : "Unknown bd failure";
 		if (this.#info.state !== "pending") {
 			const message = `beads: ${reason}. Changes stay in this session. Run bd doctor.`;
@@ -110,6 +115,7 @@ class BeadsStore implements TodoStore {
 		if (this.#info.state === "pending") this.notice("info", "beads: Connection restored; session changes synced.");
 		this.#info = { state: "synced", store: this.route.kind };
 		this.#missing = false;
+		this.#reconcilePending = false;
 	}
 	#canProbe(writing: boolean): boolean {
 		return (
@@ -118,15 +124,52 @@ class BeadsStore implements TodoStore {
 			Date.now() - this.#lastProbe >= 60_000
 		);
 	}
-	async #ensure(writing: boolean): Promise<void> {
-		if (writing) await fs.mkdir(this.route.root, { recursive: true });
-		else {
-			try {
-				await fs.stat(this.route.root);
-			} catch (error) {
-				if (isEnoent(error)) throw new BdError("no_beads_directory", "Store directory does not exist");
-				throw error;
+	#uninitialized(): false {
+		this.#missing = true;
+		this.#healthy = false;
+		this.#info = this.#reconcilePending
+			? {
+					state: "pending",
+					store: this.route.kind,
+					reason: "Store is not initialized; session changes await the first write",
+				}
+			: { state: "synced", store: this.route.kind };
+		return false;
+	}
+	async #prepareInitRoot(): Promise<void> {
+		try {
+			const root = await fs.realpath(this.route.root);
+			let info = vcs.gitInfo(root);
+			if (this.route.kind === "global") {
+				if (root !== (await fs.realpath(expandBeadsPath(this.globalDir))))
+					throw new BdError("bd", "Refusing to initialize outside the configured global store");
+				if (!info || (await fs.realpath(info.repoRoot)) !== root) {
+					const result = await ptree.exec(["git", "init", "--quiet", root], {
+						cwd: root,
+						env: bdEnvironment(root),
+						timeout: 10_000,
+						allowNonZero: true,
+					});
+					if (result.exitCode !== 0) throw new BdError("bd", "Cannot initialize the dedicated global checkout");
+					info = vcs.gitInfo(root);
+				}
 			}
+			await fs.lstat(path.join(root, ".git"));
+			if (!info || (await fs.realpath(info.repoRoot)) !== root)
+				throw new BdError("bd", "Refusing bd init outside an existing checkout");
+		} catch (error) {
+			if (error instanceof BdError) throw error;
+			throw new BdError("bd", "Cannot prepare the store checkout for bd init", { cause: error });
+		}
+	}
+	async #ensure(writing: boolean): Promise<boolean> {
+		if (this.#healthy) return true;
+		try {
+			if (writing) await fs.mkdir(this.route.root, { recursive: true });
+			else await fs.stat(this.route.root);
+		} catch (error) {
+			if (!writing && isEnoent(error)) return this.#uninitialized();
+			throw new BdError("bd", "Cannot access the store directory", { cause: error });
 		}
 		let version = versions.get(this.#cli.runner);
 		if (!version) {
@@ -145,12 +188,14 @@ class BeadsStore implements TodoStore {
 		try {
 			await this.#cli.call(["where"]);
 		} catch (error) {
-			if (!(error instanceof BdError) || error.code !== "no_beads_directory" || !writing) throw error;
+			if (!(error instanceof BdError) || error.code !== "no_beads_directory") throw error;
 			try {
 				await fs.lstat(path.join(this.route.root, ".beads"));
 			} catch (statError) {
-				if (!isEnoent(statError)) throw statError;
+				if (!isEnoent(statError)) throw new BdError("bd", "Cannot inspect .beads", { cause: statError });
+				if (!writing) return this.#uninitialized();
 				this.#initAttempted = true;
+				await this.#prepareInitRoot();
 				await this.#cli.call([
 					"init",
 					"--non-interactive",
@@ -161,10 +206,15 @@ class BeadsStore implements TodoStore {
 					this.route.prefix,
 				]);
 				await this.#cli.call(["where"]);
-				return;
+				this.#healthy = true;
+				this.#missing = false;
+				return true;
 			}
 			throw new BdError("bd", "Existing .beads is broken; refusing to initialize", { cause: error });
 		}
+		this.#healthy = true;
+		this.#missing = false;
+		return true;
 	}
 	#warnStatus = (status: string): void => {
 		if (!this.#unknownWarned) {
@@ -290,7 +340,8 @@ class BeadsStore implements TodoStore {
 		const before = clonePhases(prev),
 			after = clonePhases(next);
 		return queued(this.route.root, async () => {
-			this.#base ??= before;
+			if (this.#info.state === "synced" && !this.#reconcilePending) this.#base = before;
+			else this.#base ??= before;
 			if (!this.#canProbe(true)) return this.info;
 			try {
 				await this.#ensure(true);
@@ -302,6 +353,7 @@ class BeadsStore implements TodoStore {
 				}
 				this.#synced();
 			} catch (error) {
+				this.#reconcilePending = true;
 				this.#fail(error);
 			}
 			return this.info;
@@ -313,11 +365,16 @@ class BeadsStore implements TodoStore {
 	): Promise<{ phases: TodoPhase[]; info: TodoBeadsInfo; dropped: string[] }> {
 		const ours = clonePhases(phases);
 		return queued(this.route.root, async () => {
+			if (base !== undefined) {
+				this.#base = clonePhases(base);
+				this.#reconcilePending = true;
+				this.#info = { ...this.#info, state: "pending" };
+			}
 			if (!this.#canProbe(false)) return { phases: ours, info: this.info, dropped: [] };
 			try {
 				const pending = this.#info.state === "pending" || base !== undefined;
-				await this.#ensure(false);
-				if (pending) this.#base = await this.#apply(base ?? this.#base ?? ours, ours);
+				if (!(await this.#ensure(false))) return { phases: ours, info: this.info, dropped: [] };
+				if (pending) this.#base = await this.#apply(this.#base ?? ours, ours);
 				const refreshed = readPhases(
 					pending ? this.#base! : ours,
 					await this.#read(phaseIds(pending ? this.#base! : ours)),
@@ -336,32 +393,44 @@ class BeadsStore implements TodoStore {
 			}
 		});
 	}
-	async #operation<T>(run: () => Promise<T>, writing = false): Promise<T> {
+	async #operation<T>(run: (available: boolean) => Promise<T>, writing = false): Promise<T> {
 		if (this.#info.state !== "synced") throw new BeadsUnavailableError(this.#info.reason ?? "Beads is off");
 		return queued(this.route.root, async () => {
 			if (this.#info.state !== "synced") throw new BeadsUnavailableError(this.#info.reason);
 			try {
-				await this.#ensure(writing);
-				return await run();
+				return await run(await this.#ensure(writing));
 			} catch (error) {
 				if (error instanceof BeadsUnavailableError) throw error;
-				this.#fail(error);
-				throw new BeadsUnavailableError(this.#info.reason, { cause: error });
+				if (error instanceof BdError) this.#fail(error);
+				throw new BeadsUnavailableError(error instanceof Error ? error.message : "Beads operation failed", {
+					cause: error,
+				});
 			}
 		});
 	}
 	ready(limit: number): Promise<BeadBrief[]> {
 		if (!Number.isInteger(limit) || limit < 1)
 			return Promise.reject(new BeadsUnavailableError("Invalid ready limit"));
-		return this.#operation(async () =>
-			parseBeads(await this.#cli.call(["ready", "--brief", "--exclude-type", "epic", "-n", String(limit)])).map(
-				bead => ({ id: bead.id, title: bead.title, priority: bead.priority, parentId: bead.parent }),
-			),
+		return this.#operation(async available =>
+			available
+				? parseBeads(await this.#cli.call(["ready", "--brief", "--exclude-type", "epic", "-n", String(limit)])).map(
+						bead => ({ id: bead.id, title: bead.title, priority: bead.priority, parentId: bead.parent }),
+					)
+				: [],
 		);
 	}
-	load(id: string): Promise<TodoPhase | TodoItem> {
-		return this.#operation(async () => {
-			const beads = await this.#read([beadId(id)]);
+	#checkId(id: string): void {
+		try {
+			beadId(id);
+		} catch (error) {
+			throw new BeadsUnavailableError("Invalid bead ID", { cause: error });
+		}
+	}
+	async load(id: string): Promise<TodoPhase | TodoItem> {
+		this.#checkId(id);
+		return this.#operation(async available => {
+			if (!available) throw new BeadsUnavailableError(`Bead ${id} not found`);
+			const beads = await this.#read([id]);
 			const bead = beads.find(value => value.id === id);
 			if (!bead) throw new BeadsUnavailableError(`Bead ${id} not found`);
 			if (bead.issue_type !== "epic")
@@ -381,24 +450,32 @@ class BeadsStore implements TodoStore {
 			};
 		});
 	}
-	file(input: {
+	async file(input: {
 		title: string;
 		priority: 0 | 1 | 2 | 3 | 4;
 		description?: string;
 		discoveredFrom?: string;
 	}): Promise<string> {
+		if (typeof input.title !== "string" || !input.title.trim() || input.title.trimStart().startsWith("-"))
+			throw new BeadsUnavailableError("Invalid bead title");
+		if (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 4)
+			throw new BeadsUnavailableError("Invalid bead priority");
+		if (input.discoveredFrom !== undefined) this.#checkId(input.discoveredFrom);
 		return this.#operation(async () => {
 			const args = ["create", input.title, "-t", "task", "-p", String(input.priority), "-l", "omp,discovered"];
-			if (input.discoveredFrom) args.push("--deps", `discovered-from:${beadId(input.discoveredFrom)}`);
+			if (input.discoveredFrom) args.push("--deps", `discovered-from:${input.discoveredFrom}`);
 			if (input.description !== undefined) args.push("-d", input.description);
 			const data = await this.#cli.call(args);
 			if (!isRecord(data) || typeof data.id !== "string") throw new BdError("parse", "Missing created bead ID");
 			return beadId(data.id);
 		}, true);
 	}
-	dependency(taskId: string, onId: string, op: "add" | "remove"): Promise<void> {
+	async dependency(taskId: string, onId: string, op: "add" | "remove"): Promise<void> {
+		this.#checkId(taskId);
+		this.#checkId(onId);
+		if (op !== "add" && op !== "remove") throw new BeadsUnavailableError("Invalid dependency operation");
 		return this.#operation(async () => {
-			await this.#cli.call(["dep", op, beadId(taskId), beadId(onId)]);
+			await this.#cli.call(["dep", op, taskId, onId]);
 		}, true);
 	}
 }
@@ -434,5 +511,6 @@ export function openTodoStore(options: {
 		routeBeadsStore(options.cwd, config.roots, config.globalDir),
 		options.notice,
 		options.runner ?? defaultRunner,
+		config.globalDir,
 	);
 }

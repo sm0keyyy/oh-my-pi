@@ -1,6 +1,9 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
+import { ptree } from "@oh-my-pi/pi-utils";
 import {
 	BdCli,
 	type BdRunner,
@@ -15,9 +18,9 @@ import { Settings } from "../../src/config/settings";
 
 const binary = process.env.OMP_TEST_BD;
 it.skipIf(!binary)(
-	"round-trips the pinned bd store without changing git status or history",
+	"[F1 F9 F10 F13] round-trips the pinned bd store without changing git status or history",
 	async () => {
-		const parent = "/Users/jacobfreed/Developer/scratch/beads-store-live";
+		const parent = path.resolve(process.env.OMP_TEST_BD_ROOT ?? os.tmpdir());
 		await fs.mkdir(parent, { recursive: true });
 		const scratch = await fs.mkdtemp(path.join(parent, "run-"));
 		const home = path.join(scratch, "home");
@@ -49,8 +52,20 @@ it.skipIf(!binary)(
 			return stdout;
 		}
 		const run = createBdRunner(binary!);
-		const runner: BdRunner = (argv, options) =>
-			run(argv, { ...options, env: { ...options.env, ...env, BEADS_DIR: options.env.BEADS_DIR! } });
+		const runner: BdRunner = async (argv, options) => {
+			if (argv.includes("init")) {
+				expect(options.cwd === repo || options.cwd === globalDir).toBe(true);
+				const info = vcs.gitInfo(options.cwd);
+				expect(info).not.toBeNull();
+				expect(await fs.realpath(info!.repoRoot)).toBe(await fs.realpath(options.cwd));
+			}
+			const result = await run(argv, {
+				...options,
+				env: { ...options.env, ...env, BEADS_DIR: options.env.BEADS_DIR! },
+			});
+			if (argv.includes("init")) expect(result.stdout).not.toContain("Initialized git repository");
+			return result;
+		};
 		const notices: string[] = [];
 		function store(cwd: string) {
 			const settings = Settings.isolated();
@@ -64,7 +79,22 @@ it.skipIf(!binary)(
 				notice: (_level, text) => notices.push(text),
 			});
 		}
+		// Global-store git initialization must use the same isolated HOME as bd.
+		const exec = ptree.exec;
+		const gitExec = spyOn(ptree, "exec").mockImplementation((argv, options) =>
+			exec(argv, {
+				...options,
+				env: {
+					...options?.env,
+					HOME: home,
+					XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_NOSYSTEM: "1",
+				},
+			}),
+		);
 		try {
+			expect(path.dirname(scratch)).toBe(path.resolve(process.env.OMP_TEST_BD_ROOT ?? os.tmpdir()));
 			await git("init", "-b", "main");
 			await git(
 				"-c",
@@ -122,6 +152,20 @@ it.skipIf(!binary)(
 					bead => bead.id === epic,
 				),
 			).toMatchObject({ status: "closed", close_reason: "all tasks closed" });
+			await commit(
+				phases.map((phase, i) =>
+					i ? phase : { ...phase, tasks: phase.tasks.map(task => ({ ...task, status: "completed" })) },
+				),
+			);
+			expect(phases[0]!.tasks[1]!.status).toBe("completed");
+			await commit(
+				phases.map((phase, i) =>
+					i
+						? phase
+						: { ...phase, tasks: phase.tasks.map((task, n) => (n ? { ...task, status: "abandoned" } : task)) },
+				),
+			);
+			expect(phases[0]!.tasks[1]!.status).toBe("abandoned");
 			await commit(
 				phases.map((phase, i) => ({
 					...phase,
@@ -183,6 +227,19 @@ it.skipIf(!binary)(
 			phases = (await beads.refresh(phases, undefined)).phases;
 			expect(phases[0]!.tasks[0]).toMatchObject({ content: "CLI edit", status: "in_progress" });
 			await commit(
+				phases.map((phase, i) =>
+					i
+						? phase
+						: {
+								...phase,
+								name: "Build\tphase",
+								tasks: phase.tasks.map(task => ({ ...task, content: "CLI\nrevision" })),
+							},
+				),
+			);
+			expect(phases[0]!.name).toBe("Build\tphase");
+			expect(phases[0]!.tasks[0]!.content).toBe("CLI\nrevision");
+			await commit(
 				phases.map((phase, i) => (i ? { ...phase, tasks: phase.tasks.filter(task => task.id !== tests) } : phase)),
 			);
 			expect(parseBeads(await cli.call(["list", "--all", "-n", "0", "--id", tests]))[0]).toMatchObject({
@@ -201,6 +258,7 @@ it.skipIf(!binary)(
 			expect(await Bun.file(path.join(repo, ".git/info/exclude")).text()).toContain(".beads/");
 			expect(notices).toEqual([]);
 		} finally {
+			gitExec.mockRestore();
 			await fs.rm(scratch, { recursive: true, force: true });
 		}
 	},

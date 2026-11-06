@@ -176,4 +176,39 @@ describe("bd command boundary", () => {
 		expect(Date.now() - start).toBeGreaterThanOrEqual(2_200);
 		expect(Date.now() - start).toBeLessThan(5_000);
 	}, 6_000);
+	it("[F11] drops inherited bd configuration and preserves only the adapter's settings", () => {
+		const env = bdEnvironment("/isolated", {
+			HOME: "/isolated-home",
+			PATH: "/safe-path",
+			BEADS_DOLT_DATA_DIR: "/other-store",
+			BEADS_DOLT_SERVER_HOST: "remote.example",
+			BEADS_DOLT_AUTO_START: "1",
+			BEADS_METRICS_ENDPOINT: "https://example.invalid",
+			BD_DOLT_HOST: "remote.example",
+			BD_JSON_ENVELOPE: "0",
+			BD_NON_INTERACTIVE: "0",
+		});
+		expect(env).toEqual({
+			HOME: "/isolated-home",
+			PATH: "/safe-path",
+			DO_NOT_TRACK: "1",
+			BD_JSON_ENVELOPE: "1",
+			BD_NON_INTERACTIVE: "1",
+			NO_COLOR: "1",
+			BD_LAST_TOUCHED_FALLBACK: "0",
+			BEADS_DIR: "/isolated/.beads",
+		});
+	});
+	it("[F10] allows literal title argv without allowing extra flags or verbs", async () => {
+		const calls: string[][] = [];
+		const cli = new BdCli("/isolated", async argv => {
+			calls.push([...argv]);
+			return { exitCode: 0, stdout: '{"schema_version":1,"data":[]}', stderr: "", timedOut: false };
+		});
+		await cli.call(["update", "omp-abc.1", "--title", "tab\there\nline"]);
+		expect(calls).toEqual([
+			["--sandbox", "update", "omp-abc.1", "--title", "tab\there\nline", "--actor", "omp", "--json"],
+		]);
+		await expect(cli.call(["update", "omp-abc.1", "--delete", "all"])).rejects.toMatchObject({ code: "bd" });
+	});
 });

@@ -42,8 +42,15 @@ export function expandBeadsPath(value: string): string {
 }
 export function routeBeadsStore(cwd: string, roots: readonly string[], globalDir: string): BeadsRoute {
 	const info = vcs.gitInfo(cwd);
-	if (info) {
-		const root = fs.realpathSync(path.dirname(info.commonDir));
+	const primary = info
+		? path.basename(info.commonDir) === ".git"
+			? path.dirname(info.commonDir)
+			: info.gitDir === info.commonDir
+				? info.repoRoot
+				: undefined
+		: undefined;
+	if (primary) {
+		const root = fs.realpathSync(primary);
 		if (
 			roots.some(entry => {
 				const configured = expandBeadsPath(entry);

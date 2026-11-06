@@ -185,7 +185,6 @@ export function readPhases(
 			const parent = bead?.parent ?? bead?.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
 			const target = parent ? result.find(value => value.id === parent) : own;
 			if (target) target.tasks.push(bead ? beadToTask(bead, all, task, warn) : { ...task });
-			else if (task.id) dropped.push(task.id);
 		}
 	}
 	return { phases: result, dropped };
@@ -208,6 +207,28 @@ export interface BeadChanges {
 	reopen: string[];
 	closeEpics: string[];
 }
+
+function appendTitleChange(changes: BeadChanges, id: string, title: string): void {
+	const encoded = JSON.stringify(title);
+	// bd batch only decodes escaped quotes and backslashes, not JSON control escapes.
+	if ((encoded.match(/\\./g) ?? []).some(escape => escape !== '\\"' && escape !== "\\\\"))
+		changes.updates.push(["update", beadId(id), "--title", title]);
+	else changes.batch.push(`update ${beadId(id)} title=${encoded}`);
+}
+
+function appendClose(
+	lines: string[],
+	id: string,
+	old: Bead | undefined,
+	reason: "done" | "dropped" | "removed from omp list" | "all tasks closed",
+): void {
+	if (old?.status === "closed") {
+		if (old.close_reason === reason) return;
+		lines.push(`update ${beadId(id)} status=open`);
+	}
+	lines.push(`close ${beadId(id)} ${JSON.stringify(reason)}`);
+}
+
 export function diffBeads(
 	prev: readonly TodoPhase[],
 	next: readonly TodoPhase[],
@@ -232,13 +253,17 @@ export function diffBeads(
 				labels: ["omp"],
 				status: "open",
 			});
-		else if (epic.title !== phase.name)
-			changes.batch.push(`update ${beadId(phase.id)} title=${JSON.stringify(phase.name)}`);
+		else if (epic.title !== phase.name) appendTitleChange(changes, phase.id, phase.name);
 		for (const task of phase.tasks) {
 			if (!task.id) throw new BdError("parse", "Task has no bead ID");
 			const old = all.get(task.id);
 			const status = task.status === "in_progress" ? "in_progress" : task.status === "blocked" ? "blocked" : "open";
-			const derived = task.blocker?.startsWith("waits on ") || task.blocker === "deferred";
+			const mapped = old ? beadToTask(old, all) : undefined;
+			const derived =
+				mapped?.status === "blocked" &&
+				task.status === "blocked" &&
+				task.blocker === mapped.blocker &&
+				(old?.status === "open" || old?.status === "deferred");
 			if (!old)
 				changes.nodes.push({
 					key: task.id,
@@ -251,16 +276,19 @@ export function diffBeads(
 					status: derived ? "open" : status,
 				});
 			else {
-				if (old.title !== task.content)
-					changes.batch.push(`update ${beadId(task.id)} title=${JSON.stringify(task.content)}`);
+				if (old.title !== task.content) appendTitleChange(changes, task.id, task.content);
 				const parent = old.parent ?? old.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
 				if (parent !== phase.id) changes.updates.push(["update", beadId(task.id), "--parent", beadId(phase.id)]);
 			}
 			if (task.status === "completed" || task.status === "abandoned") {
 				const reason = task.status === "abandoned" ? "dropped" : "done";
-				if (old?.status !== "closed" || old.close_reason !== reason)
-					changes.batch.push(`close ${beadId(task.id)} ${JSON.stringify(reason)}`);
-			} else if (old && !derived && old.status !== status)
+				if (old?.status !== "closed" || mapped?.status !== task.status)
+					appendClose(changes.batch, task.id, old, reason);
+			} else if (
+				old &&
+				(mapped?.status !== task.status ||
+					(!derived && task.status === "blocked" && old.status !== "blocked" && mapped?.blocker !== task.blocker))
+			)
 				changes.batch.push(`update ${beadId(task.id)} status=${status}`);
 			const blocker = task.status === "blocked" && !derived ? task.blocker : undefined;
 			if (!derived && blocker !== old?.metadata?.["omp.blocker"])
@@ -271,14 +299,17 @@ export function diffBeads(
 				]);
 		}
 		if (closed && (epic?.status !== "closed" || reopen))
-			changes.closeEpics.push(`close ${beadId(phase.id)} "all tasks closed"`);
+			appendClose(changes.closeEpics, phase.id, epic, "all tasks closed");
 	}
 	for (const phase of prev) {
-		for (const task of phase.tasks)
-			if (task.id && !ids.has(task.id) && all.has(task.id))
-				changes.batch.push(`close ${beadId(task.id)} "removed from omp list"`);
+		for (const task of phase.tasks) {
+			const old = task.id ? all.get(task.id) : undefined;
+			const parent = old?.parent ?? old?.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
+			if (task.id && !ids.has(task.id) && old && phase.id && parent === phase.id)
+				appendClose(changes.batch, task.id, old, "removed from omp list");
+		}
 		if (phase.id && !ids.has(phase.id) && all.has(phase.id))
-			changes.closeEpics.push(`close ${beadId(phase.id)} "all tasks closed"`);
+			appendClose(changes.closeEpics, phase.id, all.get(phase.id), "all tasks closed");
 	}
 	return changes;
 }

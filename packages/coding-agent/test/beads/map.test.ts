@@ -145,7 +145,18 @@ describe("todo bead mapping", () => {
 		const derived = [
 			{ ...base[0]!, tasks: [{ ...base[0]!.tasks[0]!, status: "blocked" as const, blocker: "waits on external" }] },
 		];
-		expect(diffBeads(base, derived, beads).batch.some(line => line.includes("status=blocked"))).toBe(false);
+		const dependency = {
+			...beads[1]!,
+			dependencies: [{ issue_id: beads[1]!.id, depends_on_id: "external", type: "blocks" }],
+		};
+		expect(
+			diffBeads(base, derived, [
+				beads[0]!,
+				dependency,
+				beads[2]!,
+				{ id: "external", title: "External", status: "open", priority: 2 },
+			]).batch.some(line => line.includes("status=blocked")),
+		).toBe(false);
 	});
 	it("refresh drops externally missing beads without recreating them and preserves local ordering", () => {
 		const result = readPhases(base, [beads[0]!, { ...beads[1]!, status: "closed", close_reason: "done" }]);
@@ -167,5 +178,69 @@ describe("todo bead mapping", () => {
 		expect(conflict.phases[0]!.tasks[0]!.status).toBe("blocked");
 		theirs[0]!.tasks.shift();
 		expect(reconcilePhases(base, ours, theirs).phases[0]!.tasks.map(task => task.id)).toEqual(["omp-abc123.4"]);
+	});
+	it("[F4] does not close a task that bd moved outside the session's phases", () => {
+		for (const parentField of ["parent", "dependencies"] as const) {
+			const moved: Bead = { ...beads[1]! };
+			delete moved.parent;
+			if (parentField === "parent") moved.parent = "operator-epic";
+			else moved.dependencies = [{ issue_id: moved.id, depends_on_id: "operator-epic", type: "parent-child" }];
+			const current = [beads[0]!, moved, beads[2]!];
+			const refreshed = readPhases(base, current);
+			expect(refreshed.phases[0]!.tasks.map(task => task.id)).toEqual(["omp-abc123.4"]);
+			expect(refreshed.dropped).not.toContain(moved.id);
+			expect(diffBeads(base, refreshed.phases, current).batch).not.toContain(
+				`close ${moved.id} "removed from omp list"`,
+			);
+		}
+	});
+	it("[F5] leaves pinned and hooked statuses unchanged on an unrelated write", () => {
+		const current: Bead[] = [beads[0]!, { ...beads[1]!, status: "pinned" }, { ...beads[2]!, status: "hooked" }];
+		const phases = readPhases(base, current).phases;
+		phases[0]!.name = "Renamed";
+		expect(diffBeads(base, phases, current).batch).toEqual(['update omp-abc123 title="Renamed"']);
+	});
+	it("[F8] preserves explicit blocker notes that resemble derived blockers", () => {
+		for (const blocker of ["waits on reviewer sign-off", "deferred"]) {
+			const next: TodoPhase[] = [{ ...base[0]!, tasks: [{ ...base[0]!.tasks[0]!, status: "blocked", blocker }] }];
+			const current = [beads[0]!, { ...beads[1]!, status: "in_progress" }];
+			const changes = diffBeads(base, next, current);
+			expect(changes.batch).toContain("update omp-abc123.1 status=blocked");
+			expect(changes.updates).toContainEqual(["update", "omp-abc123.1", "--set-metadata", `omp.blocker=${blocker}`]);
+			const created = diffBeads([], next, []);
+			expect(created.nodes[1]!.status).toBe("blocked");
+			expect(created.updates).toContainEqual(["update", "omp-abc123.1", "--set-metadata", `omp.blocker=${blocker}`]);
+		}
+	});
+	it("[F9] reopens a closed task before changing its fixed close reason", () => {
+		for (const [reason, status, desired] of [
+			["done", "abandoned", "dropped"],
+			["dropped", "completed", "done"],
+		] as const) {
+			const current = [beads[0]!, { ...beads[1]!, status: "closed", close_reason: reason }, beads[2]!];
+			const next: TodoPhase[] = [{ ...base[0]!, tasks: [{ ...base[0]!.tasks[0]!, status }, base[0]!.tasks[1]!] }];
+			expect(diffBeads(base, next, current).batch).toEqual([
+				"update omp-abc123.1 status=open",
+				`close omp-abc123.1 "${desired}"`,
+			]);
+		}
+		const current = [beads[0]!, { ...beads[1]!, status: "closed", close_reason: "done" }, beads[2]!];
+		expect(diffBeads(base, [{ ...base[0]!, tasks: [base[0]!.tasks[1]!] }], current).batch).toEqual([
+			"update omp-abc123.1 status=open",
+			'close omp-abc123.1 "removed from omp list"',
+		]);
+	});
+	it("[F10] sends non-batch-safe title escapes through literal argv", () => {
+		for (const title of ["tab\there", "line\nbreak", "control\u0001char"]) {
+			const next: TodoPhase[] = [
+				{ ...base[0]!, name: title, tasks: [{ ...base[0]!.tasks[0]!, content: title }, base[0]!.tasks[1]!] },
+			];
+			const changes = diffBeads(base, next, beads);
+			expect(changes.batch).toEqual([]);
+			expect(changes.updates).toEqual([
+				["update", "omp-abc123", "--title", title],
+				["update", "omp-abc123.1", "--title", title],
+			]);
+		}
 	});
 });

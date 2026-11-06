@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"feed/root/Alpha.jsonl","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/project"}
+{"type":"custom_message","id":"alpha-in","timestamp":"2026-01-01T00:00:05.000Z","customType":"irc:incoming","content":"IRC Beta: Alpha gets this.","display":true,"details":{"id":"msg-alpha-in","from":"Beta","message":"Alpha gets this."},"parentId":null}
+{"type":"custom_message","id":"broadcast-alpha","timestamp":"2026-01-01T00:00:04.000Z","customType":"irc:incoming","content":"IRC Beta: Team update.","display":true,"details":{"id":"msg-broadcast-alpha","from":"Beta","message":"Team update.","broadcast":true},"parentId":"alpha-in"}
+{"type":"custom_message","id":"alpha-repeat-entry","timestamp":"2026-01-01T00:00:05.000Z","customType":"irc:incoming","content":"IRC Beta: Alpha gets this.","display":true,"details":{"id":"msg-alpha-in","from":"Beta","message":"Alpha gets this."},"parentId":"broadcast-alpha"}

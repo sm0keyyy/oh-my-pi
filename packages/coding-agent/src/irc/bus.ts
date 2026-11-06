@@ -60,6 +60,7 @@ export class IrcBus {
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
+	readonly #sentListeners = new Set<(message: IrcMessage) => void>();
 	/** The latest successful non-progress send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, SendMark>>();
 	/** The latest direct (non-broadcast, non-progress) send per `from` → `to`; see {@link unansweredSends}. */
@@ -76,6 +77,13 @@ export class IrcBus {
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+	}
+
+	onSent(listener: (message: IrcMessage) => void): () => void {
+		this.#sentListeners.add(listener);
+		return () => {
+			this.#sentListeners.delete(listener);
+		};
 	}
 
 	/**
@@ -108,6 +116,13 @@ export class IrcBus {
 				this.#record(this.#lastSent, message.from, message.to, mark);
 				if (!message.broadcast && !message.wakeRelay)
 					this.#record(this.#lastDirect, message.from, message.to, mark);
+			}
+			for (const listener of this.#sentListeners) {
+				try {
+					listener(message);
+				} catch (error) {
+					logger.warn("threads: IRC sent listener failed", { error: String(error) });
+				}
 			}
 		}
 		return receipt;

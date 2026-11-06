@@ -1189,7 +1189,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (!deferred || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}
-			const formatted = await formatAfterWrite(absolutePath, this.session.settings, signal);
+			const formatted = await formatAfterWrite(absolutePath, this.session.settings, signal, this.session.cwd);
 			let finalContent = diagnostics.finalContent;
 			if (formatted.changed) {
 				getEditStore(this.session).invalidate(absolutePath);
@@ -1201,7 +1201,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						return finalContent;
 					});
 			}
-			scheduleAffectedTest(absolutePath, this.session.settings);
+			scheduleAffectedTest(absolutePath, this.session.settings, this.session.cwd);
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent, displayPath);

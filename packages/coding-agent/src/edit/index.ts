@@ -354,6 +354,10 @@ interface OpenEditSession {
 	resolveContext: ResolveContext;
 }
 
+interface FormattedEdit extends FormatOutcome {
+	text: string;
+}
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 	// Zero-copy Buffer view: `equals` is a native memcmp.
 	return Buffer.from(left.buffer, left.byteOffset, left.byteLength).equals(right);
@@ -542,12 +546,17 @@ export class EditTool implements AgentTool<TInput> {
 		}
 		const editSession = open.native;
 		const batch = getLspBatchRequest(context?.toolCall);
-		const formatted = new Map<string, FormatOutcome>();
+		const formatted = new Map<string, FormattedEdit>();
+		const writtenPaths = new Set<string>();
 		let outcome;
 		try {
 			outcome = await editSession.apply(
 				{ lspBatchId: batch?.id, lspFlush: batch?.flush ?? false },
-				(_error, request) => this.#write(request, formatted, signal),
+				async (_error, request) => {
+					const response = await this.#write(request, formatted, signal);
+					if (request.op !== "delete") writtenPaths.add(request.moveTo ?? request.path);
+					return response;
+				},
 			);
 			if (outcome.isError && batch?.flush) {
 				await flushLspWritethroughBatch(batch.id, this.session.cwd, signal);
@@ -560,7 +569,26 @@ export class EditTool implements AgentTool<TInput> {
 			if (this.#sessions.get(toolCallId) === open) this.#sessions.delete(toolCallId);
 			this.#streamedArgs.delete(toolCallId);
 		}
-		for (const filePath of formatted.keys()) getEditStore(this.session).invalidate(filePath);
+		for (const [filePath, value] of formatted) {
+			getEditStore(this.session).recordSnapshot(filePath, value.text, [0]);
+		}
+		for (const filePath of writtenPaths) scheduleAffectedTest(filePath, this.session.settings, this.session.cwd);
+		for (const file of outcome.files) {
+			const value = formatted.get(file.moveTo ?? file.path);
+			if (!value) continue;
+			const original = file.text;
+			const body = file.text.split("\n\nWarnings:\n")[0] ?? "";
+			file.warnings = file.warnings.filter(
+				warning => !warning.includes("the file on disk after this write differs from what was sent — the client"),
+			);
+			const lines = body.split("\n").filter(line => !/^[ +*-]?\d+(?:-\d+)?[:|]/.test(line));
+			lines.push(`line numbers changed by ${value.formatters.join(", ")}; re-read before anchored edits`);
+			if (file.warnings.length > 0) lines.push("", "Warnings:", ...file.warnings);
+			file.text = lines.join("\n");
+			file.diff = "";
+			file.firstChangedLine = undefined;
+			outcome.text = outcome.text.replace(original, file.text);
+		}
 
 		if (outcome.isError) {
 			return {
@@ -706,12 +734,11 @@ export class EditTool implements AgentTool<TInput> {
 	async #formatWritten(
 		filePath: string,
 		content: string,
-		formatted: Map<string, FormatOutcome>,
+		formatted: Map<string, FormattedEdit>,
 		signal?: AbortSignal,
 	): Promise<string> {
-		const outcome = await formatAfterWrite(filePath, this.session.settings, signal);
+		const outcome = await formatAfterWrite(filePath, this.session.settings, signal, this.session.cwd);
 		if (outcome.changed) {
-			formatted.set(filePath, outcome);
 			getEditStore(this.session).invalidate(filePath);
 			this.session.bumpFileMutationVersion?.(filePath);
 			content = await Bun.file(filePath)
@@ -720,14 +747,14 @@ export class EditTool implements AgentTool<TInput> {
 					logger.info("edit-pipeline: formatted file could not be read", { error: String(error) });
 					return content;
 				});
+			formatted.set(filePath, { ...outcome, text: content });
 		}
-		scheduleAffectedTest(filePath, this.session.settings);
 		return content;
 	}
 
 	async #write(
 		request: EditWriteRequest,
-		formatted: Map<string, FormatOutcome>,
+		formatted: Map<string, FormattedEdit>,
 		signal?: AbortSignal,
 	): Promise<EditWriteResponse> {
 		if (request.op === "delete") {

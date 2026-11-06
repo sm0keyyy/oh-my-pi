@@ -50,6 +50,7 @@ export async function formatAfterWrite(
 	filePath: string,
 	settings: Settings,
 	signal?: AbortSignal,
+	cwd = settings.getCwd(),
 ): Promise<FormatOutcome> {
 	const outcome: FormatOutcome = { changed: false, formatters: [] };
 	try {
@@ -58,7 +59,7 @@ export async function formatAfterWrite(
 		if (tools.length === 0 || !(await eligibleFile(filePath))) return outcome;
 		for (const tool of tools) {
 			if (signal?.aborted) break;
-			const context = await findToolContext(path.dirname(filePath), tool);
+			const context = await findToolContext(path.dirname(filePath), tool, cwd);
 			if (!context.configPath) continue;
 			const before = await fs.readFile(filePath);
 			try {
@@ -87,13 +88,13 @@ export async function formatAfterWrite(
 	return outcome;
 }
 
-export function scheduleAffectedTest(filePath: string, settings: Settings): void {
+export function scheduleAffectedTest(filePath: string, settings: Settings, cwd = settings.getCwd()): void {
 	try {
 		if (!cfgEditFormatPipeline.get(settings) || !cfgEditAffectedTest.get(settings)) return;
 		const absolutePath = path.resolve(filePath);
 		if (affectedTests.has(absolutePath)) return;
 		affectedTests.add(absolutePath);
-		void runAffectedTest(absolutePath)
+		void runAffectedTest(absolutePath, cwd)
 			.catch(error => {
 				logger.info("edit-pipeline: affected-test advisory failed", { path: absolutePath, error: String(error) });
 			})
@@ -103,11 +104,11 @@ export function scheduleAffectedTest(filePath: string, settings: Settings): void
 	}
 }
 
-async function runAffectedTest(filePath: string): Promise<void> {
+async function runAffectedTest(filePath: string, cwd: string): Promise<void> {
 	if (!(await eligibleFile(filePath))) return;
 	const candidate = await uniqueTestCandidate(filePath);
 	if (!candidate) return;
-	const runner = await detectTestRunner(path.dirname(candidate));
+	const runner = await detectTestRunner(path.dirname(candidate), cwd);
 	if (!runner) return;
 	await run(runner.bin, [...runner.args, candidate], path.dirname(candidate));
 	logger.info("edit-pipeline: affected-test advisory passed", { path: candidate });

@@ -34,7 +34,13 @@ export function socketFallbackDir(dir: string, base: string): string {
 export async function resolveSocketEndpoint(dir: string, entryId: string, fallbackBase: string): Promise<string> {
 	const canonical = path.join(dir, `${entryId}.sock`);
 	if (Buffer.byteLength(canonical) < SUN_PATH_LIMIT) return canonical;
-	const shortDir = socketFallbackDir(dir, fallbackBase);
+	let shortDir = socketFallbackDir(dir, fallbackBase);
+	let endpoint = path.join(shortDir, `${entryId}.sock`);
+	if (Buffer.byteLength(endpoint) >= SUN_PATH_LIMIT) {
+		shortDir = socketFallbackDir(dir, "/tmp");
+		const name = new Bun.CryptoHasher("sha256").update(entryId).digest("hex").slice(0, 20);
+		endpoint = path.join(shortDir, `${name}.sock`);
+	}
 	await ensurePrivateDir(shortDir);
-	return path.join(shortDir, `${entryId}.sock`);
+	return endpoint;
 }

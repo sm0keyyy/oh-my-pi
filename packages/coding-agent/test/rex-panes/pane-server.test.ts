@@ -4,8 +4,9 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { newPaneToken, startPaneServer } from "../../src/rex-panes/pane-server";
+import { newPaneToken, type PaneServer, startPaneServer } from "../../src/rex-panes/pane-server";
 import { SocketTerminal } from "../../src/rex-panes/socket-terminal";
+import { socketFallbackDir } from "../../src/utils/private-socket";
 import { frame, hello, until } from "./helpers/build-relay";
 
 async function connect(socketPath: string): Promise<net.Socket> {
@@ -16,6 +17,41 @@ async function connect(socketPath: string): Promise<net.Socket> {
 }
 
 describe("pane server", () => {
+	it("accepts HELLO with a deep PI_CONFIG_DIR and a long TMPDIR", async () => {
+		const root = await fs.mkdtemp(path.join("/tmp", "omp-pane-path-"));
+		const configRoot = path.join(root, "deep-config-".repeat(12));
+		const tempDir = path.join(root, "long-temp-".repeat(10));
+		await fs.mkdir(tempDir);
+		const previousConfig = process.env.PI_CONFIG_DIR;
+		const previousTemp = process.env.TMPDIR;
+		process.env.PI_CONFIG_DIR = path.relative(os.homedir(), configRoot);
+		process.env.TMPDIR = tempDir;
+		const dir = path.join(configRoot, "run", "panes");
+		let server: PaneServer | undefined;
+		let peer: net.Socket | undefined;
+		try {
+			server = await startPaneServer();
+			expect(Buffer.byteLength(server.socketPath)).toBeLessThan(104);
+			expect((await fs.stat(path.dirname(server.socketPath))).mode & 0o777).toBe(0o700);
+			expect((await fs.stat(server.socketPath)).mode & 0o777).toBe(0o600);
+			const token = newPaneToken();
+			const expected = server.expect(token, 5000);
+			peer = await connect(server.socketPath);
+			peer.write(hello(token));
+			expect((await expected).columns).toBe(100);
+		} finally {
+			if (previousConfig === undefined) delete process.env.PI_CONFIG_DIR;
+			else process.env.PI_CONFIG_DIR = previousConfig;
+			if (previousTemp === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previousTemp;
+			peer?.destroy();
+			await server?.close();
+			await fs.rm(root, { recursive: true, force: true });
+			if (server && path.dirname(server.socketPath) === socketFallbackDir(dir, "/tmp"))
+				await fs.rmdir(path.dirname(server.socketPath));
+		}
+	});
+
 	it("requires one-shot HELLO auth and enforces private socket modes", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-pane-server-"));
 		const server = await startPaneServer({ dir });

@@ -42,6 +42,15 @@ export default function fixture(pi: ExtensionAPI): void {
 						},
 					]);
 					break;
+				case "review":
+					if (!ctx.ui.review) throw new Error("Review dialog requires plan-approval integration");
+					result = await ctx.ui.review({
+						path: "/tmp/browser-plan.md",
+						title: "Browser plan",
+						markdown: "## 4. Slices\n\nMerge view and wire.",
+						sections: [{ id: "§4", heading: "Slices", excerpt: "Merge view and wire." }],
+					});
+					break;
 				case "status":
 					ctx.ui.setStatus("fixture", "Local status");
 					ctx.ui.setWidget("fixture", ["Local widget", "Second line"]);

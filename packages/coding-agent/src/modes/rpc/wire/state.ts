@@ -296,6 +296,7 @@ export const stateDefs = {
 		lastUpdate: "number.integer",
 		"progress?": doc(JSON_OBJECT, "Raw `AgentProgress` record."),
 		"parentToolCallId?": "string",
+		"followUpAvailable?": "boolean",
 	},
 	SubagentMessages: doc(
 		{

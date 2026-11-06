@@ -137,6 +137,11 @@ export type RpcCommand =
 	  }
 	| {
 			id?: string;
+			type: "set_review_dialog";
+			enabled: boolean;
+	  }
+	| {
+			id?: string;
 			type: "get_available_commands";
 	  }
 	| {
@@ -185,6 +190,30 @@ export type RpcCommand =
 			type: "steer_subagent";
 			subagentId: string;
 			message: string;
+	  }
+	| {
+			id?: string;
+			type: "stop_subagent";
+			subagentId: string;
+			reason: string;
+	  }
+	| {
+			id?: string;
+			type: "abort_subagent";
+			subagentId: string;
+			reason?: string;
+	  }
+	| {
+			id?: string;
+			type: "follow_up_subagent";
+			subagentId: string;
+			message: string;
+	  }
+	| {
+			id?: string;
+			type: "toggle_pane";
+			pane: "todo" | "agents";
+			shape?: "dock" | "float";
 	  }
 	| {
 			id?: string;
@@ -435,6 +464,17 @@ export type RpcExtensionUIResponse =
 			id: string;
 			cancelled: true;
 			timedOut?: boolean;
+	  }
+	| {
+			type: "extension_ui_response";
+			id: string;
+			review: {
+				verdict: "approve" | "request-changes";
+				comments: Array<{
+					section: string;
+					text: string;
+				}>;
+			};
 	  }
 	| {
 			type: "extension_ui_response";

@@ -15,6 +15,7 @@ export interface Snapshot {
 	models: RecordValue[];
 	levels: string[];
 	agents: RecordValue[];
+	reviewDialogEnabled: boolean;
 	agentMessages: Record<string, Message[]>;
 	tools: Record<string, RecordValue>;
 	statuses: Record<string, string>;
@@ -200,6 +201,7 @@ export class SessionClient {
 		models: [],
 		levels: [],
 		agents: [],
+		reviewDialogEnabled: false,
 		agentMessages: {},
 		tools: {},
 		statuses: {},
@@ -566,9 +568,27 @@ export class SessionClient {
 		const state = await this.request({ type: "get_state" }, 10_000);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
 		if (revision === this.#snapshot.revision) this.#setState(state);
-		const stats = await this.request({ type: "get_session_stats" }, 10_000);
+		const [stats, agents] = await Promise.all([
+			this.request({ type: "get_session_stats" }, 10_000),
+			this.request({ type: "get_subagents" }, 10_000),
+		]);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
-		this.#publish({ stats });
+		this.#publish({ stats, agents: this.#mergeSubagents(agents.subagents) });
+	}
+	#mergeSubagents(value: unknown): RecordValue[] {
+		const current = records(value);
+		const previous = new Map(this.#snapshot.agents.map(agent => [agent.id, agent]));
+		const ids = new Set(current.map(agent => agent.id));
+		return [
+			...current.map(agent => ({
+				...previous.get(agent.id),
+				...agent,
+				followUpAvailable: agent.followUpAvailable === true,
+			})),
+			...this.#snapshot.agents
+				.filter(agent => !ids.has(agent.id) && agent.status !== "running" && agent.status !== "pending")
+				.map(agent => ({ ...agent, followUpAvailable: false })),
+		];
 	}
 	#notice(message: string): void {
 		this.#publish({ notices: [...this.#snapshot.notices, message] });
@@ -584,17 +604,24 @@ export class SessionClient {
 		this.#pageEvents = null;
 		this.#events ??= [];
 		clearInterval(this.#refresh);
-		this.#publish({ error: null, ...(!this.#hasState ? { phase: "rebuilding" as const } : {}) });
+		this.#publish({
+			error: null,
+			reviewDialogEnabled: false,
+			...(!this.#hasState ? { phase: "rebuilding" as const } : {}),
+		});
 		try {
 			await this.#request({ type: "negotiate_protocol", protocolVersion: 2 }, 0);
 			await this.#request({ type: "set_event_filter", events: null, messageUpdates: "full" }, 0);
 			await this.#request({ type: "set_ask_dialog", enabled: true }, 0);
+			// Older hosts may not implement this additive capability.
+			const reviewDialogEnabled = await this.#request({ type: "set_review_dialog", enabled: true }, 0).then(
+				result => result.enabled === true,
+				() => false,
+			);
 			await this.#request({ type: "set_subagent_subscription", level: "events" }, 0);
 			if (this.#stopped || hydration !== this.#hydration) return;
 			const result = await this.#request(
-				this.#backwardPaging
-					? { type: "get_messages_page", backward: true, limit: 50 }
-					: { type: "get_messages" },
+				this.#backwardPaging ? { type: "get_messages_page", backward: true, limit: 50 } : { type: "get_messages" },
 				0,
 				hydration,
 			);
@@ -605,9 +632,11 @@ export class SessionClient {
 			this.#readingHistory = false;
 			const events = this.#events ?? [];
 			this.#events = null;
+			if (state.sessionId !== this.#snapshot.state.sessionId) this.#publish({ agents: [] });
 			this.#setState(state);
 			this.#publish({
 				messages: page.messages,
+				reviewDialogEnabled,
 				history: { olderCursor: page.olderCursor, newer: false, loading: false },
 				tools: {},
 				dialogs: [],
@@ -641,7 +670,7 @@ export class SessionClient {
 				commands: [...records(commands.commands), ...terminalCommands],
 				models: records(models.models),
 				levels: strings(levels.levels),
-				agents: records(agents.subagents),
+				agents: this.#mergeSubagents(agents.subagents),
 			});
 	}
 	#setState(state: RecordValue): void {
@@ -730,7 +759,7 @@ export class SessionClient {
 		}
 		if (frame.type === "session_changed") {
 			this.#events = [];
-			this.#publish({ commandOutputs: [] });
+			this.#publish({ commandOutputs: [], agents: [] });
 			void this.#rebuild();
 			return;
 		}
@@ -812,6 +841,7 @@ export class SessionClient {
 									payload.status === "started"
 										? "running"
 										: (payload.status ?? progress.status ?? previous?.status),
+								...(payload.status !== undefined ? { followUpAvailable: false } : {}),
 								updatedAt: snapshot.revision,
 							},
 						],
@@ -892,7 +922,7 @@ export class SessionClient {
 			if (frame.widgetLines) widgets[key] = strings(frame.widgetLines);
 			else delete widgets[key];
 			this.#publish({ widgets });
-		} else if (["ask", "select", "confirm", "input", "editor"].includes(text(frame.method))) {
+		} else if (["ask", "select", "confirm", "input", "editor", "review"].includes(text(frame.method))) {
 			if (typeof frame.id !== "string") throw new Error("Invalid dialog id");
 			if (!snapshot.dialogs.some(dialog => dialog.id === frame.id))
 				this.#publish({ dialogs: [...snapshot.dialogs, frame] });

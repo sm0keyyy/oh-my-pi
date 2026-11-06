@@ -83,6 +83,9 @@ export function Rail({
 		setError("");
 		try {
 			const value = await client.request(command, 600_000);
+			if (["stop_subagent", "abort_subagent", "follow_up_subagent"].includes(command.type) && value.ok === false) {
+				throw new Error(`Subagent control refused: ${text(value.reason)}`);
+			}
 			if (show) setResult({ title: show, value });
 			await onRefresh();
 			return value;
@@ -168,7 +171,74 @@ export function Rail({
 									{text(agent.status)} · {text(agent.description)}
 								</div>
 							</div>
-							<div className="agent-act">
+							<div className="agent-act" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
+								{snapshot.reviewDialogEnabled &&
+									(agent.status === "running" ||
+										agent.status === "pending" ||
+										agent.followUpAvailable === true) && (
+										<form
+											style={{ flexBasis: "100%", minWidth: 0 }}
+											onSubmit={event => {
+												event.preventDefault();
+												const submitter = (event.nativeEvent as SubmitEvent).submitter;
+												const type = submitter instanceof HTMLButtonElement ? submitter.value : "";
+												if (type !== "stop_subagent" && type !== "abort_subagent") return;
+												const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
+												if (!reason) return;
+												act({ type, subagentId: text(agent.id), reason });
+											}}
+										>
+											<label className="field">
+												Reason for {text(agent.id)}
+												<input name="reason" required />
+											</label>
+											<button
+												type="submit"
+												className="btn"
+												style={{ minHeight: 44 }}
+												value="stop_subagent"
+												disabled={
+													pending || snapshot.phase !== "connected" || agent.followUpAvailable === true
+												}
+											>
+												Stop agent
+											</button>
+											<button
+												type="submit"
+												className="btn btn-stop"
+												style={{ minHeight: 44 }}
+												value="abort_subagent"
+												disabled={pending || snapshot.phase !== "connected"}
+											>
+												Abort agent
+											</button>
+										</form>
+									)}
+								{snapshot.reviewDialogEnabled && agent.followUpAvailable === true && (
+									<form
+										style={{ flexBasis: "100%", minWidth: 0 }}
+										onSubmit={event =>
+											inputAction(event, message => ({
+												type: "follow_up_subagent",
+												subagentId: text(agent.id),
+												message,
+											}))
+										}
+									>
+										<label className="field">
+											Follow-up for {text(agent.id)}
+											<input name="value" required />
+										</label>
+										<button
+											type="submit"
+											className="btn"
+											style={{ minHeight: 44 }}
+											disabled={pending || snapshot.phase !== "connected"}
+										>
+											Send follow-up
+										</button>
+									</form>
+								)}
 								<button
 									className="btn"
 									type="button"

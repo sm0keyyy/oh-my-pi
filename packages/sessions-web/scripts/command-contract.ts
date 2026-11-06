@@ -101,6 +101,12 @@ for (const basename of ["modes", "collaboration", "session", "lifecycle", "marke
 }
 output += `export const terminalCommands = ${JSON.stringify(terminalCommands, null, 2)} as const;\n`;
 const filename = path.join(root, "packages/sessions-web/src/commands.ts");
+const formatted = Bun.spawnSync(
+	[process.execPath, path.join(root, "node_modules/.bin/oxfmt"), "--stdin-filepath", filename],
+	{ cwd: root, stdin: Buffer.from(output), stdout: "pipe", stderr: "pipe", timeout: 10000 },
+);
+if (formatted.exitCode !== 0) throw new Error(`Browser contract formatting failed: ${formatted.stderr.toString()}`);
+output = formatted.stdout.toString();
 if (process.argv.includes("--check")) {
 	const current = ts.createSourceFile(filename, await Bun.file(filename).text(), ts.ScriptTarget.Latest, true);
 	const expected = ts.createSourceFile(filename, output, ts.ScriptTarget.Latest, true);

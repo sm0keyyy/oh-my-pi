@@ -3267,8 +3267,9 @@ type SubagentSnapshot struct {
 	Assignment  *string        `json:"assignment,omitempty"`
 	SessionFile *string        `json:"sessionFile,omitempty"`
 	// Raw `AgentProgress` record.
-	Progress         map[string]json.RawMessage `json:"progress,omitempty"`
-	ParentToolCallID *string                    `json:"parentToolCallId,omitempty"`
+	Progress          map[string]json.RawMessage `json:"progress,omitempty"`
+	ParentToolCallID  *string                    `json:"parentToolCallId,omitempty"`
+	FollowUpAvailable *bool                      `json:"followUpAvailable,omitempty"`
 }
 
 func (v *SubagentSnapshot) UnmarshalJSON(data []byte) error {
@@ -3290,6 +3291,7 @@ func (v *SubagentSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("progress", &out.Progress)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
+	d.optional("followUpAvailable", &out.FollowUpAvailable)
 	if d.err != nil {
 		return d.err
 	}
@@ -4740,6 +4742,279 @@ func (v *RpcAgentEvent) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type StopSubagentOutcome struct {
+	Ok     bool                       `json:"ok"`
+	Reason *StopSubagentOutcomeReason `json:"reason,omitempty"`
+}
+
+func (v *StopSubagentOutcome) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "StopSubagentOutcome", v.decodeFrom)
+}
+
+func (v *StopSubagentOutcome) decodeFrom(raw map[string]json.RawMessage) error {
+	var out StopSubagentOutcome
+	d := fieldDecoder{raw: raw, owner: "StopSubagentOutcome"}
+	d.required("ok", &out.Ok)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type StopSubagentOutcomeReason string
+
+const (
+	StopSubagentOutcomeReasonUnknownAgent StopSubagentOutcomeReason = "unknown-agent"
+	StopSubagentOutcomeReasonNotRunning   StopSubagentOutcomeReason = "not-running"
+	StopSubagentOutcomeReasonNoDrivenRun  StopSubagentOutcomeReason = "no-driven-run"
+)
+
+func (v *StopSubagentOutcomeReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "StopSubagentOutcomeReason")
+	if err != nil {
+		return err
+	}
+	switch value := StopSubagentOutcomeReason(s); value {
+	case StopSubagentOutcomeReasonUnknownAgent, StopSubagentOutcomeReasonNotRunning, StopSubagentOutcomeReasonNoDrivenRun:
+		*v = value
+		return nil
+	}
+	return unknownValue("StopSubagentOutcomeReason", s)
+}
+
+type AbortSubagentOutcome struct {
+	Ok        *bool                       `json:"ok,omitempty"`
+	Reason    *AbortSubagentOutcomeReason `json:"reason,omitempty"`
+	Cancelled *bool                       `json:"cancelled,omitempty"`
+}
+
+func (v *AbortSubagentOutcome) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AbortSubagentOutcome", v.decodeFrom)
+}
+
+func (v *AbortSubagentOutcome) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AbortSubagentOutcome
+	d := fieldDecoder{raw: raw, owner: "AbortSubagentOutcome"}
+	d.optional("ok", &out.Ok)
+	d.optional("reason", &out.Reason)
+	d.optional("cancelled", &out.Cancelled)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type AbortSubagentOutcomeReason string
+
+const (
+	AbortSubagentOutcomeReasonUnknownAgent AbortSubagentOutcomeReason = "unknown-agent"
+	AbortSubagentOutcomeReasonNotLive      AbortSubagentOutcomeReason = "not-live"
+)
+
+func (v *AbortSubagentOutcomeReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "AbortSubagentOutcomeReason")
+	if err != nil {
+		return err
+	}
+	switch value := AbortSubagentOutcomeReason(s); value {
+	case AbortSubagentOutcomeReasonUnknownAgent, AbortSubagentOutcomeReasonNotLive:
+		*v = value
+		return nil
+	}
+	return unknownValue("AbortSubagentOutcomeReason", s)
+}
+
+type FollowUpSubagentOutcome struct {
+	Ok     bool                           `json:"ok"`
+	Reason *FollowUpSubagentOutcomeReason `json:"reason,omitempty"`
+}
+
+func (v *FollowUpSubagentOutcome) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "FollowUpSubagentOutcome", v.decodeFrom)
+}
+
+func (v *FollowUpSubagentOutcome) decodeFrom(raw map[string]json.RawMessage) error {
+	var out FollowUpSubagentOutcome
+	d := fieldDecoder{raw: raw, owner: "FollowUpSubagentOutcome"}
+	d.required("ok", &out.Ok)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type FollowUpSubagentOutcomeReason string
+
+const (
+	FollowUpSubagentOutcomeReasonUnknownAgent FollowUpSubagentOutcomeReason = "unknown-agent"
+	FollowUpSubagentOutcomeReasonRunning      FollowUpSubagentOutcomeReason = "running"
+	FollowUpSubagentOutcomeReasonNotAccepted  FollowUpSubagentOutcomeReason = "not-accepted"
+)
+
+func (v *FollowUpSubagentOutcomeReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "FollowUpSubagentOutcomeReason")
+	if err != nil {
+		return err
+	}
+	switch value := FollowUpSubagentOutcomeReason(s); value {
+	case FollowUpSubagentOutcomeReasonUnknownAgent, FollowUpSubagentOutcomeReasonRunning, FollowUpSubagentOutcomeReasonNotAccepted:
+		*v = value
+		return nil
+	}
+	return unknownValue("FollowUpSubagentOutcomeReason", s)
+}
+
+type ReviewSection struct {
+	ID      string `json:"id"`
+	Heading string `json:"heading"`
+	Excerpt string `json:"excerpt"`
+}
+
+func (v *ReviewSection) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReviewSection", v.decodeFrom)
+}
+
+func (v *ReviewSection) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReviewSection
+	d := fieldDecoder{raw: raw, owner: "ReviewSection"}
+	d.required("id", &out.ID)
+	d.required("heading", &out.Heading)
+	d.required("excerpt", &out.Excerpt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ReviewComment struct {
+	Section string `json:"section"`
+	Text    string `json:"text"`
+}
+
+func (v *ReviewComment) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReviewComment", v.decodeFrom)
+}
+
+func (v *ReviewComment) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReviewComment
+	d := fieldDecoder{raw: raw, owner: "ReviewComment"}
+	d.required("section", &out.Section)
+	d.required("text", &out.Text)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ReviewAnswer struct {
+	Verdict  ReviewAnswerVerdict `json:"verdict"`
+	Comments []ReviewComment     `json:"comments"`
+}
+
+func (v *ReviewAnswer) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReviewAnswer", v.decodeFrom)
+}
+
+func (v *ReviewAnswer) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReviewAnswer
+	d := fieldDecoder{raw: raw, owner: "ReviewAnswer"}
+	d.required("verdict", &out.Verdict)
+	d.required("comments", &out.Comments)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ReviewAnswerVerdict string
+
+const (
+	ReviewAnswerVerdictApprove        ReviewAnswerVerdict = "approve"
+	ReviewAnswerVerdictRequestChanges ReviewAnswerVerdict = "request-changes"
+)
+
+func (v *ReviewAnswerVerdict) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "ReviewAnswerVerdict")
+	if err != nil {
+		return err
+	}
+	switch value := ReviewAnswerVerdict(s); value {
+	case ReviewAnswerVerdictApprove, ReviewAnswerVerdictRequestChanges:
+		*v = value
+		return nil
+	}
+	return unknownValue("ReviewAnswerVerdict", s)
+}
+
+type ReviewUiRequest struct {
+	ID       string          `json:"id"`
+	Path     string          `json:"path"`
+	Title    string          `json:"title"`
+	Sections []ReviewSection `json:"sections"`
+	Timeout  *int64          `json:"timeout,omitempty"`
+}
+
+func (v *ReviewUiRequest) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReviewUiRequest", v.decodeFrom)
+}
+
+func (v *ReviewUiRequest) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReviewUiRequest
+	d := fieldDecoder{raw: raw, owner: "ReviewUiRequest"}
+	d.constant("type", "extension_ui_request")
+	d.required("id", &out.ID)
+	d.constant("method", "review")
+	d.required("path", &out.Path)
+	d.required("title", &out.Title)
+	d.required("sections", &out.Sections)
+	d.optional("timeout", &out.Timeout)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v ReviewUiRequest) MarshalJSON() ([]byte, error) {
+	type plain ReviewUiRequest
+	return encodeObject(plain(v), `"type":"extension_ui_request","method":"review"`, nil)
+}
+
+type ReviewUiResponse struct {
+	ID     string       `json:"id"`
+	Review ReviewAnswer `json:"review"`
+}
+
+func (v *ReviewUiResponse) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReviewUiResponse", v.decodeFrom)
+}
+
+func (v *ReviewUiResponse) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReviewUiResponse
+	d := fieldDecoder{raw: raw, owner: "ReviewUiResponse"}
+	d.constant("type", "extension_ui_response")
+	d.required("id", &out.ID)
+	d.required("review", &out.Review)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v ReviewUiResponse) MarshalJSON() ([]byte, error) {
+	type plain ReviewUiResponse
+	return encodeObject(plain(v), `"type":"extension_ui_response"`, nil)
+}
+
 // First frame after startup; transport fields are absent on servers without protocol v2.
 type ReadyEvent struct {
 	ProtocolVersion           *int64          `json:"protocolVersion,omitempty"`
@@ -6173,6 +6448,7 @@ func (ConfirmUiRequest) isExtensionUiRequest()       {}
 func (InputUiRequest) isExtensionUiRequest()         {}
 func (EditorUiRequest) isExtensionUiRequest()        {}
 func (AskUiRequest) isExtensionUiRequest()           {}
+func (ReviewUiRequest) isExtensionUiRequest()        {}
 func (CancelUiRequest) isExtensionUiRequest()        {}
 func (NotifyUiRequest) isExtensionUiRequest()        {}
 func (SetStatusUiRequest) isExtensionUiRequest()     {}
@@ -6207,6 +6483,8 @@ func (v *ExtensionUiRequest) decodeFrom(raw map[string]json.RawMessage) error {
 		value, err = decodeVariant[EditorUiRequest](raw)
 	case "ask":
 		value, err = decodeVariant[AskUiRequest](raw)
+	case "review":
+		value, err = decodeVariant[ReviewUiRequest](raw)
 	case "cancel":
 		value, err = decodeVariant[CancelUiRequest](raw)
 	case "notify":
@@ -6385,6 +6663,7 @@ func (ValueUiResponse) isExtensionUiResponse()   {}
 func (ConfirmUiResponse) isExtensionUiResponse() {}
 func (CancelUiResponse) isExtensionUiResponse()  {}
 func (AnswersUiResponse) isExtensionUiResponse() {}
+func (ReviewUiResponse) isExtensionUiResponse()  {}
 
 func (v ExtensionUiResponse) MarshalJSON() ([]byte, error) {
 	return encodeVariant("ExtensionUiResponse", v.Value)
@@ -6737,6 +7016,7 @@ func (ValueUiResponse) isRpcInbound()   {}
 func (ConfirmUiResponse) isRpcInbound() {}
 func (CancelUiResponse) isRpcInbound()  {}
 func (AnswersUiResponse) isRpcInbound() {}
+func (ReviewUiResponse) isRpcInbound()  {}
 func (HostToolUpdate) isRpcInbound()    {}
 func (HostToolResult) isRpcInbound()    {}
 func (HostUriResult) isRpcInbound()     {}
@@ -7332,6 +7612,44 @@ func (v *SetAskDialogResult) decodeFrom(raw map[string]json.RawMessage) error {
 	var out SetAskDialogResult
 	d := fieldDecoder{raw: raw, owner: "SetAskDialogResult"}
 	d.required("enabled", &out.Enabled)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type SetReviewDialogResult struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (v *SetReviewDialogResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "SetReviewDialogResult", v.decodeFrom)
+}
+
+func (v *SetReviewDialogResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out SetReviewDialogResult
+	d := fieldDecoder{raw: raw, owner: "SetReviewDialogResult"}
+	d.required("enabled", &out.Enabled)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TogglePaneResult struct {
+	Open bool `json:"open"`
+}
+
+func (v *TogglePaneResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TogglePaneResult", v.decodeFrom)
+}
+
+func (v *TogglePaneResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TogglePaneResult
+	d := fieldDecoder{raw: raw, owner: "TogglePaneResult"}
+	d.required("open", &out.Open)
 	if d.err != nil {
 		return d.err
 	}
@@ -8062,6 +8380,71 @@ func (c Commands) SetAskDialog(ctx context.Context, p SetAskDialogCommand) (bool
 	return out.Enabled, err
 }
 
+// SetReviewDialogCommand holds the parameters of "set_review_dialog".
+type SetReviewDialogCommand struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetReviewDialog sends "set_review_dialog": Opt in to blocking plan-review requests.
+func (c Commands) SetReviewDialog(ctx context.Context, p SetReviewDialogCommand) (bool, error) {
+	var out SetReviewDialogResult
+	err := c.call(ctx, "set_review_dialog", p, 0, &out)
+	return out.Enabled, err
+}
+
+// TogglePaneCommand holds the parameters of "toggle_pane".
+type TogglePaneCommand struct {
+	Pane  TogglePaneCommandPane   `json:"pane"`
+	Shape *TogglePaneCommandShape `json:"shape,omitempty"`
+}
+
+// TogglePane sends "toggle_pane": Toggle a todo or agents pane in an interactive Rex TUI.
+func (c Commands) TogglePane(ctx context.Context, p TogglePaneCommand) (TogglePaneResult, error) {
+	var out TogglePaneResult
+	err := c.call(ctx, "toggle_pane", p, 0, &out)
+	return out, err
+}
+
+type TogglePaneCommandPane string
+
+const (
+	TogglePaneCommandPaneTodo   TogglePaneCommandPane = "todo"
+	TogglePaneCommandPaneAgents TogglePaneCommandPane = "agents"
+)
+
+func (v *TogglePaneCommandPane) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TogglePaneCommandPane")
+	if err != nil {
+		return err
+	}
+	switch value := TogglePaneCommandPane(s); value {
+	case TogglePaneCommandPaneTodo, TogglePaneCommandPaneAgents:
+		*v = value
+		return nil
+	}
+	return unknownValue("TogglePaneCommandPane", s)
+}
+
+type TogglePaneCommandShape string
+
+const (
+	TogglePaneCommandShapeDock  TogglePaneCommandShape = "dock"
+	TogglePaneCommandShapeFloat TogglePaneCommandShape = "float"
+)
+
+func (v *TogglePaneCommandShape) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TogglePaneCommandShape")
+	if err != nil {
+		return err
+	}
+	switch value := TogglePaneCommandShape(s); value {
+	case TogglePaneCommandShapeDock, TogglePaneCommandShapeFloat:
+		*v = value
+		return nil
+	}
+	return unknownValue("TogglePaneCommandShape", s)
+}
+
 // GetAvailableCommands sends "get_available_commands": List the slash-command catalog.
 func (c Commands) GetAvailableCommands(ctx context.Context) ([]AvailableSlashCommand, error) {
 	var out GetAvailableCommandsResult
@@ -8148,7 +8531,7 @@ func (c Commands) SetEventFilter(ctx context.Context, p SetEventFilterCommand) (
 	return out.Events, err
 }
 
-// GetSubagents sends "get_subagents": List running subagents.
+// GetSubagents sends "get_subagents": List running subagents, plus idle accepted ones marked followUpAvailable
 func (c Commands) GetSubagents(ctx context.Context) ([]SubagentSnapshot, error) {
 	var out GetSubagentsResult
 	err := c.call(ctx, "get_subagents", nil, 0, &out)
@@ -8190,6 +8573,45 @@ type SteerSubagentCommand struct {
 // SteerSubagent sends "steer_subagent": Send a message to a running subagent as its user.
 func (c Commands) SteerSubagent(ctx context.Context, p SteerSubagentCommand) error {
 	return c.call(ctx, "steer_subagent", p, 0, nil)
+}
+
+// StopSubagentCommand holds the parameters of "stop_subagent".
+type StopSubagentCommand struct {
+	SubagentID string `json:"subagentId"`
+	Reason     string `json:"reason"`
+}
+
+// StopSubagent sends "stop_subagent": Request a driven subagent's final summary with an operator reason.
+func (c Commands) StopSubagent(ctx context.Context, p StopSubagentCommand) (StopSubagentOutcome, error) {
+	var out StopSubagentOutcome
+	err := c.call(ctx, "stop_subagent", p, 0, &out)
+	return out, err
+}
+
+// AbortSubagentCommand holds the parameters of "abort_subagent".
+type AbortSubagentCommand struct {
+	SubagentID string  `json:"subagentId"`
+	Reason     *string `json:"reason,omitempty"`
+}
+
+// AbortSubagent sends "abort_subagent": Abort with an operator reason; without one, use legacy cancellation.
+func (c Commands) AbortSubagent(ctx context.Context, p AbortSubagentCommand) (AbortSubagentOutcome, error) {
+	var out AbortSubagentOutcome
+	err := c.call(ctx, "abort_subagent", p, 0, &out)
+	return out, err
+}
+
+// FollowUpSubagentCommand holds the parameters of "follow_up_subagent".
+type FollowUpSubagentCommand struct {
+	SubagentID string `json:"subagentId"`
+	Message    string `json:"message"`
+}
+
+// FollowUpSubagent sends "follow_up_subagent": Send literal text to an idle, accepted, unparked subagent.
+func (c Commands) FollowUpSubagent(ctx context.Context, p FollowUpSubagentCommand) (FollowUpSubagentOutcome, error) {
+	var out FollowUpSubagentOutcome
+	err := c.call(ctx, "follow_up_subagent", p, 0, &out)
+	return out, err
 }
 
 // LiveStartCommand holds the parameters of "live_start".

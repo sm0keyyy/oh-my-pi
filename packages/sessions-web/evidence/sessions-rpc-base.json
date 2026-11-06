@@ -1,0 +1,13 @@
+{
+	"base": "6ff7c154510e9dfb85317a1a5c5b11d9841ce02a",
+	"renderedSource": "git archive of the base sessions-web source, production Bun.build bundle",
+	"extractCommand": "git archive --format=tar --output=.rex-base-inspection.tar 6ff7c15451 packages/sessions-web/src packages/sessions-web/scripts/build.ts packages/sessions-web/index.html packages/sessions-web/package.json && mkdir .rex-base-inspection && tar -xf .rex-base-inspection.tar -C .rex-base-inspection",
+	"buildCommand": "bun scripts/build.ts",
+	"buildCwd": ".rex-base-inspection/packages/sessions-web",
+	"inspectionCommand": "node ~/.omp/agent/skills/design-taste-frontend/scripts/inspect.mjs <fixture-session-url> --app --widths 768,390 --allow few-pictures,still-page",
+	"host": "current source CLI via local gateway/bridge fixture",
+	"stylesheetBlob": "059162ec4a180c56979abc464c576ff58bc1e5f8",
+	"selector": ".seg button[aria-pressed=\"true\"]",
+	"source": "packages/sessions-web/src/sessions.css:392",
+	"inspectionExitCode": 1
+}

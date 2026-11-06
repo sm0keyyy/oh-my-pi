@@ -1,0 +1,456 @@
+{
+ "url": "http://127.0.0.1:55748/session/6415433ff1ef1634?fixture-panels=1",
+ "at": "2026-11-06T19:33:13.058Z",
+ "allow": [
+  "few-pictures",
+  "still-page"
+ ],
+ "viewports": [
+  {
+   "width": 1440,
+   "height": 900,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.3
+   ],
+   "motion": {
+    "elements": 13,
+    "css": 4,
+    "transitions": 9,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "page": {
+     "height": 900,
+     "screens": 1,
+     "words": 148,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 0,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "desktop",
+     "words": 1,
+     "chars": 7,
+     "lines": 1,
+     "size": 14,
+     "vw": 0.9,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 10,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "desktop",
+     "words": 1,
+     "lines": 1,
+     "size": 13.5,
+     "font": "Inter var"
+    },
+    "headings": [],
+    "headingSummary": {
+     "count": 0,
+     "maxLines": 0,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Inter var",
+       "share": 0.75,
+       "mono": false
+      },
+      {
+       "family": "ui-monospace",
+       "share": 0.25,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14
+     ],
+     "sizeCount": 5,
+     "notLoaded": [],
+     "body": {
+      "font": "ui-monospace",
+      "size": 12.5,
+      "leading": 1.2,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": null
+     },
+     "measureChars": 96,
+     "max": {
+      "size": 13.5,
+      "vw": 0.9,
+      "font": "Inter var",
+      "text": "‹"
+     },
+     "monoShare": 0.25,
+     "monoProseShare": 0.25,
+     "monoFamilies": [
+      "ui-monospace"
+     ],
+     "monoSamples": [
+      "~/Developer/omp/wt/rex-sessions-rpc/.ses",
+      "gpt-4.1 ▾",
+      "think high ▾",
+      "task",
+      "task",
+      "gpt-4.1"
+     ],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.34,
+     "smallText": 10
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#000000",
+     "bodyBgHsl": {
+      "h": 0,
+      "s": 0,
+      "l": 0
+     },
+     "dark": true,
+     "sectionBgs": [],
+     "textColors": [
+      {
+       "color": "#ededef",
+       "share": 0.56
+      },
+      {
+       "color": "#a0a0a8",
+       "share": 0.3
+      },
+      {
+       "color": "#6c6c74",
+       "share": 0.1
+      },
+      {
+       "color": "#ff6166",
+       "share": 0.03
+      },
+      {
+       "color": "#3ecf8e",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#0e0e10",
+      "hsl": {
+       "h": 240,
+       "s": 0.07,
+       "l": 0.06
+      },
+      "fg": "#ededef"
+     },
+     "lowContrast": [
+      {
+       "text": "/ for commands · Shift Enter newline",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "0 of 0 done",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "model",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "thinking",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "context",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "tokens",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 29,
+     "inHero": 10,
+     "radius": 8,
+     "height": 32,
+     "withShadow": 0,
+     "withGradient": 0,
+     "mono": 3,
+     "upper": 0,
+     "heroLabels": [
+      "gpt-4.1 ▾",
+      "think high ▾",
+      "Edit todos",
+      "Stop agent",
+      "Abort agent"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 0,
+     "shadowOverlay": 0,
+     "shadowSamples": [],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 7,
+     "hairlineSamples": [
+      "header.top 1440px",
+      "footer.foot 1144px",
+      "div.status.desktop-status 1144px",
+      "aside.rail 296px",
+      "details.rail-sec 295px"
+     ],
+     "outlinedBoxes": 1,
+     "dashed": 0,
+     "blurred": 1,
+     "roundedBoxes": 1,
+     "boxRadius": 12,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 1,
+     "fixed": true,
+     "height": 52,
+     "floatingPill": false,
+     "blur": true
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "pageH": 900,
+    "margins": {
+     "left": 60,
+     "right": 16
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "desktop",
+      "size": 14,
+      "top": 10,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [],
+    "leftBlocks": 0,
+    "bodySize": 13,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0.48,
+    "voidBox": {
+     "x": 0,
+     "y": 120,
+     "w": 1140,
+     "h": 540
+    }
+   },
+   "app": {
+    "viewport": {
+     "w": 1440,
+     "h": 900
+    },
+    "dark": true,
+    "ground": "#000000",
+    "sidebar": null,
+    "topbar": {
+     "h": 52
+    },
+    "canvas": {
+     "left": 76,
+     "right": 16
+    },
+    "hero": {
+     "text": "desktop",
+     "words": 1,
+     "chars": 7,
+     "lines": 1,
+     "size": 14,
+     "vw": 0.9,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 10,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 0,
+    "layout": {
+     "panels": 2,
+     "firstScreen": 2,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 3,
+     "radii": [
+      [
+       0,
+       2
+      ],
+      [
+       12,
+       1
+      ]
+     ],
+     "heavyBorders": 2,
+     "borderSamples": [
+      "#ffffff on #000000 (21:1)",
+      "#ffffff on #09090a (19.9:1)"
+     ],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 2,
+     "tabularShare": 0,
+     "kpiMax": 12.5
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.15,
+     "tiny": 1,
+     "tinySamples": [
+      "task 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      16
+     ]
+    },
+    "title": {
+     "text": "desktop",
+     "size": 14,
+     "top": 10
+    },
+    "colourShare": 0.001
+   },
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "WARN",
+   "id": "contrast",
+   "width": 1440,
+   "message": "Low-contrast text: \"/ for commands · Shift Enter newline\" 3.8:1 needs 4.5:1; \"0 of 0 done\" 3.8:1 needs 4.5:1; \"model\" 3.8:1 needs 4.5:1; \"thinking\" 3.8:1 needs 4.5:1",
+   "fix": "Darken or lighten the text colour."
+  },
+  {
+   "level": "WARN",
+   "id": "hero-void",
+   "width": 1440,
+   "message": "48% of the first screen is one empty block (1140×540px at 0,120).",
+   "fix": "Place the void on purpose or fill it: move the picture, the film or one fact into it, grow the headline to meet it, or shrink the screen to its content. A void reads as placed only when something closes it on the far side and it is the screen's one rest."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "desktop",
+   "width": 1440,
+   "fold": "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-controls-inspect-1440/desktop-fold.jpg",
+   "pages": [
+    "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-controls-inspect-1440/desktop-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

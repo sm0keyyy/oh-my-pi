@@ -827,6 +827,7 @@ impl Client {
 				max_frame_bytes:             None,
 				max_reassembled_frame_bytes: None,
 				message_paging:              None,
+				host:                       None,
 			},
 			shared,
 			child,

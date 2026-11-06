@@ -37,6 +37,7 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 	const method = text(frame.method);
 	const id = text(frame.id);
 	const questions = method === "ask" ? records(frame.questions) : [];
+	const sections = method === "review" ? records(frame.sections) : [];
 	useEffect(() => {
 		ref.current?.querySelector<HTMLElement>("input, textarea, button")?.focus();
 	}, []);
@@ -82,7 +83,22 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 								};
 							}),
 						});
-					else if (method === "confirm") client.answer({ type: "extension_ui_response", id, confirmed: true });
+					else if (method === "review") {
+						const submitter = (event.nativeEvent as SubmitEvent).submitter;
+						const verdict = submitter instanceof HTMLButtonElement ? submitter.value : "";
+						if (verdict !== "approve" && verdict !== "request-changes") return;
+						client.answer({
+							type: "extension_ui_response",
+							id,
+							review: {
+								verdict,
+								comments: sections.flatMap(section => {
+									const note = String(data.get(`review-${section.id}`) ?? "").trim();
+									return note ? [{ section: `${section.id} ${section.heading}`, text: note }] : [];
+								}),
+							},
+						});
+					} else if (method === "confirm") client.answer({ type: "extension_ui_response", id, confirmed: true });
 					else client.answer({ type: "extension_ui_response", id, value: String(data.get("value") ?? "") });
 				} catch (error) {
 					setError(String(error));
@@ -156,6 +172,23 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 								</label>
 							</fieldset>
 						))}
+					{method === "review" && (
+						<>
+							<p className="dlg-q">{text(frame.path)}</p>
+							{sections.map(section => (
+								<fieldset className="dlg-q" key={text(section.id)}>
+									<legend>
+										{text(section.id)} {text(section.heading)}
+									</legend>
+									<p>{text(section.excerpt)}</p>
+									<label className="field">
+										Comment on {text(section.id)} {text(section.heading)}
+										<textarea name={`review-${section.id}`} rows={3} />
+									</label>
+								</fieldset>
+							))}
+						</>
+					)}
 					{method === "confirm" && <p className="dlg-q">{text(frame.message)}</p>}
 					{method === "select" && (
 						<fieldset className="dlg-q">
@@ -191,15 +224,22 @@ export function OperatorDialog({ frame, client }: { frame: RecordValue; client: 
 					</p>
 				)}
 				<div className="dlg-act">
-					<button className="btn btn-primary" type="submit">
-						{method === "ask"
-							? "Answer"
-							: method === "confirm"
-								? "Yes"
-								: method === "select"
-									? "Choose"
-									: "Submit"}
+					<button className="btn btn-primary" type="submit" value={method === "review" ? "approve" : undefined}>
+						{method === "review"
+							? "Approve"
+							: method === "ask"
+								? "Answer"
+								: method === "confirm"
+									? "Yes"
+									: method === "select"
+										? "Choose"
+										: "Submit"}
 					</button>
+					{method === "review" && (
+						<button className="btn" type="submit" value="request-changes">
+							Request changes
+						</button>
+					)}
 					<button
 						className="btn"
 						type="button"

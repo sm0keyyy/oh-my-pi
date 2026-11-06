@@ -174,6 +174,7 @@ export async function startRpcSocketServer(
 				uiContextSource: (pending, output) => {
 					const ui = new RpcExtensionUIContext(pending, output);
 					ui.askDialogEnabled = true;
+					ui.reviewDialogEnabled = true;
 					return ui;
 				},
 			})

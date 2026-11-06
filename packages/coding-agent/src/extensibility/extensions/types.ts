@@ -204,6 +204,28 @@ export function timedOutAskDialogResult(questions: ExtensionAskDialogQuestion[])
 	};
 }
 
+export interface ExtensionReviewSection {
+	id: string;
+	heading: string;
+	excerpt: string;
+}
+
+export interface ExtensionReviewRequest {
+	path: string;
+	title: string;
+	markdown: string;
+	sections: ExtensionReviewSection[];
+}
+
+export interface ExtensionReviewComment {
+	section: string;
+	text: string;
+}
+
+export type ExtensionReviewResult =
+	| { kind: "verdict"; verdict: "approve" | "request-changes"; comments: ExtensionReviewComment[] }
+	| { kind: "cancelled"; timedOut?: boolean };
+
 /**
  * UI dialog options for extensions.
  */
@@ -343,6 +365,11 @@ export interface ExtensionUIContext {
 		questions: ExtensionAskDialogQuestion[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined>;
+
+	review?(
+		request: ExtensionReviewRequest,
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionReviewResult | undefined>;
 
 	/**
 	 * Show a tool-approval prompt; anything but an explicit approval is `deny`, `session` only when

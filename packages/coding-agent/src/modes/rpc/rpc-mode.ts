@@ -25,6 +25,8 @@ import {
 	type ExtensionAskDialogQuestion,
 	type ExtensionAskDialogResult,
 	type ExtensionAskDialogSubmitResult,
+	type ExtensionReviewRequest,
+	type ExtensionReviewResult,
 	type ExtensionUIContext,
 	type ExtensionUIDialogOptions,
 	type ExtensionUISelectItem,
@@ -42,6 +44,9 @@ import {
 } from "../../extensibility/skills";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
+import { AgentRegistry } from "../../registry/agent-registry";
+import { followUpSubagent } from "../../rex-panes/pane-input";
+import { abortSubagent, stopSubagent } from "../../task/run-controls";
 import {
 	type WordCompletionEngine,
 	type WordCompletionMethod,
@@ -491,7 +496,8 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 		command.type === "steer" ||
 		command.type === "dictation_start" ||
 		command.type === "follow_up" ||
-		command.type === "steer_subagent"
+		command.type === "steer_subagent" ||
+		command.type === "follow_up_subagent"
 	) {
 		const task = (async () => {
 			try {
@@ -876,6 +882,68 @@ export async function handleRpcSteerSubagent(
 	}
 }
 
+type SubagentControlCommand = Extract<RpcCommand, { type: "stop_subagent" | "abort_subagent" | "follow_up_subagent" }>;
+
+function ownedSubagentFile(registry: RpcSubagentRegistry, id: string, parentFile?: string): string | undefined {
+	const ref = AgentRegistry.global().get(id);
+	if (ref?.kind !== "sub" || !ref.sessionFile) return undefined;
+	try {
+		return registry.resolveSessionFile({ subagentId: id }) === ref.sessionFile ? ref.sessionFile : undefined;
+	} catch {
+		// Reconnected clients have no completed lifecycle frames. Task transcripts live under the parent's artifact directory.
+		const root = parentFile?.endsWith(".jsonl") ? path.resolve(parentFile.slice(0, -6)) + path.sep : undefined;
+		return root && path.resolve(ref.sessionFile).startsWith(root) ? ref.sessionFile : undefined;
+	}
+}
+
+export async function handleRpcSubagentControl(
+	registry: RpcSubagentRegistry,
+	command: SubagentControlCommand,
+	parentFile?: string,
+): Promise<object> {
+	if (command.type === "abort_subagent") {
+		if (command.reason === undefined)
+			return { cancelled: await handleRpcCancelSubagent(registry, command.subagentId) };
+		if (!ownedSubagentFile(registry, command.subagentId, parentFile)) return { ok: false, reason: "unknown-agent" };
+		return abortSubagent(command.subagentId, command.reason);
+	}
+	if (!ownedSubagentFile(registry, command.subagentId, parentFile)) return { ok: false, reason: "unknown-agent" };
+	return command.type === "stop_subagent"
+		? stopSubagent(command.subagentId, command.reason)
+		: followUpSubagent(command.subagentId, command.message);
+}
+
+export function rpcSubagentsWithFollowUps(registry: RpcSubagentRegistry, parentFile?: string): RpcSubagentSnapshot[] {
+	const snapshots = registry.getSubagents();
+	for (const ref of AgentRegistry.global().list()) {
+		if (
+			ref.kind !== "sub" ||
+			ref.status !== "idle" ||
+			!ref.session ||
+			ref.session.isStreaming ||
+			ref.lifecycle?.acceptedAt === undefined ||
+			!ref.sessionFile
+		)
+			continue;
+		if (!ownedSubagentFile(registry, ref.id, parentFile)) continue;
+		const index = snapshots.findIndex(snapshot => snapshot.id === ref.id);
+		const existing = snapshots[index];
+		if (existing) snapshots[index] = { ...existing, followUpAvailable: true };
+		else
+			snapshots.push({
+				id: ref.id,
+				index: snapshots.length,
+				agent: ref.history?.agent ?? ref.displayName,
+				agentSource: "bundled",
+				status: "completed",
+				sessionFile: ref.sessionFile,
+				lastUpdate: ref.lastActivity,
+				followUpAvailable: true,
+			});
+	}
+	return snapshots;
+}
+
 export async function handleRpcSessionChange(
 	session: RpcSessionChangeSession,
 	command: RpcSessionChangeCommand,
@@ -1193,6 +1261,73 @@ export async function requestRpcAskDialog(
 	return timedOut ? timedOutAskDialogResult(questions) : result;
 }
 
+export async function requestRpcReview(
+	pendingRequests: Map<string, PendingExtensionRequest>,
+	output: RpcOutput,
+	request: ExtensionReviewRequest,
+	dialogOptions?: ExtensionUIDialogOptions,
+): Promise<ExtensionReviewResult | undefined> {
+	const frame = {
+		method: "review",
+		path: request.path,
+		title: request.title,
+		sections: request.sections.slice(0, 200).map(section => ({
+			id: section.id,
+			heading: section.heading,
+			excerpt: section.excerpt.slice(0, 400),
+		})),
+		timeout: dialogOptions?.timeout,
+	};
+	if (
+		Buffer.byteLength(JSON.stringify({ type: "extension_ui_request", id: "0".repeat(32), ...frame })) >
+		MAX_RPC_FRAME_BYTES
+	) {
+		throw new Error("Review sections exceed the RPC frame limit");
+	}
+	let timedOut = false;
+	const result = await requestRpcDialog<ExtensionReviewResult | undefined>(
+		pendingRequests,
+		output,
+		{
+			...dialogOptions,
+			onTimeout: () => {
+				timedOut = true;
+				dialogOptions?.onTimeout?.();
+			},
+		},
+		undefined,
+		frame,
+		response => {
+			if ("cancelled" in response && response.cancelled) {
+				if (response.timedOut) dialogOptions?.onTimeout?.();
+				return { kind: "cancelled", ...(response.timedOut ? { timedOut: true } : {}) };
+			}
+			if (
+				!("review" in response) ||
+				!isRecord(response.review) ||
+				(response.review.verdict !== "approve" && response.review.verdict !== "request-changes") ||
+				!Array.isArray(response.review.comments)
+			)
+				throw new Error("Invalid review response");
+			const sections = new Set(frame.sections.map(section => `${section.id} ${section.heading}`));
+			const seen = new Set<string>();
+			for (const comment of response.review.comments) {
+				if (
+					!isRecord(comment) ||
+					typeof comment.section !== "string" ||
+					typeof comment.text !== "string" ||
+					!sections.has(comment.section) ||
+					seen.has(comment.section)
+				)
+					throw new Error("Invalid review comment");
+				seen.add(comment.section);
+			}
+			return { kind: "verdict", verdict: response.review.verdict, comments: response.review.comments };
+		},
+	);
+	return timedOut ? { kind: "cancelled", timedOut: true } : result;
+}
+
 export function requestRpcEditor(
 	pendingRequests: Map<string, PendingExtensionRequest>,
 	output: RpcOutput,
@@ -1391,6 +1526,7 @@ export class RpcExtensionUIContext implements ExtensionUIContext {
 	readonly supportsEditor = true;
 	/** Set by `set_ask_dialog`; hosts that never opt in keep the select/editor ask fallback. */
 	askDialogEnabled = false;
+	reviewDialogEnabled = false;
 
 	constructor(
 		private pendingRequests: Map<string, PendingExtensionRequest>,
@@ -1401,6 +1537,11 @@ export class RpcExtensionUIContext implements ExtensionUIContext {
 		if (!this.askDialogEnabled) return undefined;
 		return (questions, dialogOptions) =>
 			requestRpcAskDialog(this.pendingRequests, this.output, questions, dialogOptions);
+	}
+
+	get review(): ExtensionUIContext["review"] {
+		if (!this.reviewDialogEnabled) return undefined;
+		return (request, options) => requestRpcReview(this.pendingRequests, this.output, request, options);
 	}
 
 	select(
@@ -1737,6 +1878,13 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 				rpcUiContext instanceof RpcExtensionUIContext ? rpcUiContext.askDialogEnabled : command.enabled === true,
 		});
 	};
+	const setReviewDialog = (command: RpcCommand & { type: "set_review_dialog" }): RpcResponse => {
+		if (rpcUiContext instanceof RpcExtensionUIContext) rpcUiContext.reviewDialogEnabled = command.enabled === true;
+		return success(command.id, "set_review_dialog", {
+			enabled:
+				rpcUiContext instanceof RpcExtensionUIContext ? rpcUiContext.reviewDialogEnabled : command.enabled === true,
+		});
+	};
 
 	const context: RpcConnectionContext = {
 		output,
@@ -1764,6 +1912,8 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 			pendingExtensionRequests.get(parsed.id)?.resolve(parsed);
 		} else if (isRecord(parsed) && parsed.type === "set_ask_dialog") {
 			output(setAskDialog(parsed as RpcCommand & { type: "set_ask_dialog" }));
+		} else if (isRecord(parsed) && parsed.type === "set_review_dialog") {
+			output(setReviewDialog(parsed as RpcCommand & { type: "set_review_dialog" }));
 		} else {
 			heldFrames.push(parsed);
 		}
@@ -1943,6 +2093,13 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 		const id = command.id;
 		if (host.isActive?.() === false)
 			return error(id, command.type, "The TUI no longer accepts RPC commands", "tui_owned");
+		if (
+			command.type === "toggle_pane" &&
+			((command.pane !== "todo" && command.pane !== "agents") ||
+				(command.shape !== undefined && command.shape !== "dock" && command.shape !== "float"))
+		) {
+			return error(id, command.type, "toggle_pane requires todo or agents, with dock or float shape");
+		}
 		if (host.handleCommand && Object.hasOwn(SESSION_CHANGE_TYPES, command.type))
 			await stopDictationForSessionChange();
 		const hostResponse = await host.handleCommand?.(command);
@@ -2266,6 +2423,11 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 
 			case "set_ask_dialog":
 				return setAskDialog(command);
+			case "set_review_dialog":
+				return setReviewDialog(command);
+
+			case "toggle_pane":
+				return error(id, "toggle_pane", "toggle_pane needs the interactive TUI in Rex");
 
 			case "get_available_commands": {
 				return success(id, "get_available_commands", { commands: await getAvailableCommands() });
@@ -2407,7 +2569,9 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 				if (!subagentRegistry) {
 					return error(id, "get_subagents", "Subagent event bus is unavailable");
 				}
-				return success(id, "get_subagents", { subagents: subagentRegistry.getSubagents() });
+				return success(id, "get_subagents", {
+					subagents: rpcSubagentsWithFollowUps(subagentRegistry, session.sessionFile),
+				});
 			}
 
 			case "get_subagent_messages": {
@@ -2418,12 +2582,37 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 					if (command.fromByte !== undefined && !Number.isFinite(command.fromByte)) {
 						return error(id, "get_subagent_messages", "fromByte must be a finite number");
 					}
-					const sessionFile = subagentRegistry.resolveSessionFile(command);
+					const sessionFile =
+						(command.subagentId &&
+							ownedSubagentFile(subagentRegistry, command.subagentId, session.sessionFile)) ||
+						subagentRegistry.resolveSessionFile(command);
 					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
 					return success(id, "get_subagent_messages", transcript);
 				} catch (err) {
 					return error(id, "get_subagent_messages", err instanceof Error ? err.message : String(err));
 				}
+			}
+
+			case "stop_subagent":
+			case "abort_subagent":
+			case "follow_up_subagent": {
+				if (!subagentRegistry) return error(id, command.type, "Subagent event bus is unavailable");
+				if (typeof command.subagentId !== "string" || !command.subagentId.trim())
+					return error(id, command.type, "`subagentId` must be a non-empty string.");
+				if (command.type === "follow_up_subagent") {
+					if (typeof command.message !== "string" || !command.message.trim())
+						return error(id, command.type, "`message` is required for follow_up_subagent.");
+				} else if (
+					!(command.type === "abort_subagent" && command.reason === undefined) &&
+					(typeof command.reason !== "string" || !command.reason.trim())
+				) {
+					return error(id, command.type, "A non-empty reason is required.");
+				}
+				return success(
+					id,
+					command.type,
+					await handleRpcSubagentControl(subagentRegistry, command, session.sessionFile),
+				);
 			}
 
 			case "cancel_subagent": {

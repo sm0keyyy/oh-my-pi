@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { readSseEvents } from "../../utils/src/stream";
 import { ReplayJournal } from "../../sessions-gateway/src/replay";
 import { FrameDecoder, messageOf, SessionClient, sortSessions, type RecordValue, type Snapshot } from "../src/client";
+import { Rail } from "../src/rail";
 
 const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
 class TestEventSource extends EventTarget {
@@ -291,6 +294,9 @@ function fixtureClient(
 						break;
 					case "get_subagents":
 						respond({ subagents: [] });
+						break;
+					case "set_review_dialog":
+						respond({ enabled: command.enabled });
 						break;
 					default:
 						respond({});
@@ -840,34 +846,37 @@ test.each([false, true])("old forward-only TUIs load ordered full history while 
 		content: String(timestamp),
 	}));
 	let pages = 0;
-	const client = fixtureClient((stream, command, respond) => {
-		if (command.type === "get_messages_page") {
-			pages++;
-			if (isStreaming)
-				stream.send(
-					JSON.stringify({
-						type: "response",
-						id: command.id,
-						command: command.type,
-						success: false,
-						code: "session_busy",
-						error: "Cannot page messages while the session is changing",
-					}),
-				);
-			else respond({ messages: messages.slice(0, 50), nextCursor: "forward-50", totalMessages: 160 });
-			return true;
-		}
-		if (command.type === "get_messages") {
-			stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "stale" } }));
-			respond({ messages });
-			stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "live" } }));
-			return true;
-		}
-		if (command.type === "get_state") {
-			respond({ ...fixtureState, isStreaming });
-			return true;
-		}
-	}, { type: "ready", supportedProtocolVersions: [1, 2] });
+	const client = fixtureClient(
+		(stream, command, respond) => {
+			if (command.type === "get_messages_page") {
+				pages++;
+				if (isStreaming)
+					stream.send(
+						JSON.stringify({
+							type: "response",
+							id: command.id,
+							command: command.type,
+							success: false,
+							code: "session_busy",
+							error: "Cannot page messages while the session is changing",
+						}),
+					);
+				else respond({ messages: messages.slice(0, 50), nextCursor: "forward-50", totalMessages: 160 });
+				return true;
+			}
+			if (command.type === "get_messages") {
+				stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "stale" } }));
+				respond({ messages });
+				stream.send(JSON.stringify({ type: "message_update", message: { ...messages[159], content: "live" } }));
+				return true;
+			}
+			if (command.type === "get_state") {
+				respond({ ...fixtureState, isStreaming });
+				return true;
+			}
+		},
+		{ type: "ready", supportedProtocolVersions: [1, 2] },
+	);
 	client.connect();
 	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" || snapshot.error !== null);
 	expect(client.getSnapshot().error).toBeNull();
@@ -1126,5 +1135,256 @@ test.each(["get_available_commands", "get_session_stats"])(
 		expect(client.getSnapshot().state.sessionName).toBe("polled");
 		expect(client.getSnapshot().phase).toBe("connected");
 		expect(TestEventSource.latest).toBe(source);
+	},
+);
+
+function renderRail(client: SessionClient, snapshot: Snapshot = client.getSnapshot()): string {
+	return renderToStaticMarkup(
+		createElement(Rail, {
+			client,
+			snapshot,
+			onModel() {},
+			onThinking() {},
+			async onRefresh() {},
+			host: {},
+			selectedAgentId: null,
+			onAgentClose() {},
+		}),
+	);
+}
+
+test("review capability and verdicts round-trip, while older hosts still attach", async () => {
+	let transport: FixtureStream | undefined;
+	const answers: RecordValue[] = [];
+	const client = fixtureClient((stream, command) => {
+		transport = stream;
+		if (command.type === "extension_ui_response") {
+			answers.push(command);
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	expect(client.getSnapshot().reviewDialogEnabled).toBe(true);
+	transport!.send(
+		JSON.stringify({
+			type: "extension_ui_request",
+			id: "review",
+			method: "review",
+			path: "/tmp/plan.md",
+			title: "Plan",
+			sections: [{ id: "§4", heading: "Slices", excerpt: "bounded" }],
+		}),
+	);
+	await waitForSnapshot(client, snapshot => snapshot.dialogs.length === 1);
+	expect(client.getSnapshot().dialogs[0]?.method).toBe("review");
+	client.answer({
+		type: "extension_ui_response",
+		id: "review",
+		review: { verdict: "request-changes", comments: [{ section: "§4 Slices", text: "merge view and wire" }] },
+	});
+	await client.request({ type: "get_state" });
+	expect(answers).toEqual([
+		{
+			type: "extension_ui_response",
+			id: "review",
+			review: { verdict: "request-changes", comments: [{ section: "§4 Slices", text: "merge view and wire" }] },
+		},
+	]);
+	expect(client.getSnapshot().dialogs).toHaveLength(0);
+	const legacy = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_subagents") {
+			respond({
+				subagents: [
+					{ id: "running", agent: "task", status: "running" },
+					{ id: "idle", agent: "task", status: "completed", followUpAvailable: true },
+				],
+			});
+			return true;
+		}
+		if (command.type !== "set_review_dialog") return;
+		stream.send(
+			JSON.stringify({
+				type: "response",
+				id: command.id,
+				command: command.type,
+				success: false,
+				error: "Unknown command",
+			}),
+		);
+		return true;
+	});
+	legacy.connect();
+	await waitForSnapshot(legacy, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 2);
+	expect(legacy.getSnapshot().error).toBeNull();
+	expect(legacy.getSnapshot().reviewDialogEnabled).toBe(false);
+	const oldRail = renderRail(legacy);
+	expect(oldRail).toContain("Cancel");
+	for (const label of ["Stop agent", "Abort agent", "Send follow-up"]) expect(oldRail).not.toContain(label);
+	const capableRail = renderRail(client, { ...client.getSnapshot(), agents: legacy.getSnapshot().agents });
+	for (const label of ["Stop agent", "Abort agent", "Send follow-up"]) expect(capableRail).toContain(label);
+});
+
+test("Cancel retains the aborted rail row when refresh omits it from the roster", async () => {
+	let roster: RecordValue[] = [
+		{ id: "worker", agent: "task", status: "running", description: "retained task details" },
+		{ id: "completed", agent: "task", status: "completed", followUpAvailable: true },
+		{ id: "missing-running", status: "running" },
+		{ id: "missing-pending", status: "pending" },
+	];
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_subagents") {
+			respond({ subagents: roster });
+			return true;
+		}
+		if (command.type === "cancel_subagent") {
+			roster = [];
+			stream.send(
+				JSON.stringify({
+					type: "subagent_lifecycle",
+					payload: { subagentId: command.subagentId, status: "aborted" },
+				}),
+			);
+			respond({ cancelled: true });
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 4);
+	await client.request({ type: "cancel_subagent", subagentId: "worker" });
+	await client.refresh();
+	await client.loadCatalog();
+	expect(client.getSnapshot().agents).toEqual([
+		{ id: "completed", agent: "task", status: "completed", followUpAvailable: false },
+		expect.objectContaining({
+			id: "worker",
+			status: "aborted",
+			description: "retained task details",
+			followUpAvailable: false,
+		}),
+	]);
+	const rail = renderRail(client);
+	expect(rail).toContain("<b>worker</b>");
+	expect(rail).toContain("aborted");
+	expect(rail).toContain("retained task details");
+});
+
+test("session_changed removes the previous session's finished rows from the rail", async () => {
+	let transport: FixtureStream | undefined;
+	let isCurrentSession = false;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type === "get_state") {
+			respond({ ...fixtureState, sessionId: isCurrentSession ? "current" : "previous" });
+			return true;
+		}
+		if (command.type === "get_subagents") {
+			respond({
+				subagents: isCurrentSession
+					? [{ id: "current-worker", agent: "task", status: "running" }]
+					: [{ id: "previous-completed", agent: "task", status: "completed", followUpAvailable: true }],
+			});
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 1);
+	transport!.send(
+		JSON.stringify({
+			type: "subagent_lifecycle",
+			payload: { subagentId: "previous-aborted", agent: "task", status: "aborted" },
+		}),
+	);
+	await waitForSnapshot(client, snapshot => snapshot.agents.length === 2);
+	expect(renderRail(client)).toContain("previous-completed");
+	expect(renderRail(client)).toContain("previous-aborted");
+	isCurrentSession = true;
+	transport!.send(JSON.stringify({ type: "session_changed", sessionId: "current" }));
+	await waitForSnapshot(
+		client,
+		snapshot =>
+			snapshot.phase === "connected" &&
+			snapshot.state.sessionId === "current" &&
+			snapshot.agents.some(agent => agent.id === "current-worker"),
+	);
+	await client.refresh();
+	expect(client.getSnapshot().agents).toEqual([
+		{ id: "current-worker", agent: "task", status: "running", followUpAvailable: false },
+	]);
+	const rail = renderRail(client);
+	expect(rail).toContain("current-worker");
+	expect(rail).not.toContain("previous-completed");
+	expect(rail).not.toContain("previous-aborted");
+});
+
+test.each(["different", "same"] as const)(
+	"fresh ready with a %s session scopes terminal agent history",
+	async relation => {
+		let transport: FixtureStream | undefined;
+		let hasReconnected = false;
+		let readySnapshots = 0;
+		const client = fixtureClient((stream, command, respond) => {
+			transport = stream;
+			if (command.type === "get_messages_page") {
+				readySnapshots++;
+				respond({ messages: [] });
+				return true;
+			}
+			if (command.type === "get_state") {
+				respond({
+					...fixtureState,
+					sessionId: hasReconnected && relation === "different" ? "current" : "previous",
+					sessionName: hasReconnected ? "after-ready" : "before-ready",
+				});
+				return true;
+			}
+			if (command.type === "get_subagents") {
+				respond({
+					subagents: hasReconnected
+						? []
+						: [{ id: "previous-completed", agent: "task", status: "completed", followUpAvailable: true }],
+				});
+				return true;
+			}
+		});
+		client.connect();
+		await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 1);
+		await client.loadCatalog();
+		await client.refresh();
+		transport!.send(
+			JSON.stringify({
+				type: "subagent_lifecycle",
+				payload: { subagentId: "previous-aborted", agent: "task", status: "aborted" },
+			}),
+		);
+		await waitForSnapshot(client, snapshot => snapshot.agents.length === 2);
+		const beforeReconnect = readySnapshots;
+		hasReconnected = true;
+		transport!.restart();
+		await waitForSnapshot(
+			client,
+			snapshot =>
+				readySnapshots > beforeReconnect &&
+				snapshot.phase === "connected" &&
+				snapshot.reviewDialogEnabled &&
+				snapshot.state.sessionName === "after-ready",
+		);
+		await client.loadCatalog();
+		await client.refresh();
+		expect(readySnapshots).toBe(beforeReconnect + 1);
+		const snapshot = client.getSnapshot();
+		const rail = renderRail(client);
+		if (relation === "different") {
+			expect(snapshot.state.sessionId).toBe("current");
+			expect(snapshot.agents).toEqual([]);
+			expect(rail).not.toContain("previous-completed");
+			expect(rail).not.toContain("previous-aborted");
+		} else {
+			expect(snapshot.state.sessionId).toBe("previous");
+			expect(snapshot.agents.map(agent => agent.id)).toEqual(["previous-completed", "previous-aborted"]);
+			expect(snapshot.agents.every(agent => agent.followUpAvailable === false)).toBe(true);
+			expect(rail).toContain("previous-completed");
+			expect(rail).toContain("previous-aborted");
+		}
 	},
 );

@@ -1,0 +1,766 @@
+{
+ "url": "http://127.0.0.1:56345/session/1250a3b2cc328f4c",
+ "at": "2026-11-06T19:36:38.835Z",
+ "allow": [
+  "few-pictures",
+  "still-page"
+ ],
+ "viewports": [
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.2
+   ],
+   "motion": {
+    "elements": 4,
+    "css": 3,
+    "transitions": 1,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 1024,
+     "screens": 1,
+     "words": 26,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 0,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "phone",
+     "words": 1,
+     "chars": 5,
+     "lines": 1,
+     "size": 14,
+     "vw": 1.8,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "phone",
+     "words": 1,
+     "lines": 1,
+     "size": 13.5,
+     "font": "Inter var"
+    },
+    "headings": [],
+    "headingSummary": {
+     "count": 0,
+     "maxLines": 0,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Inter var",
+       "share": 0.59,
+       "mono": false
+      },
+      {
+       "family": "ui-monospace",
+       "share": 0.41,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14
+     ],
+     "sizeCount": 5,
+     "notLoaded": [],
+     "body": null,
+     "measureChars": null,
+     "max": {
+      "size": 13.5,
+      "vw": 1.8,
+      "font": "Inter var",
+      "text": "‹"
+     },
+     "monoShare": 0.41,
+     "monoProseShare": 0.41,
+     "monoFamilies": [
+      "ui-monospace"
+     ],
+     "monoSamples": [
+      "task",
+      "task",
+      "ctx 0%",
+      "0 waiting · 0 queued",
+      "0 m active"
+     ],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.17,
+     "smallText": 1
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#000000",
+     "bodyBgHsl": {
+      "h": 0,
+      "s": 0,
+      "l": 0
+     },
+     "dark": true,
+     "sectionBgs": [],
+     "textColors": [
+      {
+       "color": "#a0a0a8",
+       "share": 0.42
+      },
+      {
+       "color": "#ededef",
+       "share": 0.33
+      },
+      {
+       "color": "#3ecf8e",
+       "share": 0.08
+      },
+      {
+       "color": "#6c6c74",
+       "share": 0.06
+      },
+      {
+       "color": "#f386d0",
+       "share": 0.04
+      }
+     ],
+     "button": {
+      "bg": "#0e0e10",
+      "hsl": {
+       "h": 240,
+       "s": 0.07,
+       "l": 0.06
+      },
+      "fg": "#ededef"
+     },
+     "lowContrast": [
+      {
+       "text": "Send",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 13.5,
+       "fg": "#6c6c74",
+       "bg": "#060607"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 1,
+     "inHero": 1,
+     "radius": 6,
+     "height": 44,
+     "withShadow": 1,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Steer"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 1,
+     "shadowOverlay": 0,
+     "shadowSamples": [
+      "button → rgba(0, 0, 0, 0.5) 0px 1px 2px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 3,
+     "hairlineSamples": [
+      "header.top 768px",
+      "footer.foot 768px",
+      "div.status.phone-status 768px"
+     ],
+     "outlinedBoxes": 1,
+     "dashed": 0,
+     "blurred": 1,
+     "roundedBoxes": 1,
+     "boxRadius": 12,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 1,
+     "fixed": true,
+     "height": 52,
+     "floatingPill": false,
+     "blur": true
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 1024,
+    "margins": {
+     "left": 72,
+     "right": 16
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "phone",
+      "size": 14,
+      "top": 17,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [],
+    "leftBlocks": 0,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "dark": true,
+    "ground": "#000000",
+    "sidebar": null,
+    "topbar": {
+     "h": 52
+    },
+    "canvas": {
+     "left": 16,
+     "right": 16
+    },
+    "hero": {
+     "text": "phone",
+     "words": 1,
+     "chars": 5,
+     "lines": 1,
+     "size": 14,
+     "vw": 1.8,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 0,
+    "layout": {
+     "panels": 1,
+     "firstScreen": 1,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 1,
+     "radii": [
+      [
+       12,
+       1
+      ]
+     ],
+     "heavyBorders": 1,
+     "borderSamples": [
+      "#ffffff on #09090a (19.9:1)"
+     ],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 0,
+     "tabularShare": null,
+     "kpiMax": null
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.12,
+     "tiny": 1,
+     "tinySamples": [
+      "task 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      16
+     ]
+    },
+    "title": {
+     "text": "phone",
+     "size": 14,
+     "top": 17
+    },
+    "colourShare": 0.001
+   },
+   "consoleErrors": []
+  },
+  {
+   "width": 390,
+   "height": 844,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.36
+   ],
+   "motion": {
+    "elements": 4,
+    "css": 3,
+    "transitions": 1,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "page": {
+     "height": 844,
+     "screens": 1,
+     "words": 26,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 0,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "phone",
+     "words": 1,
+     "chars": 5,
+     "lines": 1,
+     "size": 14,
+     "vw": 3.5,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "phone",
+     "words": 1,
+     "lines": 1,
+     "size": 13.5,
+     "font": "Inter var"
+    },
+    "headings": [],
+    "headingSummary": {
+     "count": 0,
+     "maxLines": 0,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Inter var",
+       "share": 0.59,
+       "mono": false
+      },
+      {
+       "family": "ui-monospace",
+       "share": 0.41,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14
+     ],
+     "sizeCount": 5,
+     "notLoaded": [],
+     "body": null,
+     "measureChars": null,
+     "max": {
+      "size": 13.5,
+      "vw": 3.5,
+      "font": "Inter var",
+      "text": "‹"
+     },
+     "monoShare": 0.41,
+     "monoProseShare": 0.41,
+     "monoFamilies": [
+      "ui-monospace"
+     ],
+     "monoSamples": [
+      "task",
+      "task",
+      "ctx 0%",
+      "0 waiting · 0 queued",
+      "0 m active"
+     ],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.17,
+     "smallText": 1
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#000000",
+     "bodyBgHsl": {
+      "h": 0,
+      "s": 0,
+      "l": 0
+     },
+     "dark": true,
+     "sectionBgs": [],
+     "textColors": [
+      {
+       "color": "#a0a0a8",
+       "share": 0.42
+      },
+      {
+       "color": "#ededef",
+       "share": 0.33
+      },
+      {
+       "color": "#3ecf8e",
+       "share": 0.08
+      },
+      {
+       "color": "#6c6c74",
+       "share": 0.06
+      },
+      {
+       "color": "#f386d0",
+       "share": 0.04
+      }
+     ],
+     "button": {
+      "bg": "#0e0e10",
+      "hsl": {
+       "h": 240,
+       "s": 0.07,
+       "l": 0.06
+      },
+      "fg": "#ededef"
+     },
+     "lowContrast": [
+      {
+       "text": "Send",
+       "ratio": 3.9,
+       "need": 4.5,
+       "size": 13.5,
+       "fg": "#6c6c74",
+       "bg": "#060607"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 1,
+     "inHero": 1,
+     "radius": 6,
+     "height": 44,
+     "withShadow": 1,
+     "withGradient": 0,
+     "mono": 0,
+     "upper": 0,
+     "heroLabels": [
+      "Steer"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 1,
+     "shadowOverlay": 0,
+     "shadowSamples": [
+      "button → rgba(0, 0, 0, 0.5) 0px 1px 2px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 3,
+     "hairlineSamples": [
+      "header.top 390px",
+      "footer.foot 390px",
+      "div.status.phone-status 390px"
+     ],
+     "outlinedBoxes": 1,
+     "dashed": 0,
+     "blurred": 1,
+     "roundedBoxes": 1,
+     "boxRadius": 12,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 1,
+     "fixed": true,
+     "height": 52,
+     "floatingPill": false,
+     "blur": true
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "pageH": 844,
+    "margins": {
+     "left": 72,
+     "right": 16
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "phone",
+      "size": 14,
+      "top": 17,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [],
+    "leftBlocks": 0,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 390,
+     "h": 844
+    },
+    "dark": true,
+    "ground": "#000000",
+    "sidebar": null,
+    "topbar": {
+     "h": 52
+    },
+    "canvas": {
+     "left": 16,
+     "right": 16
+    },
+    "hero": {
+     "text": "phone",
+     "words": 1,
+     "chars": 5,
+     "lines": 1,
+     "size": 14,
+     "vw": 3.5,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 0,
+    "layout": {
+     "panels": 1,
+     "firstScreen": 1,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 1,
+     "radii": [
+      [
+       12,
+       1
+      ]
+     ],
+     "heavyBorders": 1,
+     "borderSamples": [
+      "#ffffff on #09090a (19.9:1)"
+     ],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 0,
+     "tabularShare": null,
+     "kpiMax": null
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.12,
+     "tiny": 1,
+     "tinySamples": [
+      "task 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      16
+     ]
+    },
+    "title": {
+     "text": "phone",
+     "size": 14,
+     "top": 17
+    },
+    "colourShare": 0.001
+   },
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "FAIL",
+   "id": "button-fx",
+   "width": 768,
+   "message": "Buttons with shadow/glow.",
+   "fix": "Flat fill, one colour.",
+   "alsoAt": [
+    390
+   ]
+  },
+  {
+   "level": "WARN",
+   "id": "contrast",
+   "width": 768,
+   "message": "Low-contrast text: \"Send\" 3.9:1 needs 4.5:1",
+   "fix": "Darken or lighten the text colour.",
+   "alsoAt": [
+    390
+   ]
+  }
+ ],
+ "images": [
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-base-inspect/tablet-fold.jpg",
+   "pages": [
+    "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-base-inspect/tablet-page-01.jpg"
+   ],
+   "film": []
+  },
+  {
+   "viewport": "mobile",
+   "width": 390,
+   "fold": "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-base-inspect/mobile-fold.jpg",
+   "pages": [
+    "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-base-inspect/mobile-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

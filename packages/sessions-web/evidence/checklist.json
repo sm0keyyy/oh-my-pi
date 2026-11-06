@@ -1,6 +1,102 @@
 {
-	"allowed": 65,
+	"allowed": 77,
 	"rows": [
+		{
+			"command": "live_connect",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "dictation_start",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "dictation_stop",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "get_session_lease",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "navigate_tree",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "abort_branch_summary",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "set_label",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "pre-existing command; browser evidence unavailable",
+			"screenshots": []
+		},
+		{
+			"command": "set_review_dialog",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "automatic",
+			"screenshots": []
+		},
+		{
+			"command": "stop_subagent",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-stop-1440.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-stop-768.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-stop-390.png"
+			]
+		},
+		{
+			"command": "abort_subagent",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-abort-1440.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-abort-768.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-abort-390.png"
+			]
+		},
+		{
+			"command": "follow_up_subagent",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "browser",
+			"screenshots": [
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-follow-up-1440.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-follow-up-768.png",
+				"packages/sessions-web/evidence/screenshots/sessions-rpc-follow-up-390.png"
+			]
+		},
+		{
+			"command": "toggle_pane",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "transport: interactive Rex host required",
+			"screenshots": []
+		},
 		{
 			"command": "negotiate_protocol",
 			"desktop": "pass",
@@ -714,15 +810,23 @@
 		}
 	},
 	"coverageCounts": {
-		"browser": 40,
-		"automatic": 11,
-		"transport": 14
+		"browser": 43,
+		"automatic": 12,
+		"transport": 15,
+		"pre-existing command; browser evidence unavailable": 7
 	},
 	"notes": [
 		"live_start proves a real handler rejection round-trip, not voice functionality; ordinary startup timed out in native WebRTC.",
 		"login and live_mute prove structured error responses; no login or voice controls were added.",
 		"Predictor returned no suggestion; visible ghost suggestion and feedback need install checks.",
 		"Waiting-first lobby order, real question text, and clearing proved at both viewports; see packages/sessions-web/evidence/question-preview.json.",
-		"Review follow-up: seven added commands have successful real TUI request/response receipts at 1440×1000 and 390×844. Coverage is transport only; no controls were added. F12 uses the FixRpc source CLI host snapshot."
+		"Review follow-up: seven added commands have successful real TUI request/response receipts at 1440×1000 and 390×844. Coverage is transport only; no controls were added. F12 uses the FixRpc source CLI host snapshot.",
+		"Sessions RPC: stop and abort with reasons and literal idle follow-up passed through the real gateway/bridge at 1440, 768 and 390 pixels; see sessions-rpc.json. Capability negotiation and legacy-host fallback also pass in client.test.ts.",
+		"Review browser acceptance is deferred by Main until the plan-approval slice provides main ui.review. RPC review frames, capability gating and first-answer-wins are covered by rpc-review-dialog.test.ts and rpc-toggle-pane.test.ts.",
+		"toggle_pane is covered by rpc-toggle-pane.test.ts; a live interactive Rex panel host is not available in the sessions browser fixture.",
+		"The optional inspector run reports button-fx at 768 and 390 pixels on the pre-existing .seg button[aria-pressed=\"true\"] shadow (src/sessions.css:392). Main explicitly declined changing this existing control. Baseline production-web reproduction is recorded in sessions-rpc-base.json and sessions-rpc-base-inspect/report.json; current reports are sessions-rpc-controls-inspect-*/report.json. Existing low-contrast status labels and the empty transcript are warnings.",
+		"Round-one review corrections: the old-host stub renders no Stop, Abort or follow-up form without successful set_review_dialog opt-in; Cancel leaves its aborted row in the rendered rail after refresh and catalog reload. Both assertions pass in client.test.ts. The real gateway/bridge browser controls were rerun at all three widths.",
+		"Round-two review correction: session_changed clears subagent rows before rebuilding the current roster. Completed/aborted history is retained only within the current session. client.test.ts covers the rendered rail across that boundary alongside the Cancel-retains-row regression.",
+		"Operator-approved ready-path correction: hydration also clears terminal rows when the fetched sessionId differs, even without session_changed. Reconnect tests restart the gateway fixture through a fresh ready frame and assert that different-session history is cleared while same-session history remains."
 	]
 }

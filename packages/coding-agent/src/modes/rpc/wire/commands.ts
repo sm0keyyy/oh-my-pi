@@ -112,6 +112,19 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		unwrap: "enabled",
 	},
 	{
+		name: "set_review_dialog",
+		doc: "Opt in to blocking plan-review requests.",
+		params: { enabled: "boolean" },
+		result: { enabled: "boolean" },
+		unwrap: "enabled",
+	},
+	{
+		name: "toggle_pane",
+		doc: "Toggle a todo or agents pane in an interactive Rex TUI.",
+		params: { pane: "'todo' | 'agents'", "shape?": "'dock' | 'float'" },
+		result: { open: "boolean" },
+	},
+	{
 		name: "get_available_commands",
 		doc: "List the slash-command catalog.",
 		result: { commands: "AvailableSlashCommand[]" },
@@ -162,7 +175,7 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	},
 	{
 		name: "get_subagents",
-		doc: "List running subagents.",
+		doc: "List running subagents, plus idle accepted ones marked followUpAvailable",
 		result: { subagents: "SubagentSnapshot[]" },
 		unwrap: "subagents",
 	},
@@ -183,6 +196,24 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		name: "steer_subagent",
 		doc: "Send a message to a running subagent as its user.",
 		params: { subagentId: "string", message: "string" },
+	},
+	{
+		name: "stop_subagent",
+		doc: "Request a driven subagent's final summary with an operator reason.",
+		params: { subagentId: "string", reason: "string" },
+		result: "StopSubagentOutcome",
+	},
+	{
+		name: "abort_subagent",
+		doc: "Abort with an operator reason; without one, use legacy cancellation.",
+		params: { subagentId: "string", "reason?": "string" },
+		result: "AbortSubagentOutcome",
+	},
+	{
+		name: "follow_up_subagent",
+		doc: "Send literal text to an idle, accepted, unparked subagent.",
+		params: { subagentId: "string", message: "string" },
+		result: "FollowUpSubagentOutcome",
 	},
 	{
 		name: "live_start",

@@ -1,3 +1,4 @@
+import puppeteer from "puppeteer-core";
 import type { ElementHandle, Page } from "puppeteer-core";
 import * as path from "node:path";
 import { installHttpProbe } from "./http-probe";
@@ -550,5 +551,258 @@ export async function runLobbyQuestionAcceptance(page: Page, base: string, root:
 	} finally {
 		await lobby.close();
 		for (const name of names) await fetch(`${base}/fixture/stop?name=${name}`);
+	}
+}
+
+export async function runSessionsRpcAcceptance(page: Page, base: string, root: string, includeReview = false) {
+	const results = [];
+	for (const width of [1440, 768, 390]) {
+		const name = width === 390 ? "phone" : "desktop";
+		await page.setViewport({ width, height: 1000, isMobile: width === 390, hasTouch: width === 390 });
+		const start = await (await fetch(`${base}/fixture/start?name=${name}`)).json();
+		if (!start.pid) throw new Error(JSON.stringify(start));
+		try {
+			let target: { instanceId: string } | undefined;
+			for (let attempt = 0; attempt < 100; attempt++) {
+				const sessions = await (await fetch(`${base}/api/sessions`)).json();
+				target = sessions.sessions.find((session: { cwd: string }) => session.cwd === start.cwd);
+				if (target) break;
+				await Bun.sleep(200);
+			}
+			if (!target) throw new Error("Fixture session not discovered");
+			const sessionUrl = `${base}/session/${target.instanceId}`;
+			await page.goto(sessionUrl);
+			await page.waitForSelector("#message:not(:disabled)");
+			await page.evaluate(installHttpProbe, "sessions-rpc");
+			const rpc = (command: Record<string, unknown>) =>
+				page.evaluate(command => window.httpProbes["sessions-rpc"]!.request(command), command);
+			const compose = async (message: string) => {
+				await page.type("#message", message);
+				await page.keyboard.press("Enter");
+			};
+			const button = async (label: string) => {
+				for (const node of await page.$$("button")) {
+					if (await node.evaluate((node, label) => node.textContent?.trim() === label, label)) {
+						await node.click();
+						return;
+					}
+				}
+				throw new Error(`Missing button: ${label}`);
+			};
+			const panels = async (open: boolean) => {
+				const trigger = await page.$('[aria-label="Panels"]');
+				if (!trigger || !(await trigger.boundingBox())) return;
+				const shown = !!(await page.$("dialog[open]"));
+				if (open && !shown) await trigger.click();
+				if (!open && shown) await page.keyboard.press("Escape");
+			};
+			const waitAgent = async (followUp: boolean): Promise<string> => {
+				for (let attempt = 0; attempt < 150; attempt++) {
+					const response = await rpc({ type: "get_subagents" });
+					const agents = response.data?.subagents as Array<{
+						id: string;
+						status: string;
+						followUpAvailable?: boolean;
+						progress?: { recentOutput?: string[] };
+					}>;
+					const agent = agents.find(agent =>
+						followUp
+							? agent.followUpAvailable === true
+							: agent.status === "running" && !!agent.progress?.recentOutput?.length,
+					);
+					if (agent) return agent.id;
+					await Bun.sleep(200);
+				}
+				throw new Error(`No ${followUp ? "accepted idle" : "running"} subagent`);
+			};
+			const agentRow = async (id: string): Promise<ElementHandle<Element>> => {
+				for (let attempt = 0; attempt < 60; attempt++) {
+					for (const row of await page.$$(".agent"))
+						if (
+							(await row.boundingBox()) &&
+							(await row.evaluate((node, id) => node.querySelector("b")?.textContent === id, id))
+						)
+							return row;
+					await Bun.sleep(200);
+				}
+				throw new Error(`Missing subagent row: ${id}`);
+			};
+			let inspection: number | undefined;
+			const control = async (id: string, action: "stop_subagent" | "abort_subagent", reason: string) => {
+				await panels(true);
+				const row = await agentRow(id);
+				const input = await row.$('input[name="reason"]');
+				const submit = await row.$(`button[value="${action}"]`);
+				if (!input || !submit) throw new Error(`Missing ${action} controls`);
+				await input.click({ count: 3 });
+				await input.type(reason);
+				await page.screenshot({
+					path: path.join(
+						root,
+						`packages/sessions-web/evidence/screenshots/sessions-rpc-${action}-controls-${width}.png`,
+					),
+				});
+				if (action === "stop_subagent" && process.argv.includes("--inspect")) {
+					inspection = await Bun.spawn(
+						[
+							"node",
+							path.join(process.env.HOME ?? "", ".omp/agent/skills/design-taste-frontend/scripts/inspect.mjs"),
+							`${sessionUrl}?fixture-panels=1`,
+							"--app",
+							"--widths",
+							String(width),
+							"--allow",
+							"few-pictures,still-page",
+							"--out",
+							path.join(root, `packages/sessions-web/evidence/sessions-rpc-controls-inspect-${width}`),
+						],
+						{ stdout: "inherit", stderr: "inherit", timeout: 120000 },
+					).exited;
+				}
+				await submit.click();
+				await panels(false);
+			};
+			if (includeReview) {
+				await compose("/web-dialog review");
+				await page.waitForSelector('.dlg textarea[name="review-§4"]');
+				await page.type('.dlg textarea[name="review-§4"]', "merge view and wire");
+				await button("Request changes");
+				await page.waitForFunction(() => document.body.textContent?.includes('"verdict":"request-changes"'));
+				await compose("/web-dialog review");
+				await page.waitForSelector('.dlg textarea[name="review-§4"]');
+				await page.focus('.dlg textarea[name="review-§4"]');
+				await page.keyboard.press("Escape");
+				await page.waitForFunction(() => document.body.textContent?.includes('"kind":"cancelled"'));
+			}
+			await compose("[agent] Spawn local agent");
+			const stopId = await waitAgent(false);
+			await control(stopId, "stop_subagent", "browser stop reason");
+			await page.waitForFunction(
+				() => document.body.textContent?.includes("Stopped by operator: browser stop reason"),
+				{ timeout: 120000 },
+			);
+			await page.screenshot({
+				path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-stop-${width}.png`),
+			});
+			const followId = await waitAgent(true);
+			await panels(true);
+			const followRow = await agentRow(followId);
+			await page.waitForFunction(
+				id =>
+					[...document.querySelectorAll(".agent")].some(
+						row => row.querySelector("b")?.textContent === id && row.textContent?.includes("Send follow-up"),
+					),
+				{},
+				followId,
+			);
+			const followInput = await followRow.$('input[name="value"]');
+			const followButton = await followRow.$('button[type="submit"]:not([value])');
+			if (!followInput || !followButton) throw new Error("Missing follow-up controls");
+			await followInput.type("/literal follow-up marker");
+			await page.screenshot({
+				path: path.join(
+					root,
+					`packages/sessions-web/evidence/screenshots/sessions-rpc-follow-up-controls-${width}.png`,
+				),
+			});
+			await followButton.click();
+			await panels(false);
+			await page.waitForFunction(() => document.body.textContent?.includes("fixture follow-up reply"), {
+				timeout: 30000,
+			});
+			await page.screenshot({
+				path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-follow-up-${width}.png`),
+			});
+			await compose("[agent] Spawn another local agent");
+			const abortId = await waitAgent(false);
+			await control(abortId, "abort_subagent", "browser abort reason");
+			const resultHeader = (await page.$$(".tv-card .tv-head")).at(-1);
+			if (!resultHeader) throw new Error("Parent task result card is missing");
+			if (await resultHeader.evaluate(node => node.getAttribute("aria-expanded") !== "true"))
+				await resultHeader.click();
+			await page.waitForFunction(
+				() => document.body.textContent?.includes("Aborted by operator: browser abort reason"),
+				{ timeout: 30000 },
+			);
+			await page.screenshot({
+				path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-abort-${width}.png`),
+			});
+			const rows = await (await fetch(`${base}/fixture/receipts`)).json();
+			const commands = ["stop_subagent", "abort_subagent", "follow_up_subagent"].map(command => {
+				const response = rows.findLast(
+					(row: { direction: string; frame?: Frame }) =>
+						row.direction === "response" && row.frame?.command === command,
+				)?.frame;
+				if (!response?.success || response.data?.ok !== true) throw new Error(`Control refused: ${command}`);
+				return response;
+			});
+			results.push({
+				width,
+				review: includeReview ? "passed" : "deferred to plan-approval main ui.review integration",
+				commands,
+				inspection,
+			});
+		} catch (cause) {
+			console.error("Sessions browser acceptance failed", cause);
+			await page
+				.screenshot({
+					path: path.join(root, `packages/sessions-web/evidence/screenshots/sessions-rpc-failure-${width}.png`),
+				})
+				.catch(error => console.error("Failure screenshot unavailable", error));
+			throw cause;
+		} finally {
+			await fetch(`${base}/fixture/stop?name=${name}`);
+		}
+	}
+	return results;
+}
+
+if (import.meta.main) {
+	const root = path.resolve(import.meta.dir, "../../..");
+	const fixture = Bun.spawn([process.execPath, path.join(import.meta.dir, "local-fixture.ts")], {
+		cwd: root,
+		env: { ...process.env, SESSIONS_RPC_FIXTURE: "1" },
+		stdout: "pipe",
+		stderr: "inherit",
+		timeout: 600000,
+	});
+	let base = "";
+	const reader = fixture.stdout.getReader();
+	try {
+		let output = "";
+		while (!base) {
+			const chunk = await reader.read();
+			if (chunk.done) throw new Error("Fixture exited before READY");
+			output += new TextDecoder().decode(chunk.value);
+			base = /READY (http:\/\/127\.0\.0\.1:\d+)/.exec(output)?.[1] ?? "";
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const browser = await puppeteer.launch({
+		executablePath: process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		headless: true,
+		protocolTimeout: 15000,
+	});
+	try {
+		const page = await browser.newPage();
+		page.on("pageerror", error => console.error("Browser page error", error));
+		page.on("requestfailed", request => console.error("Browser request failed", request.url(), request.failure()));
+		const result = await runSessionsRpcAcceptance(page, base, root, process.argv.includes("--review"));
+		await Bun.write(
+			path.join(root, "packages/sessions-web/evidence/sessions-rpc.json"),
+			JSON.stringify(result, null, 2),
+		);
+		console.log(
+			JSON.stringify({
+				cases: ["stop", "abort", "follow-up", ...(process.argv.includes("--review") ? ["review"] : [])],
+				result,
+			}),
+		);
+		if (result.some(row => row.inspection !== undefined && row.inspection !== 0)) process.exitCode = 1;
+	} finally {
+		await browser.close();
+		await fetch(`${base}/fixture/shutdown`);
+		await fixture.exited;
 	}
 }

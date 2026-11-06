@@ -256,6 +256,7 @@ import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
+import { subagentAskHostFor } from "./task/subagent-ask-host";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	AUTO_THINKING,
@@ -2535,6 +2536,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		agentRegistry.unregister(resolvedAgentId, ref);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+	const subagentAskHost = isSubagentSession ? subagentAskHostFor(subagentEventBus) : undefined;
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -2567,7 +2569,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			setActiveToolNames,
 			toolRegistry,
 			hasUI: options.hasUI ?? false,
-			canPromptUser: options.interactivePrompts ?? options.hasUI ?? false,
+			canPromptUser: Boolean(subagentAskHost) || (options.interactivePrompts ?? options.hasUI ?? false),
 			advertiseHeadlessAsk: options.advertiseHeadlessAsk,
 			settingsApproval: options.settingsApproval === true && !isSubagentSession,
 			tuiTranscript,
@@ -3754,6 +3756,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoApprove: options.autoApprove ?? false,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext, trackUserWait);
+		if (subagentAskHost) {
+			toolContextStore.setUIContext(subagentAskHost.uiFor(resolvedAgentId, resolvedAgentDisplayName), false);
+		}
 		toolSession.getToolContext = () => toolContextStore.getContext();
 		const setSessionActiveToolNames = (names: Iterable<string>): void => {
 			const snapshot = Array.from(names);

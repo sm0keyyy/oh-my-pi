@@ -71,6 +71,48 @@ describe("Rex CLI", () => {
 		expect(timeouts).toEqual(Array(8).fill(10_000));
 	});
 
+	it("creates background layers, floats and focuses blocks, and returns nonzero terminal exit codes", async () => {
+		const calls: string[][] = [];
+		const timeouts: number[] = [];
+		const rex = createRexCli({
+			binary: "rex",
+			run: async (args, timeout) => {
+				calls.push(args);
+				timeouts.push(timeout);
+				return args[1] === "wait"
+					? { exitCode: 7, stdout: '{"exit_code":7}', stderr: "" }
+					: { exitCode: 0, stdout: '{"layer_id":"layer:1","block_ids":["block:1"]}', stderr: "" };
+			},
+		});
+		const bounds = [0.55, 0.05, 0.43, 0.6] as const;
+		const argv = ["/relay with spaces", "/socket path", "/credential file"];
+		expect(await rex.newLayer("s1", "w1", bounds, "omp: float", argv)).toEqual({
+			layerId: "layer:1",
+			blockId: "block:1",
+		});
+		const layer = JSON.parse(calls[0]![6]!);
+		expect(layer).toEqual({
+			session_id: "s1",
+			window_id: "w1",
+			bounds,
+			focus: false,
+			layout: {
+				block: {
+					flavor: "com.superlogical.terminal.shell",
+					label: "omp: float",
+					options: { command: argv, shell: "none" },
+				},
+			},
+		});
+		await rex.floatBlock("s1", "block:1", bounds);
+		expect(JSON.parse(calls[1]![6]!)).toEqual({ session_id: "s1", block_id: "block:1", bounds });
+		await rex.focusBlock("s1", "block:1");
+		expect(calls[2]).toEqual(["--autostart=false", "focus", "-s", "s1", "block:1"]);
+		expect(await rex.waitBlock("s1", "block:1", 1250)).toEqual({ exitCode: 7 });
+		expect(calls[3]).toEqual(["--autostart=false", "wait", "-s", "s1", "block:1", "--for", "1250ms", "--json"]);
+		expect(timeouts[3]).toBe(11250);
+		expect(calls.every(call => call[0] === "--autostart=false")).toBe(true);
+	});
 	it("rejects failed and malformed responses and kills a partially created session", async () => {
 		const calls: string[][] = [];
 		let stdout = "not json";

@@ -1,4 +1,5 @@
 import { isRecord, ptree } from "@oh-my-pi/pi-utils";
+import type { PaneBounds } from "./component-pane";
 
 export interface RexCli {
 	newSession(
@@ -13,8 +14,19 @@ export interface RexCli {
 		direction: "right" | "below",
 		label: string,
 		argv: string[],
+		ratio?: number,
 	): Promise<{ blockId: string }>;
 	newWindow(sessionId: string, label: string, argv: string[]): Promise<{ windowId: string; blockId: string }>;
+	newLayer(
+		sessionId: string,
+		windowId: string | undefined,
+		bounds: PaneBounds,
+		label: string,
+		argv: string[],
+	): Promise<{ layerId: string; blockId: string }>;
+	floatBlock(sessionId: string, blockId: string, bounds: PaneBounds): Promise<void>;
+	focusBlock(sessionId: string, blockId: string): Promise<void>;
+	waitBlock(sessionId: string, blockId: string, timeoutMs: number): Promise<{ exitCode: number }>;
 	closeBlock(sessionId: string, blockId: string): Promise<void>;
 	renameSession(sessionId: string, label: string): Promise<void>;
 	killSession(sessionId: string): Promise<void>;
@@ -46,8 +58,8 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 			const result = await ptree.exec([options.binary, ...args], { timeout: timeoutMs, allowNonZero: true });
 			return { exitCode: result.exitCode ?? -1, stdout: result.stdout, stderr: result.stderr };
 		});
-	async function call(args: string[]): Promise<string> {
-		const result = await run(["--autostart=false", ...args], CLI_TIMEOUT_MS);
+	async function call(args: string[], timeoutMs = CLI_TIMEOUT_MS): Promise<string> {
+		const result = await run(["--autostart=false", ...args], timeoutMs);
 		if (result.exitCode !== 0) throw new Error(`Rex ${args[0]} failed (exit ${result.exitCode})`);
 		return result.stdout;
 	}
@@ -80,7 +92,7 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 				throw error;
 			}
 		},
-		async split(sessionId, anchorBlockId, direction, label, argv) {
+		async split(sessionId, anchorBlockId, direction, label, argv, ratio) {
 			const result = await json([
 				"split",
 				"-s",
@@ -92,6 +104,7 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 				"--shell=none",
 				"--label",
 				label,
+				...(ratio === undefined ? [] : ["--ratio", String(ratio)]),
 				"--json",
 				"--",
 				...argv,
@@ -122,6 +135,66 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 				});
 				throw error;
 			}
+		},
+		async newLayer(sessionId, windowId, bounds, label, argv) {
+			const result = await json([
+				"api",
+				"call",
+				"-s",
+				sessionId,
+				"session.new_layer",
+				JSON.stringify({
+					session_id: sessionId,
+					window_id: windowId,
+					bounds,
+					focus: false,
+					layout: {
+						block: {
+							flavor: "com.superlogical.terminal.shell",
+							label,
+							options: { command: argv, shell: "none" },
+						},
+					},
+				}),
+			]);
+			const layerId = identifier(result.layer_id);
+			try {
+				return { layerId, blockId: blockId(result) };
+			} catch (error) {
+				await call([
+					"api",
+					"call",
+					"-s",
+					sessionId,
+					"session.close_layer",
+					JSON.stringify({ session_id: sessionId, layer_id: layerId }),
+				]);
+				throw error;
+			}
+		},
+		async floatBlock(sessionId, id, bounds) {
+			await call([
+				"api",
+				"call",
+				"-s",
+				sessionId,
+				"session.float_block",
+				JSON.stringify({ session_id: sessionId, block_id: id, bounds }),
+			]);
+		},
+		async focusBlock(sessionId, id) {
+			await call(["focus", "-s", sessionId, id]);
+		},
+		async waitBlock(sessionId, id, timeoutMs) {
+			if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid Rex wait timeout");
+			const result = await run(
+				["--autostart=false", "wait", "-s", sessionId, id, "--for", `${timeoutMs}ms`, "--json"],
+				timeoutMs + CLI_TIMEOUT_MS,
+			);
+			const value: unknown = JSON.parse(result.stdout);
+			if (!isRecord(value) || typeof value.exit_code !== "number" || !Number.isInteger(value.exit_code))
+				throw new Error("Rex returned no block exit status");
+			return { exitCode: value.exit_code };
 		},
 		closeBlock,
 		async renameSession(sessionId, label) {

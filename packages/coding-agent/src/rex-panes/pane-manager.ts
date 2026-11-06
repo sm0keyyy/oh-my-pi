@@ -22,6 +22,7 @@ export interface PaneManagerDeps {
 	socketPath: string;
 	relayPath: string;
 	newToken(): string;
+	prepareToken(token: string): Promise<string>;
 	openPane(agentId: string, session: AgentSession, token: string): Promise<OpenPane>;
 	onPaneOpened(agentId: string): void;
 }
@@ -238,7 +239,7 @@ class Manager implements PaneManager {
 				pane => ({ pane }),
 				error => ({ error }),
 			);
-			const argv = [this.deps.relayPath, this.deps.socketPath, token];
+			const argv = [this.deps.relayPath, this.deps.socketPath, await this.deps.prepareToken(token)];
 			if (!group.sessionId) {
 				const label = `omp: ${group.first}`;
 				const created = await this.deps.rex.newSession(label, member.id, member.id, argv);

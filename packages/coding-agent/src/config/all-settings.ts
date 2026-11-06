@@ -38,6 +38,7 @@ import * as sttSettings from "../stt/settings";
 import * as liveSettings from "../live/settings";
 import * as collabSettings from "../collab/settings";
 import * as rpcSocketSettings from "../modes/rpc/settings";
+import * as rexPanesSettings from "../rex-panes/settings";
 import * as commandsSettings from "../commands/settings";
 import * as streamSettings from "../stream/settings";
 import * as commitSettings from "../commit/settings";
@@ -78,6 +79,7 @@ const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	sttSettings,
 	collabSettings,
 	rpcSocketSettings,
+	rexPanesSettings,
 	commandsSettings,
 	streamSettings,
 	commitSettings,

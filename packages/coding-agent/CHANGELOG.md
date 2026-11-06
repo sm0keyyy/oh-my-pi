@@ -6,6 +6,8 @@
 
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
+- Show live subagent TUIs in background Rex panes on macOS, with pane steering, follow-ups, `/stop`, and `/abort`; control them with `rex.subagentPanes` (on by default).
+- Subagents of the main interactive TUI can ask questions in the main dialog, connected sessions clients, and their Rex pane; unanswered asks time out after 10 minutes.
 
 ### Changed
 

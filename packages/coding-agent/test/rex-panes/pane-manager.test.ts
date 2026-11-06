@@ -77,6 +77,7 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		socketPath: "/private/run/panes.sock",
 		relayPath: "/private/run/relay",
 		newToken: () => `token${++nextToken}`,
+		prepareToken: async token => `/private/run/${token}.credential`,
 		async openPane(id, session) {
 			await options.beforeOpen?.();
 			const closed = Promise.withResolvers<void>();
@@ -147,7 +148,7 @@ describe("pane manager", () => {
 			"--",
 			"/private/run/relay",
 			"/private/run/panes.sock",
-			"token5",
+			"/private/run/token5.credential",
 		]);
 		h.start("nested", "nested-task", "a");
 		await h.until(() => h.opened.length === 6);

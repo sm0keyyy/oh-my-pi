@@ -464,6 +464,14 @@ export class TranscriptContainer extends Container {
 		return false;
 	}
 
+	/** Whether a finalized append-only head already has rows in native history. */
+	hasPartlyCommittedFinalizedHead(): boolean {
+		this.#syncEntries();
+		this.#settleFinalized();
+		const head = this.#entries[this.#frontier];
+		return head?.state === "settled" && head.mode === "appendOnly" && (head.emitted > 0 || head.split !== undefined);
+	}
+
 	/** Whether visible active capacity and live-block memory permit another admission. */
 	canAdmit(rows: number): boolean {
 		const active = this.#entries.filter(entry => entry.state === "active").length;

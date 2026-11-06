@@ -12,6 +12,7 @@
 - Enabled native OSC 9 notifications and OSC 8 hyperlinks in Rex.
 - Reduced CPU use during streamed code blocks while preserving completed lines in scrollback.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
+- Fixed table rows and following text disappearing under an Ask dialog without stranding restored drafts.
 
 ## [18.16.0] - 2026-11-02
 

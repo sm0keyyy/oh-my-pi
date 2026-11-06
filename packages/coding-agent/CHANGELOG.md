@@ -9,6 +9,7 @@
 - Added remote subagent stop, reason-bearing abort, idle follow-up, pane toggles, and opt-in plan reviews, with matching sessions-web controls and additive SDK contracts.
 - Show live subagent TUIs in background Rex panes on macOS, with pane steering, follow-ups, `/stop`, and `/abort`; control them with `rex.subagentPanes` (on by default).
 - Subagents of the main interactive TUI can ask questions in the main dialog, connected sessions clients, and their Rex pane; unanswered asks time out after 10 minutes.
+- Added configurable todo nudges every five mutating calls without a default cap, a turn-end done-check nudge, and open-todo reminders after compaction.
 
 ### Changed
 

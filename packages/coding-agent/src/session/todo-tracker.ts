@@ -1,21 +1,30 @@
 import type { Agent, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message, Model, TextContent, ToolChoice } from "@oh-my-pi/pi-ai";
-import { isRecord, logger, prompt, stringProperty } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
+import postCompactionTodoPrompt from "../prompts/system/post-compaction-todo.md" with { type: "text" };
+import todoDoneNudgePrompt from "../prompts/system/todo-done-nudge.md" with { type: "text" };
 import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
+import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
+import type { TodoDoneInput } from "./todo-done-check";
 
 import { cfgTaskBatch, cfgTaskEager } from "../task/settings";
-import { cfgTodoEager, cfgTodoEnabled, cfgTodoReminders, cfgTodoRemindersMax } from "../tools/settings";
-
-const MID_RUN_NUDGE_MUTATION_THRESHOLD = 12;
-const MID_RUN_NUDGE_MAX_PER_CYCLE = 2;
+import {
+	cfgTodoDoneCheck,
+	cfgTodoEager,
+	cfgTodoEnabled,
+	cfgTodoMidRunNudgeAfter,
+	cfgTodoMidRunNudgeMax,
+	cfgTodoReminders,
+	cfgTodoRemindersMax,
+} from "../tools/settings";
 const MUTATING_TOOLS: Record<string, true> = {
 	bash: true,
 	eval: true,
@@ -85,6 +94,7 @@ export interface TodoTrackerHost {
 	/** Whether prewalk will hand off after its plan nudge owns todo creation. */
 	prewalkWillHandoff(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
+	judgeTodoDone(input: TodoDoneInput, signal: AbortSignal): Promise<boolean | undefined>;
 }
 
 /** Owns canonical todo state, eager preludes, and completion reminders. */
@@ -95,6 +105,10 @@ export class TodoTracker {
 	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
+	#currentTaskKey: string | undefined;
+	#taskVersion = 0;
+	readonly #changedFiles = new Set<string>();
+	readonly #doneNudged = new Set<string>();
 
 	constructor(host: TodoTrackerHost) {
 		this.#host = host;
@@ -108,6 +122,12 @@ export class TodoTracker {
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		const current = this.#currentTask();
+		if (current?.key !== this.#currentTaskKey) {
+			this.#currentTaskKey = current?.key;
+			this.#taskVersion++;
+			this.#changedFiles.clear();
+		}
 		// Every state write lands here — the native tool, a Cursor sync, or a
 		// bridged call — so the nudge budget re-arms on the progress it
 		// rations. Views, failed batches, and unchanged reads never arrive.
@@ -130,14 +150,22 @@ export class TodoTracker {
 		this.#reminderAwaitingProgress = false;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount = 0;
+		this.#changedFiles.clear();
+		this.#taskVersion++;
 	}
 
 	/** Records a completed tool result before asynchronous event processing begins. */
-	onToolResult(toolName: string, isError: boolean): void {
+	onToolResult(toolName: string, isError: boolean, paths?: readonly string[]): void {
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
 			this.#mutationsSinceLastTouch++;
+		}
+		if (!isError && (toolName === "edit" || toolName === "write" || toolName === "ast_edit")) {
+			for (const path of paths ?? []) {
+				if (this.#changedFiles.size >= 50) break;
+				this.#changedFiles.add(path);
+			}
 		}
 		this.#reminderAwaitingProgress = false;
 	}
@@ -229,10 +257,44 @@ export class TodoTracker {
 		return nudges;
 	}
 
+	/** Builds the open-list reminder queued by each committed compaction. */
+	createPostCompactionTodoReminder(): CustomMessage | undefined {
+		if (
+			!cfgTodoEnabled.get(this.#host.settings) ||
+			this.#host.planModeEnabled() ||
+			!this.#host.getActiveToolNames().includes("todo")
+		)
+			return undefined;
+		const open = this.#phases
+			.flatMap(phase => phase.tasks)
+			.filter(task => task.status !== "completed" && task.status !== "abandoned");
+		if (open.length === 0) return undefined;
+		const current = this.#currentTask()?.task;
+		const items = current ? [current, ...open.filter(task => task !== current)].slice(0, 10) : open.slice(0, 10);
+		return {
+			role: "custom",
+			customType: "post-compaction-todo",
+			content: prompt.render(postCompactionTodoPrompt, {
+				...this.#buildEagerPreludeContext(),
+				current,
+				items,
+			}),
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+	}
+
 	/** Checks a terminal assistant turn and schedules continuation for incomplete todos. */
 	async checkCompletion(message: AssistantMessage): Promise<boolean> {
 		if (this.#host.consumeLastServedToolChoiceLabel() === "user-force") return false;
 		if (this.#host.planModeEnabled()) return false;
+		if (isAwaitingUserAnswer(message) || this.#host.hasPendingAsyncWake()) return false;
+		const generation = this.#host.promptGeneration();
+		const sessionId = this.#host.sessionManager.getSessionId();
+		if (await this.#checkDone(message)) return true;
+		if (generation !== this.#host.promptGeneration() || sessionId !== this.#host.sessionManager.getSessionId())
+			return false;
 		if (this.#reminderAwaitingProgress) {
 			logger.debug("Todo completion: prior reminder still awaiting agent action; staying silent", {
 				attempt: this.#reminderCount,
@@ -276,18 +338,6 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		if (isAwaitingUserAnswer(message)) {
-			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
-				incomplete: incomplete.length,
-			});
-			return false;
-		}
-		if (this.#host.hasPendingAsyncWake()) {
-			logger.debug("Todo completion: async jobs in flight will re-wake the loop; skipping reminder", {
-				incomplete: incomplete.length,
-			});
-			return false;
-		}
 		this.#reminderCount++;
 		const todoList = incompleteByPhase
 			.map(phase => `- ${phase.name}\n${phase.tasks.map(task => `  - ${task.content}`).join("\n")}`)
@@ -327,8 +377,9 @@ export class TodoTracker {
 
 	/** Takes the next hidden mid-run reconciliation nudge, if its budget and guards allow. */
 	takeMidRunNudge(): AgentMessage | null {
-		if (this.#mutationsSinceLastTouch < MID_RUN_NUDGE_MUTATION_THRESHOLD) return null;
-		if (this.#midRunNudgeCount >= MID_RUN_NUDGE_MAX_PER_CYCLE) return null;
+		if (this.#mutationsSinceLastTouch < Math.max(1, cfgTodoMidRunNudgeAfter.get(this.#host.settings))) return null;
+		const max = cfgTodoMidRunNudgeMax.get(this.#host.settings);
+		if (max > 0 && this.#midRunNudgeCount >= max) return null;
 		if (!cfgTodoEnabled.get(this.#host.settings) || !cfgTodoReminders.get(this.#host.settings)) return null;
 		if (this.#host.planModeEnabled() || !this.#host.getActiveToolNames().includes("todo")) return null;
 		const incomplete = this.#phases
@@ -342,6 +393,7 @@ export class TodoTracker {
 			toolRefs,
 			incompleteCount: incomplete.length,
 			plural: incomplete.length !== 1,
+			current: this.#currentTask()?.task,
 		});
 		logger.debug("Mid-run todo nudge fired", {
 			incomplete: incomplete.length,
@@ -357,6 +409,82 @@ export class TodoTracker {
 		};
 	}
 
+	#currentTask(): { key: string; task: TodoItem } | undefined {
+		for (const phase of this.#phases) {
+			const task = phase.tasks.find(task => task.status === "in_progress");
+			if (!task) continue;
+			const id = stringProperty(task, "id");
+			return {
+				key: JSON.stringify([this.#host.sessionManager.getSessionId(), id ?? [phase.name, task.content]]),
+				task,
+			};
+		}
+		return undefined;
+	}
+
+	async #checkDone(message: AssistantMessage): Promise<boolean> {
+		if (
+			message.stopReason !== "stop" ||
+			message.content.some(content => content.type === "toolCall" || content.type === "image") ||
+			!message.content.some(content => content.type === "text" && /\S/.test(content.text)) ||
+			!cfgTodoEnabled.get(this.#host.settings) ||
+			cfgTodoDoneCheck.get(this.#host.settings) === "off" ||
+			!this.#host.getActiveToolNames().includes("todo") ||
+			this.#changedFiles.size === 0
+		)
+			return false;
+		const current = this.#currentTask();
+		if (!current || this.#doneNudged.has(current.key)) return false;
+		const generation = this.#host.promptGeneration();
+		const version = this.#taskVersion;
+		const sessionId = this.#host.sessionManager.getSessionId();
+		const signal = AbortSignal.timeout(8_000);
+		let done: boolean | undefined;
+		try {
+			done = await untilAborted(signal, () =>
+				this.#host.judgeTodoDone(
+					{
+						task: current.task.content,
+						details: current.task.details,
+						files: [...this.#changedFiles],
+					},
+					signal,
+				),
+			);
+		} catch (error) {
+			// An optional judge failure leaves the existing reminder ladder in charge.
+			logger.debug("todo-done: check failed", { error: String(error) });
+		}
+		if (
+			!done ||
+			signal.aborted ||
+			generation !== this.#host.promptGeneration() ||
+			version !== this.#taskVersion ||
+			sessionId !== this.#host.sessionManager.getSessionId() ||
+			this.#currentTask()?.key !== current.key ||
+			this.#host.planModeEnabled() ||
+			cfgTodoDoneCheck.get(this.#host.settings) === "off"
+		)
+			return false;
+		this.#doneNudged.add(current.key);
+		const nudge: AgentMessage = {
+			role: "custom",
+			customType: "todo-done-nudge",
+			content: prompt.render(todoDoneNudgePrompt, {
+				...this.#buildEagerPreludeContext(),
+				task: current.task.content,
+				id: stringProperty(current.task, "id"),
+			}),
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		this.#host.agent.appendMessage(nudge);
+		this.#host.sessionManager.appendMessage(nudge);
+		this.#host.scheduleAgentContinue({ source: "todo-done-nudge", generation });
+		return true;
+	}
+
 	#buildEagerPreludeContext(): { toolRefs: Record<string, string>; taskBatch: boolean } {
 		const wireName = (name: string): string => {
 			const tool = this.#host.toolRegistry().get(name);
@@ -370,12 +498,8 @@ export class TodoTracker {
 
 	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
 		return phases.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker !== undefined
-					? { content: task.content, status: task.status, blocker: task.blocker }
-					: { content: task.content, status: task.status },
-			),
+			...phase,
+			tasks: phase.tasks.map(task => ({ ...task, ...(task.notes ? { notes: [...task.notes] } : {}) })),
 		}));
 	}
 }

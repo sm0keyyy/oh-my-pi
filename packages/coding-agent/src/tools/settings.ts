@@ -416,6 +416,48 @@ export const cfgTodoRemindersMax = register({
 	},
 });
 
+export const cfgTodoMidRunNudgeAfter = register({
+	id: "todo.midRunNudgeAfter",
+	type: "number",
+	default: 5,
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Todo Nudge Interval",
+		description: "Successful mutating calls between mid-run todo nudges",
+	},
+});
+
+export const cfgTodoMidRunNudgeMax = register({
+	id: "todo.midRunNudgeMax",
+	type: "number",
+	default: 0,
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Todo Nudge Limit",
+		description: "Maximum mid-run nudges per stretch; 0 means no cap",
+	},
+});
+
+export const cfgTodoDoneCheck = register({
+	id: "todo.doneCheck",
+	type: "enum",
+	values: ["auto", "on", "off"] as const,
+	default: "auto",
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Todo Done Check",
+		description: "Nudge when the judge finds the active todo complete; never changes the list",
+		options: [
+			{ value: "auto", label: "Auto", description: "Only with a native judge" },
+			{ value: "on", label: "On" },
+			{ value: "off", label: "Off" },
+		],
+	},
+});
+
 export const cfgTodoEager = register({
 	id: "todo.eager",
 	type: "enum",

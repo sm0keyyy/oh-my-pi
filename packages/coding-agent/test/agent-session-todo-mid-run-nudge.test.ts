@@ -8,6 +8,7 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TodoTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { cfgTodoMidRunNudgeAfter, cfgTodoMidRunNudgeMax } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -20,13 +21,10 @@ import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
  *   1. Only SUCCESSFUL MUTATING tool results (bash/eval/edit/write/ast_edit)
  *      tick the counter. Read-only exploration (grep/read/glob/lsp) and
  *      errored results never do.
- *   2. At {@link MID_RUN_TODO_NUDGE_MUTATION_THRESHOLD} mutations without a
- *      `todo` call, the aside provider injects a hidden custom message
- *      (`display: false`) — NO `todo_reminder` event, nothing renders.
+ *   2. The aside provider injects a hidden custom message after the configured
+ *      mutation interval, with no todo_reminder event.
  *   3. A `todo` tool result resets the counter.
- *   4. At most {@link MID_RUN_TODO_NUDGE_MAX_PER_CYCLE} nudges fire between
- *      state-writing `todo` results (`view` reads and errored attempts do not
- *      re-arm the budget); a new prompt cycle re-arms it unconditionally.
+ *   4. Nudges have no cap by default; a configured cap resets on state writes.
  *   5. The counter update lands synchronously with the message_end emit.
  *
  * Drives the aside provider directly: the production agent loop polls it
@@ -49,8 +47,8 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: ((boundary: AsideBoundary) => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
 
-	const THRESHOLD = 12; // mirrors MID_RUN_TODO_NUDGE_MUTATION_THRESHOLD
-	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_TODO_NUDGE_MAX_PER_CYCLE
+	const THRESHOLD = 5;
+	const MAX_PER_CYCLE = 2;
 	const NUDGE_TYPE = "mid-run-todo-nudge"; // mirrors MID_RUN_TODO_NUDGE_MESSAGE_TYPE
 
 	function toolUseAssistant(toolName: string): AssistantMessage {
@@ -231,9 +229,8 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		const text = typeof nudge?.content === "string" ? nudge.content : "";
 		expect(text).toContain("<system-reminder>");
 		expect(text).toContain("3 todo items");
-		// Gentle hint, not the stop-time escalation ladder: no per-task
-		// enumeration, no attempt counter.
-		expect(text).not.toContain("Sweep call sites");
+		// The current task is named without spending the stop-time ladder.
+		expect(text).toContain("Sweep call sites");
 		expect(text).not.toMatch(/reminder \d\/\d/i);
 
 		// SEPARATE concept from the stop-time reminder: no todo_reminder event,
@@ -260,7 +257,28 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("caps nudges per prompt cycle", async () => {
+	it("nudges after each five mutations across twenty tool rounds without a cap", async () => {
+		const rounds: number[] = [];
+		for (let round = 1; round <= 20; round++) {
+			emitToolResult("edit");
+			if ((await drainNudges()).length) rounds.push(round);
+		}
+		expect(rounds).toEqual([5, 10, 15, 20]);
+	});
+
+	it("honors the configured interval and cap", async () => {
+		cfgTodoMidRunNudgeAfter.override(session.settings, 3);
+		cfgTodoMidRunNudgeMax.override(session.settings, 2);
+		const rounds: number[] = [];
+		for (let round = 1; round <= 20; round++) {
+			emitToolResult("write");
+			if ((await drainNudges()).length) rounds.push(round);
+		}
+		expect(rounds).toEqual([3, 6]);
+	});
+
+	it("caps nudges per prompt cycle when configured", async () => {
+		cfgTodoMidRunNudgeMax.override(session.settings, MAX_PER_CYCLE);
 		let fired = 0;
 		for (let cycle = 0; cycle < MAX_PER_CYCLE + 2; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
@@ -271,6 +289,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	});
 
 	it("re-arms the nudge budget after a todo state write so a long turn keeps getting nudged", async () => {
+		cfgTodoMidRunNudgeMax.override(session.settings, MAX_PER_CYCLE);
 		// Without the re-arm, the cap outlives the progress it rations: two
 		// nudges in a single prompt silence the mid-run path until the next
 		// user prompt, which is precisely the stale-HUD case the nudge exists
@@ -293,6 +312,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	});
 
 	it("read-only todo results do not re-arm the nudge budget", async () => {
+		cfgTodoMidRunNudgeMax.override(session.settings, MAX_PER_CYCLE);
 		let fired = 0;
 		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");

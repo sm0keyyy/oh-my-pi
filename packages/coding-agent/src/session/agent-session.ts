@@ -518,6 +518,7 @@ function jobSnapshotItem(job: AsyncJob, widgets: JobWidgetRegistry | undefined):
 }
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
+import { classifyTodoDone } from "./todo-done-check";
 import { EAGER_TODO_PRELUDE_MESSAGE_TYPE, TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
@@ -585,6 +586,7 @@ import {
 	cfgRatchetEnabled,
 	cfgDevAutoqa,
 	cfgDevAutoqaConsent,
+	cfgTodoDoneCheck,
 	cfgTodoEnabled,
 	cfgToolsApproval,
 } from "../tools/settings";
@@ -1054,6 +1056,7 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	#postCompactionTodoPending = false;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -2100,6 +2103,22 @@ export class AgentSession implements SettingsScope {
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			prewalkWillHandoff: () => this.#prewalk.willHandoff,
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
+			judgeTodoDone: async (input, signal) => {
+				const mode = cfgTodoDoneCheck.get(this.settings);
+				if (mode === "off" || (mode === "auto" && !hasNativeJudge(this.settings, this.#modelRegistry))) {
+					return undefined;
+				}
+				return classifyTodoDone(input, {
+					settings: this.settings,
+					registry: this.#modelRegistry,
+					sessionId: this.sessionId,
+					model: this.model,
+					metadataResolver: provider => this.agent.metadataForProvider(provider),
+					onUsage: journalJudgmentUsage(this.sessionManager),
+					telemetry: this.agent.telemetry,
+					signal: AbortSignal.any([signal, this.#postPromptTasksAbortController.signal]),
+				});
+			},
 		};
 		this.#todo = new TodoTracker(todoHost);
 		this.#modelMentions = new ModelMentionRegistry({
@@ -2802,8 +2821,20 @@ export class AgentSession implements SettingsScope {
 			syncTodoPhasesFromBranch: () => {
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
+				if (this.#postCompactionTodoPending) {
+					this.#postCompactionTodoPending = false;
+					const reminder = this.#todo.createPostCompactionTodoReminder();
+					if (reminder) {
+						this.agent.appendMessage(reminder);
+						this.sessionManager.appendMessage(reminder);
+					}
+				}
 			},
-			resetAdvisorRuntimes: (reason, options) => this.#advisors.resetAllRuntimes(reason, options),
+			resetAdvisorRuntimes: (reason, options) => {
+				this.#advisors.resetAllRuntimes(reason, options);
+				// Both compaction commit paths rehydrate todos immediately after this hook.
+				if (options?.compacted) this.#postCompactionTodoPending = true;
+			},
 			rebaseAdvisorPrefix: reason => this.#advisors.rebaseDeliveredPrefixes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
@@ -4500,7 +4531,36 @@ export class AgentSession implements SettingsScope {
 		// and only successful mutating tools tick — read-only exploration is
 		// not progress an agent could mark done.
 		if (event.type === "message_end" && event.message.role === "toolResult") {
-			this.#todo.onToolResult(event.message.toolName, event.message.isError);
+			const { toolName, isError, details } = event.message;
+			const paths: string[] = [];
+			if (!isError && isRecord(details)) {
+				if (toolName === "write") {
+					const path = stringProperty(details, "resolvedPath");
+					if (path) paths.push(path);
+				} else if (toolName === "edit") {
+					const files = Array.isArray(details.perFileResults) ? details.perFileResults : [details];
+					for (const file of files) {
+						if (!isRecord(file)) continue;
+						const path = stringProperty(file, "path");
+						const source = stringProperty(file, "sourcePath");
+						if (path) paths.push(path);
+						if (source) paths.push(source);
+					}
+				} else if (toolName === "ast_edit" && details.applied === true && Array.isArray(details.files)) {
+					for (const path of details.files) if (typeof path === "string") paths.push(path);
+				}
+			}
+			const cwd = this.sessionManager.getCwd();
+			this.#todo.onToolResult(
+				toolName,
+				isError,
+				paths.map(file => {
+					const relative = path.relative(cwd, path.resolve(cwd, file));
+					return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+						? relative
+						: file;
+				}),
+			);
 		}
 		// Track the settled assistant turn synchronously as well: agent_end
 		// maintenance reads `#lastAssistantMessage`, and when a turn's events all

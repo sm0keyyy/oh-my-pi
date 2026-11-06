@@ -6,6 +6,8 @@ export const BUILTIN_TOOL_NAMES = [
 	"codegraph",
 	"ast_edit",
 	"ask",
+	"ask_operator",
+	"ask_operator_result",
 	"debug",
 	"ida",
 	"eval",

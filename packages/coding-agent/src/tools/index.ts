@@ -27,6 +27,7 @@ import type { MCPManager } from "../mcp";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { PlanModeState } from "../plan-mode/state";
+import { AskOperatorResultTool, AskOperatorTool } from "../operator-queue/tools";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
@@ -579,6 +580,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	codegraph: CodegraphTool.createIf,
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
+	ask_operator: s => new AskOperatorTool(s),
+	ask_operator_result: () => new AskOperatorResultTool(),
 	debug: DebugTool.createIf,
 	ida: IdaTool.createIf,
 	eval: s => new EvalTool(s),

@@ -9,7 +9,7 @@ const codeTools = ["codegraph", "ast_grep", "lsp"];
 const interviewTools = ["ask_operator", "ask_operator_result"];
 
 describe("bundled agent contracts", () => {
-	it("resolves every bundled agent's built-ins and preserves extension requests without widening seance", async () => {
+	it("resolves every bundled agent's built-ins without widening seance", async () => {
 		for (const agent of loadBundledAgents()) {
 			const seance = agent.name === "seance";
 			const session: ToolSession = {
@@ -34,8 +34,8 @@ describe("bundled agent contracts", () => {
 			} else {
 				for (const name of codeTools) expect(plan.names).toContain(name);
 				if (agent.tools) {
-					expect(external).toEqual(interviewTools);
-					for (const name of interviewTools) expect(plan.requestedTools).toContain(name);
+					expect(external).toEqual([]);
+					for (const name of interviewTools) expect(plan.names).toContain(name);
 				} else {
 					// Workers inherit all built-ins and additive extension tools, not a narrower allowlist.
 					expect(["task", "sonic"]).toContain(agent.name);

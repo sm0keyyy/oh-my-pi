@@ -1,6 +1,7 @@
 import { getComposerStyle } from "../components/composer/registry";
 import { Spacer } from "../components/spacer";
 import type { StatusLineComponent } from "../status-line/component";
+import { AskDialogComponent } from "../overlays/ask-dialog";
 import { compositeLineAt } from "../render/composite";
 import { type ExtensionLinkLabel, extensionLinkLabels, linkHintTags } from "../render/extension-links";
 import type { StatusLineSession } from "../status-line/host";
@@ -112,8 +113,8 @@ export interface RuntimeChildrenOptions {
 	readonly nativeTail?: readonly Container[];
 	/**
 	 * Below-transcript roots the user opens and closes (the editor surface that
-	 * drafts and dialogs swap into, docked reports). Their rows never become
-	 * part of the post-run chrome floor, so collapsing them refills the screen.
+	 * drafts and dialogs swap into, docked reports). Normally their rows stay out
+	 * of the post-run floor; an Ask over a partly committed finished reply is billed.
 	 */
 	readonly transientChrome?: readonly Component[];
 	/**
@@ -338,6 +339,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	// A streaming block has billed self-clearing chrome. Hold that bill through
 	// finalize so the rows it covered are retired, not sliced, after the block settles.
 	#billSelfClearing = false;
+	// Preserve a finalized reply's history/live seam while transient chrome expands.
+	#billTransient = false;
 	#runActive = false;
 	#transientChrome: ReadonlySet<Component> = new Set();
 	#selfClearingChrome: ReadonlySet<Component> = new Set();
@@ -485,12 +488,29 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			ends.push({ root, end: after.length });
 		}
 		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
+		const transientGrew = transientRows > this.#lastTransientRows;
 		const transientFloor = this.#syncTransientFloor(transientRows);
-		// Eligible chrome excludes user-driven transient rows above their resting height and every
-		// self-clearing row; contraction, floor and rebaseline all use it.
-		const eligibleChrome = after.length - (transientRows - transientFloor) - selfClearingRows;
+		const promoteTransient =
+			!this.#preferences.completeScrollback &&
+			transientGrew &&
+			transientRows > transientFloor &&
+			(this.#billTransient ||
+				(this.ui.getFocused() instanceof AskDialogComponent && transcript.hasPartlyCommittedFinalizedHead()));
+		if (promoteTransient) this.#billTransient = true;
+		// A finalized reply already split across history and the viewport cannot
+		// hide displaced rows: that would punch a hole through its middle. Bill
+		// this expansion immediately, then use the settled-chrome contraction path
+		// to move the input up without replaying history or leaving a blank band.
+		const eligibleChrome =
+			after.length - (this.#billTransient ? 0 : transientRows - transientFloor) - selfClearingRows;
 		const promotedChromeContracted = this.#chromeFloorPromoted && eligibleChrome < (this.#chromeFloor ?? 0);
-		this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
+		if (promoteTransient) {
+			this.#chromeFloor = eligibleChrome;
+			this.#chromeFloorPromoted = true;
+		} else {
+			this.#chromeFloor = Math.min(this.#chromeFloor ?? eligibleChrome, eligibleChrome);
+		}
+		if (transientRows === transientFloor) this.#billTransient = false;
 		const streaming = transcript.hasActiveBlock();
 		this.#rebaselineChromeFloor(this.#runActive || streaming, eligibleChrome);
 		const belowFloor = this.#preferences.completeScrollback ? after.length : this.#chromeFloor;
@@ -1280,6 +1300,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#chromeFloor = undefined;
 		this.#chromeFloorPromoted = false;
 		this.#billSelfClearing = false;
+		this.#billTransient = false;
 		this.#resetIdleChrome();
 		this.#nativeDock = options.nativeDock;
 		this.#nativeTail = options.nativeTail ?? [];

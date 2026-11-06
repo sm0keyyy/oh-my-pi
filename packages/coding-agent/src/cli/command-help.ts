@@ -178,5 +178,5 @@ export const usageHelp = {
 } satisfies CommandMetadata;
 
 export const worktreeHelp = {
-	description: "Add, list, or clear git worktrees (clone-first when enabled)",
+	description: "Add, list, sweep (read-only), or clear git worktrees (clone-first when enabled)",
 } satisfies CommandMetadata;

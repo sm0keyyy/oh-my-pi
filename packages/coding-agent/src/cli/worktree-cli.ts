@@ -272,7 +272,7 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<{ 
 // Scanner
 // ───────────────────────────────────────────────────────────────────────────
 
-async function scanWorktrees(): Promise<WorktreeEntry[]> {
+export async function scanWorktrees(): Promise<WorktreeEntry[]> {
 	const root = getWorktreesDir();
 	let topLevel: string[];
 	try {

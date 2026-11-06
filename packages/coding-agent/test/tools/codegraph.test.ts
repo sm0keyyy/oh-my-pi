@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as indexConfig from "../../src/codegraph-index/config";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ArtifactManager } from "@oh-my-pi/pi-coding-agent/session/artifacts";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -15,6 +16,7 @@ let root: string;
 let cwd: string;
 let executable: string;
 let previousPath: string | undefined;
+let previousAgentDir: string | undefined;
 
 function session(overrides: Record<string, unknown> = {}): ToolSession {
 	const artifacts = new ArtifactManager(path.join(temp, "artifacts"));
@@ -40,6 +42,8 @@ beforeEach(async () => {
 	cwd = path.join(temp, "linked checkout", "src");
 	executable = path.join(temp, "bin", "codegraph");
 	previousPath = process.env.PATH;
+	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = temp;
 	process.env.PATH = `${path.dirname(executable)}${path.delimiter}${previousPath ?? ""}`;
 	const gitDir = path.join(root, ".git", "worktrees", "linked");
 	await fs.mkdir(gitDir, { recursive: true });
@@ -55,6 +59,8 @@ beforeEach(async () => {
 afterEach(async () => {
 	if (previousPath === undefined) delete process.env.PATH;
 	else process.env.PATH = previousPath;
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	await removeWithRetries(temp);
 });
 
@@ -179,5 +185,26 @@ describe("codegraph", () => {
 		expect(result.details?.meta?.truncation?.artifactId).toBeDefined();
 		const saved = await session().getArtifactManager!()!.getPath(result.details!.meta!.truncation!.artifactId!);
 		expect(await Bun.file(saved!).text()).toBe("source line\n".repeat(20_000));
+	});
+
+	it("offers an unindexed managed worktree and builds only the main checkout before answering", async () => {
+		await fs.unlink(path.join(root, ".codegraph", "codegraph.db"));
+		await Bun.write(path.join(temp, "codegraph-index.json"), JSON.stringify({ roots: [root] }));
+		await cli(`
+			if (process.argv[2] === "init") {
+				await Bun.write(process.argv[3] + "/.codegraph/codegraph.db", "ready");
+			} else console.log(JSON.stringify(process.argv.slice(2)));
+		`);
+		const quiet = spyOn(indexConfig, "quietCheckPath").mockReturnValue("/usr/bin/false");
+		try {
+			const tool = await CodegraphTool.createIf(session());
+			expect(tool).not.toBeNull();
+			const result = await tool!.execute("first", { op: "files" });
+			expect(JSON.parse(result.content.find(part => part.type === "text")!.text)).toEqual(["files", "-p", root]);
+			expect(await Bun.file(path.join(root, ".codegraph", "codegraph.db")).exists()).toBe(true);
+			expect(await Bun.file(path.join(temp, "linked checkout", ".codegraph", "codegraph.db")).exists()).toBe(false);
+		} finally {
+			quiet.mockRestore();
+		}
 	});
 });

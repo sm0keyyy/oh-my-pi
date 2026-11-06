@@ -1268,3 +1268,51 @@ test("Cancel retains the aborted rail row when refresh omits it from the roster"
 	expect(rail).toContain("aborted");
 	expect(rail).toContain("retained task details");
 });
+
+test("session_changed removes the previous session's finished rows from the rail", async () => {
+	let transport: FixtureStream | undefined;
+	let isCurrentSession = false;
+	const client = fixtureClient((stream, command, respond) => {
+		transport = stream;
+		if (command.type === "get_state") {
+			respond({ ...fixtureState, sessionId: isCurrentSession ? "current" : "previous" });
+			return true;
+		}
+		if (command.type === "get_subagents") {
+			respond({
+				subagents: isCurrentSession
+					? [{ id: "current-worker", agent: "task", status: "running" }]
+					: [{ id: "previous-completed", agent: "task", status: "completed", followUpAvailable: true }],
+			});
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected" && snapshot.agents.length === 1);
+	transport!.send(
+		JSON.stringify({
+			type: "subagent_lifecycle",
+			payload: { subagentId: "previous-aborted", agent: "task", status: "aborted" },
+		}),
+	);
+	await waitForSnapshot(client, snapshot => snapshot.agents.length === 2);
+	expect(renderRail(client)).toContain("previous-completed");
+	expect(renderRail(client)).toContain("previous-aborted");
+	isCurrentSession = true;
+	transport!.send(JSON.stringify({ type: "session_changed", sessionId: "current" }));
+	await waitForSnapshot(
+		client,
+		snapshot =>
+			snapshot.phase === "connected" &&
+			snapshot.state.sessionId === "current" &&
+			snapshot.agents.some(agent => agent.id === "current-worker"),
+	);
+	await client.refresh();
+	expect(client.getSnapshot().agents).toEqual([
+		{ id: "current-worker", agent: "task", status: "running", followUpAvailable: false },
+	]);
+	const rail = renderRail(client);
+	expect(rail).toContain("current-worker");
+	expect(rail).not.toContain("previous-completed");
+	expect(rail).not.toContain("previous-aborted");
+});

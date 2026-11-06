@@ -758,7 +758,7 @@ export class SessionClient {
 		}
 		if (frame.type === "session_changed") {
 			this.#events = [];
-			this.#publish({ commandOutputs: [] });
+			this.#publish({ commandOutputs: [], agents: [] });
 			void this.#rebuild();
 			return;
 		}

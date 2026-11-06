@@ -43,6 +43,7 @@ import { ToolAbortError } from "./tool-errors";
 import { sessionLocalProtocolOptions } from "../internal-urls/context";
 import { cfgAskNotify, askTimeoutMs } from "../modes/settings";
 import { renderAttachmentSourceNotice } from "../session/attachment-source-notice";
+import { SUBAGENT_ASK_TIMEOUT_MS } from "../task/subagent-ask-host";
 import { cfgSpeechEnabled } from "../tts/settings";
 import { describeAttachedImagesForTextModel, shouldDescribeImagesForTextModel } from "../utils/image-vision-fallback";
 
@@ -159,12 +160,17 @@ function addRecommendedSuffix(options: AskOption[], recommendedIndex?: number): 
 	});
 }
 
-function getAutoSelectionOnTimeout(options: AskOption[], recommended?: number): string[] {
+function getAutoSelectionOnTimeout(options: AskOption[], recommended?: number, fallbackToFirst = true): string[] {
 	if (options.length === 0) return [];
-	if (typeof recommended === "number" && recommended >= 0 && recommended < options.length) {
+	if (
+		typeof recommended === "number" &&
+		Number.isInteger(recommended) &&
+		recommended >= 0 &&
+		recommended < options.length
+	) {
 		return [options[recommended]!.label];
 	}
-	return [options[0]!.label];
+	return fallbackToFirst ? [options[0]!.label] : [];
 }
 
 /** Strip "(Recommended)" suffix from a label */
@@ -196,6 +202,7 @@ interface AskSingleQuestionOptions {
 	signal?: AbortSignal;
 	initialSelection?: Pick<SelectionResult, "selectedOptions" | "customInput" | "note">;
 	navigation?: NavigationControls;
+	fallbackToFirst?: boolean;
 }
 
 interface UIContext {
@@ -469,7 +476,7 @@ async function askSingleQuestion(
 			break;
 		}
 		if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-			selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
+			selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended, options.fallbackToFirst);
 		}
 		if (navigation?.allowForward) {
 			return { selectedOptions, customInput, note, timedOut, navigation: "forward" };
@@ -477,7 +484,7 @@ async function askSingleQuestion(
 	}
 
 	if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-		selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
+		selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended, options.fallbackToFirst);
 	}
 
 	return { selectedOptions, customInput, note, timedOut };
@@ -489,6 +496,7 @@ function formatQuestionResult(result: QuestionResult): string {
 	const custom = result.customInput === undefined ? undefined : `"${result.customInput}"`;
 	if (result.selectedOptions.length === 0) {
 		if (custom !== undefined) return `${result.id}: ${custom}${noteSuffix}`;
+		if (result.timedOut) return `${result.id}: (timed out and cancelled)${noteSuffix}`;
 		return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
 	}
 	const picked = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
@@ -534,6 +542,7 @@ function formatSingleQuestionResponse(result: {
 		);
 	}
 	if (responseParts.length > 0) return responseParts.join("\n");
+	if (result.timedOut) return "Ask timed out and was cancelled";
 	return result.multi ? "User did not select any options" : "User cancelled the selection";
 }
 
@@ -657,7 +666,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<AskToolDetails>> {
 		// Headless fallback
-		if (!context?.hasUI || !context.ui) {
+		if (!context?.ui || !(context.hasUI || this.session.canPromptUser)) {
 			// A headless fork (`/tan`) keeps `ask` advertised only to share the parent's
 			// prompt-cache prefix. Aborting would end its run with no final answer, and the
 			// parent would receive an empty result; let the model put the question there.
@@ -755,7 +764,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		// Determine timeout based on settings and plan mode
 		const planModeEnabled = this.session.getPlanModeState?.()?.enabled ?? false;
 		const settingsTimeout = askTimeoutMs(this.session.settings) ?? null;
-		const timeout = planModeEnabled ? null : settingsTimeout;
+		const isSubagent = (this.session.taskDepth ?? 0) > 0;
+		const timeout = isSubagent ? SUBAGENT_ASK_TIMEOUT_MS : planModeEnabled ? null : settingsTimeout;
 		// A message the user queues closes the dialog without cancelling the turn: they moved on, and the
 		// message reaches the agent at the batch boundary. Peer IRC, asides and finished background jobs are
 		// not the user's answer, so the dialog stays open for it.
@@ -846,7 +856,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						question: question.question,
 						options: question.options.map(option => option.label),
 						multi: question.multi ?? false,
-						selectedOptions: result.selectedOptions,
+						selectedOptions:
+							isSubagent && result.timedOut
+								? getAutoSelectionOnTimeout(question.options, question.recommended, false)
+								: result.selectedOptions,
 						customInput:
 							result.customInput === undefined
 								? undefined
@@ -917,6 +930,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						signal: dialogSignal,
 						initialSelection: options?.previous,
 						navigation: options?.navigation,
+						fallbackToFirst: !isSubagent,
 					},
 				);
 				return { optionLabels, selectedOptions, customInput, note, navigation, cancelled, timedOut };

@@ -1,0 +1,213 @@
+import { afterEach, beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
+import * as path from "node:path";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type {
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
+	ExtensionUIDialogOptions,
+	ExtensionUIContext,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import {
+	registerSubagentAskHost,
+	subagentAskHostFor,
+	type SubagentAskHost,
+	unregisterSubagentAskHost,
+} from "@oh-my-pi/pi-coding-agent/task/subagent-ask-host";
+import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
+import { canUseInteractiveBashPty } from "@oh-my-pi/pi-coding-agent/tools/bash-pty-selection";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
+
+interface Dialog {
+	questions: ExtensionAskDialogQuestion[];
+	options: ExtensionUIDialogOptions | undefined;
+	resolve(value: ExtensionAskDialogResult | undefined): void;
+}
+
+function fakeUi(deferPresentation = false) {
+	const dialogs: Dialog[] = [];
+	const opened = Promise.withResolvers<void>();
+	// Only the ask surface is exercised by this test double.
+	const ui = {
+		timeoutStartsOnPresentation: true,
+		askDialog: (questions: ExtensionAskDialogQuestion[], options?: ExtensionUIDialogOptions) => {
+			const { promise, resolve } = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+			dialogs.push({ questions, options, resolve });
+			options?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+			if (!deferPresentation) options?.onTimeoutStart?.();
+			opened.resolve();
+			return promise;
+		},
+	} as ExtensionUIContext;
+	return { ui, dialogs, opened: opened.promise };
+}
+
+const questions: ExtensionAskDialogQuestion[] = [
+	{ id: "db", question: "Which database?", header: "Storage", options: [{ label: "SQLite" }, { label: "Postgres" }] },
+];
+
+function answer(dialog: Dialog, label: string): ExtensionAskDialogResult {
+	return {
+		kind: "submit",
+		results: dialog.questions.map(question => ({
+			id: question.id,
+			question: question.question,
+			options: question.options.map(option => option.label),
+			multi: question.multi ?? false,
+			selectedOptions: [label],
+		})),
+	};
+}
+
+const hosts: SubagentAskHost[] = [];
+
+beforeAll(async () => {
+	await initTheme(false);
+});
+
+afterEach(() => {
+	for (const host of hosts.splice(0)) unregisterSubagentAskHost(host);
+	vi.restoreAllMocks();
+});
+
+describe("subagent ask host", () => {
+	for (const winner of ["main", "pane"] as const) {
+		it(`returns the ${winner} answer through a real SDK subagent and closes the other dialog`, async () => {
+			const temp = await TempDir.create("omp-subagent-ask-");
+			const authStorage = createInMemoryAuthStorage();
+			const main = fakeUi();
+			const pane = fakeUi();
+			const bus = new EventBus();
+			const host = registerSubagentAskHost({ main: main.ui, subagentEventBus: bus, mirror: () => pane.ui });
+			hosts.push(host);
+			const execute = spyOn(AskTool.prototype, "execute");
+			const mock = createMockModel({
+				responses: [
+					{ content: [{ type: "toolCall", id: "ask-db", name: "ask", arguments: { questions } }] },
+					{ content: ["Choice received."] },
+				],
+			});
+			authStorage.keys.setRuntime(mock.provider, "mock-test-key");
+			const { session } = await createAgentSession({
+				cwd: temp.path(),
+				agentDir: path.join(temp.path(), "agent"),
+				sessionManager: SessionManager.inMemory(temp.path()),
+				model: mock,
+				modelRegistry: new ModelRegistry(authStorage),
+				settings: Settings.isolated({
+					"tools.approvalMode": "yolo",
+					"speech.enabled": false,
+					"compaction.enabled": false,
+					"advisor.enabled": false,
+					"todo.enabled": false,
+				}),
+				disableExtensionDiscovery: true,
+				skills: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				toolNames: ["ask"],
+				enableMCP: false,
+				enableLsp: false,
+				enableIrc: false,
+				hasUI: false,
+				taskDepth: 1,
+				agentId: "DatabaseWorker",
+				agentDisplayName: "Database worker",
+				agentRegistry: new AgentRegistry(),
+				subagentEventBus: bus,
+			});
+			try {
+				expect(session.getEnabledToolNames()).toContain("ask");
+				session.agent.streamFn = mock.stream;
+				const turn = session.prompt("Choose the database");
+				await Promise.all([main.opened, pane.opened]);
+				expect(main.dialogs[0]!.questions[0]!.header).toContain("Database worker");
+				const context = execute.mock.calls[0]?.[4];
+				expect(context?.hasUI).toBe(false);
+				expect(canUseInteractiveBashPty(true, context)).toBe(false);
+				const winning = winner === "main" ? main : pane;
+				const losing = winner === "main" ? pane : main;
+				winning.dialogs[0]!.resolve(answer(winning.dialogs[0]!, "Postgres"));
+				await turn;
+				expect(losing.dialogs[0]!.options?.signal?.aborted).toBe(true);
+				const result = session.messages.find(
+					message => message.role === "toolResult" && message.toolName === "ask",
+				);
+				expect(result).toMatchObject({ details: { selectedOptions: ["Postgres"] }, isError: false });
+			} finally {
+				unregisterSubagentAskHost(host);
+				await session.dispose();
+				authStorage.close();
+				await temp.remove();
+			}
+		});
+	}
+
+	it("queue presents in call order and mirrors a pane opened while the ask waits", async () => {
+		const main = fakeUi(true);
+		const pane = fakeUi();
+		let paneOpen = false;
+		const host = registerSubagentAskHost({
+			main: main.ui,
+			subagentEventBus: new EventBus(),
+			mirror: id => (paneOpen && id === "second" ? pane.ui : undefined),
+		});
+		hosts.push(host);
+		const first = host.uiFor("first", "First").askDialog!(questions);
+		const second = host.uiFor("second", "Second").askDialog!(questions);
+		expect(main.dialogs.map(dialog => dialog.questions[0]!.header)).toEqual(["First: Storage"]);
+		main.dialogs[0]!.options?.onTimeoutStart?.();
+		main.dialogs[0]!.resolve(answer(main.dialogs[0]!, "SQLite"));
+		await first;
+		expect(main.dialogs.map(dialog => dialog.questions[0]!.header)).toEqual(["First: Storage", "Second: Storage"]);
+		main.dialogs[1]!.options?.onTimeoutStart?.();
+		paneOpen = true;
+		host.mirrorAvailable("second");
+		host.mirrorAvailable("second");
+		expect(pane.dialogs).toHaveLength(1);
+		pane.dialogs[0]!.resolve(answer(pane.dialogs[0]!, "Postgres"));
+		expect(await second).toMatchObject({ kind: "submit", results: [{ selectedOptions: ["Postgres"] }] });
+		expect(main.dialogs[1]!.options?.signal?.aborted).toBe(true);
+	});
+
+	it("queue drops aborted requests and disposal cancels active and queued dialogs", async () => {
+		const main = fakeUi();
+		const bus = new EventBus();
+		const host = registerSubagentAskHost({ main: main.ui, subagentEventBus: bus });
+		hosts.push(host);
+		const controller = new AbortController();
+		const first = host.uiFor("first", "First").askDialog!(questions);
+		const cancelled = host.uiFor("cancel", "Cancel").askDialog!(questions, { signal: controller.signal });
+		const last = host.uiFor("external-interview", "External interview").askDialog!(questions);
+		controller.abort();
+		expect(await cancelled).toBeUndefined();
+		host.dispose();
+		expect(await first).toBeUndefined();
+		expect(await last).toBeUndefined();
+		expect(main.dialogs).toHaveLength(1);
+		expect(main.dialogs[0]!.options?.signal?.aborted).toBe(true);
+		expect(subagentAskHostFor(bus)).toBeUndefined();
+	});
+
+	it("queue treats Esc as cancellation on either surface", async () => {
+		const main = fakeUi();
+		const pane = fakeUi();
+		const host = registerSubagentAskHost({ main: main.ui, subagentEventBus: new EventBus(), mirror: () => pane.ui });
+		hosts.push(host);
+		for (const winner of [main, pane]) {
+			const pending = host.uiFor("worker", "Worker").askDialog!(questions);
+			winner.dialogs.at(-1)!.resolve(undefined);
+			expect(await pending).toBeUndefined();
+			expect(main.dialogs.at(-1)!.options?.signal?.aborted).toBe(true);
+			expect(pane.dialogs.at(-1)!.options?.signal?.aborted).toBe(true);
+		}
+	});
+});

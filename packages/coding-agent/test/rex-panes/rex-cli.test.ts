@@ -27,7 +27,7 @@ describe("Rex CLI", () => {
 			blockId: "b1",
 		});
 		expect(await rex.split("s1", "b1", "right", "second", argv)).toEqual({ blockId: "b2" });
-		expect(await rex.newWindow("s1", "fifth", argv)).toEqual({ windowId: "w2", blockId: "b3" });
+		expect(await rex.newWindow("s1", "fifth", "omp: fifth", argv)).toEqual({ windowId: "w2", blockId: "b3" });
 		await rex.closeBlock("s1", "b2");
 		await rex.renameSession("s1", "omp: first +2");
 		await rex.killSession("s1");
@@ -63,7 +63,7 @@ describe("Rex CLI", () => {
 				"--",
 				...argv,
 			],
-			["--autostart=false", "block", "rename", "-s", "s1", "b3", "fifth"],
+			["--autostart=false", "block", "rename", "-s", "s1", "b3", "omp: fifth"],
 			["--autostart=false", "block", "close", "-s", "s1", "b2"],
 			["--autostart=false", "session", "rename", "s1", "omp: first +2"],
 			["--autostart=false", "kill", "s1"],
@@ -71,6 +71,23 @@ describe("Rex CLI", () => {
 		expect(timeouts).toEqual(Array(8).fill(10_000));
 	});
 
+	it("converts split fractions to whole percentages and rejects ratios outside the CLI range before launching", async () => {
+		const calls: string[][] = [];
+		const rex = createRexCli({
+			binary: "rex",
+			run: async args => {
+				calls.push(args);
+				return { exitCode: 0, stdout: '{"block_ids":["b2"]}', stderr: "" };
+			},
+		});
+		await rex.split("s1", "b1", "right", "omp: ratio", ["/relay"], 0.405);
+		const ratioIndex = calls[0]!.indexOf("--ratio");
+		expect(calls[0]!.slice(ratioIndex, ratioIndex + 2)).toEqual(["--ratio", "41"]);
+		for (const ratio of [0, 1, NaN, 0.001]) {
+			await expect(rex.split("s1", "b1", "right", "omp: invalid", ["/relay"], ratio)).rejects.toThrow();
+		}
+		expect(calls).toHaveLength(1);
+	});
 	it("creates background layers, floats and focuses blocks, and returns nonzero terminal exit codes", async () => {
 		const calls: string[][] = [];
 		const timeouts: number[] = [];

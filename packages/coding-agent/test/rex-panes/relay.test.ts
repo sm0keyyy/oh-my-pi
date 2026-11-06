@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { PtySession } from "@oh-my-pi/pi-natives";
+import * as fs from "node:fs/promises";
+import { Process, PtySession } from "@oh-my-pi/pi-natives";
 import { newPaneToken, startPaneServer } from "../../src/rex-panes/pane-server";
 import { buildRelay, until } from "./helpers/build-relay";
 
@@ -9,6 +10,8 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 		const server = await startPaneServer({ dir: relay.dir });
 		const pty = new PtySession();
 		const token = newPaneToken();
+		const credentialPath = await server.prepare(token);
+		expect(credentialPath.includes(token)).toBe(false);
 		const expected = server.expect(token, 5000);
 		let output = "";
 		let received = 0;
@@ -16,7 +19,13 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 		let settled = false;
 		const run = pty
 			.startArgv(
-				{ application: relay.source, args: [server.socketPath, token], cols: 100, rows: 30, timeoutMs: 20000 },
+				{
+					application: relay.source,
+					args: [server.socketPath, credentialPath],
+					cols: 100,
+					rows: 30,
+					timeoutMs: 20000,
+				},
 				(error, chunk) => {
 					if (error) streamError = error;
 					received += Buffer.byteLength(chunk);
@@ -28,6 +37,12 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 			});
 		try {
 			const connection = await expected;
+			expect(await Bun.file(credentialPath).exists()).toBe(false);
+			const relayProcess = Process.fromPid(connection.relayPid);
+			if (!relayProcess) throw new Error("Relay process disappeared before argv inspection");
+			const argv = relayProcess.args();
+			expect(argv.some(argument => argument.includes(token))).toBe(false);
+			expect(argv.includes(credentialPath)).toBe(true);
 			let input = "";
 			let dimensions = "";
 			connection.attach({
@@ -87,6 +102,7 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 		const server = await startPaneServer({ dir: relay.dir });
 		const pty = new PtySession();
 		const token = newPaneToken();
+		const credentialPath = await server.prepare(token);
 		const expected = server.expect(token, 5000);
 		let output = "";
 		let settled = false;
@@ -100,7 +116,7 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 						"relay-test",
 						relay.source,
 						server.socketPath,
-						token,
+						credentialPath,
 					],
 					timeoutMs: 5000,
 				},
@@ -133,4 +149,32 @@ describe.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("C pa
 			await relay.dispose();
 		}
 	}, 10000);
+
+	it("rejects public or symlinked credential files before connecting", async () => {
+		const relay = await buildRelay();
+		const server = await startPaneServer({ dir: relay.dir });
+		try {
+			const credentialPath = await server.prepare(newPaneToken());
+			await fs.chmod(credentialPath, 0o644);
+			const publicFile = await new PtySession().startArgv({
+				application: relay.source,
+				args: [server.socketPath, credentialPath],
+				timeoutMs: 5000,
+			});
+			expect(publicFile.exitCode).toBe(1);
+			await fs.chmod(credentialPath, 0o600);
+			const link = `${credentialPath}.link`;
+			await fs.symlink(credentialPath, link);
+			const symlink = await new PtySession().startArgv({
+				application: relay.source,
+				args: [server.socketPath, link],
+				timeoutMs: 5000,
+			});
+			expect(symlink.exitCode).toBe(1);
+			expect(await Bun.file(credentialPath).exists()).toBe(true);
+		} finally {
+			await server.close();
+			await relay.dispose();
+		}
+	});
 });

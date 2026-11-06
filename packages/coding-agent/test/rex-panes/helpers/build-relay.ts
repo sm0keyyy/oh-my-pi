@@ -33,9 +33,9 @@ export function hello(token: string): Buffer {
 	return frame(1, payload);
 }
 
-export async function until(predicate: () => boolean): Promise<void> {
+export async function until(predicate: () => boolean | Promise<boolean>): Promise<void> {
 	const deadline = Date.now() + 5000;
-	while (!predicate()) {
+	while (!(await predicate())) {
 		if (Date.now() >= deadline) throw new Error("Pane test condition timed out");
 		// Native PTY and socket callbacks need the real event loop, not a fake clock.
 		await Bun.sleep(5);

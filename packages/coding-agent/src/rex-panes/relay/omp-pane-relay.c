@@ -8,6 +8,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -46,15 +47,35 @@ static int retryable(void) {
     return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK;
 }
 
+static int read_credential(const char *file_path, unsigned char token[64]) {
+    int file = open(file_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (file < 0) return 0;
+    struct stat info;
+    int valid = fstat(file, &info) == 0 && S_ISREG(info.st_mode) &&
+        info.st_uid == getuid() && (info.st_mode & 07777) == 0600 &&
+        info.st_nlink == 1 && info.st_size == 64;
+    size_t offset = 0;
+    while (valid && offset < 64) {
+        ssize_t count = read(file, token + offset, 64 - offset);
+        if (count > 0) offset += (size_t)count;
+        else if (count == 0 || errno != EINTR) valid = 0;
+    }
+    for (size_t i = 0; valid && i < 64; i++) {
+        if (!((token[i] >= '0' && token[i] <= '9') || (token[i] >= 'a' && token[i] <= 'f'))) valid = 0;
+    }
+    if (valid && unlink(file_path) < 0) valid = 0;
+    close(file);
+    return valid;
+}
+
 int main(int argc, char **argv) {
     struct sockaddr_un address = {0};
-    if (argc != 3 || strlen(argv[1]) >= sizeof(address.sun_path) || strlen(argv[2]) != 64) {
-        fprintf(stderr, "usage: omp-pane-relay <socket-path> <token>\n");
+    if (argc != 3 || strlen(argv[1]) >= sizeof(address.sun_path)) {
+        fprintf(stderr, "usage: omp-pane-relay <socket-path> <credential-file>\n");
         return 1;
     }
-    for (size_t i = 0; i < 64; i++) {
-        if (!((argv[2][i] >= '0' && argv[2][i] <= '9') || (argv[2][i] >= 'a' && argv[2][i] <= 'f'))) return 1;
-    }
+    unsigned char token[64];
+    if (!read_credential(argv[2], token)) return 1;
     struct termios saved;
     if (tcgetattr(STDIN_FILENO, &saved) < 0 || !isatty(STDOUT_FILENO)) return 1;
     int input_flags = fcntl(STDIN_FILENO, F_GETFL);
@@ -89,7 +110,7 @@ int main(int argc, char **argv) {
     put16(to_host + 5, 1);
     dimensions(to_host + 7);
     put32(to_host + 11, (uint32_t)getpid());
-    memcpy(to_host + 15, argv[2], 64);
+    memcpy(to_host + 15, token, sizeof(token));
     size_t host_start = 0, host_end = 79;
     size_t tty_start = 0, tty_end = 0;
     while (!stopped) {

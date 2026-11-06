@@ -23,14 +23,19 @@ export interface PaneConnection {
 }
 export interface PaneServer {
 	readonly socketPath: string;
+	/** Pass the returned one-shot file path, never the token, to the relay. */
+	prepare(token: string): Promise<string>;
 	expect(token: string, timeoutMs: number): Promise<PaneConnection>;
 	close(): Promise<void>;
 }
 
 const MAX_PAYLOAD = 65536;
 const MAX_OUTPUT = 1024 * 1024;
+const MAX_UNAUTHENTICATED_CONNECTIONS = 8;
+const MAX_CONNECTIONS = 64;
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 type Pending = { token: Buffer; resolve(connection: PaneConnection): void; reject(error: Error): void; timer: Timer };
+type Credential = { path: string; ready: Promise<string>; cleanup?: Promise<void> };
 type QueuedFrame = { type: number; payload: Buffer };
 
 export function newPaneToken(): string {
@@ -42,9 +47,40 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 	await ensurePrivateDir(dir);
 	const socketPath = await resolveSocketEndpoint(dir, `${process.pid}-${randomBytes(6).toString("hex")}`, os.tmpdir());
 	const pending = new Map<string, Pending>();
+	const credentials = new Map<string, Credential>();
+	const removeCredential = (token: string): Promise<void> => {
+		const credential = credentials.get(token);
+		if (!credential) return Promise.resolve();
+		if (!credential.cleanup) {
+			// prepare reports a write failure; cleanup still removes any partial file.
+			credential.cleanup = credential.ready
+				.then(
+					() => credential.path,
+					() => credential.path,
+				)
+				.then(filePath => fs.rm(filePath, { force: true }))
+				.then(
+					() => {
+						if (credentials.get(token) === credential) credentials.delete(token);
+					},
+					error => {
+						credential.cleanup = undefined;
+						throw error;
+					},
+				);
+		}
+		return credential.cleanup;
+	};
 	const sockets = new Set<net.Socket>();
+	let unauthenticatedConnections = 0;
 	let closing: Promise<void> | undefined;
 	const server = net.createServer({ highWaterMark: 1 }, socket => {
+		socket.on("error", () => socket.destroy()); // Peer errors close only this pane.
+		if (unauthenticatedConnections >= MAX_UNAUTHENTICATED_CONNECTIONS || sockets.size >= MAX_CONNECTIONS) {
+			socket.destroy();
+			return;
+		}
+		unauthenticatedConnections++;
 		sockets.add(socket);
 		const frame = Buffer.allocUnsafe(MAX_PAYLOAD + 5);
 		let used = 0;
@@ -95,8 +131,12 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 					return;
 				}
 				authenticated = true;
+				unauthenticatedConnections--;
 				clearTimeout(helloTimer);
 				pending.delete(match[0]);
+				void removeCredential(match[0]).catch(error =>
+					logger.warn("rex-panes: credential cleanup failed", { error: String(error) }),
+				);
 				clearTimeout(match[1].timer);
 				match[1].resolve({
 					columns: payload.readUInt16BE(2),
@@ -163,9 +203,9 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 			}
 		});
 		socket.on("drain", () => handler?.drained());
-		socket.on("error", () => socket.destroy()); // Peer errors close only this pane.
 		socket.on("close", () => {
 			clearTimeout(helloTimer);
+			if (!authenticated) unauthenticatedConnections--;
 			sockets.delete(socket);
 			socket.removeAllListeners("data");
 			queued = [];
@@ -192,6 +232,32 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 	server.on("error", error => logger.warn("rex-panes: socket listener failed", { error: String(error) }));
 	return {
 		socketPath,
+		async prepare(token) {
+			if (closing || !TOKEN_PATTERN.test(token)) throw new Error("Invalid pane credential or server closed");
+			let credential = credentials.get(token);
+			if (!credential) {
+				const filePath = path.join(dir, `relay-${randomBytes(12).toString("hex")}.credential`);
+				const ready = fs.open(filePath, "wx", 0o600).then(async file => {
+					try {
+						await file.writeFile(token, "ascii");
+						await file.chmod(0o600);
+						return filePath;
+					} finally {
+						await file.close();
+					}
+				});
+				credential = { path: filePath, ready };
+				credentials.set(token, credential);
+			}
+			try {
+				const filePath = await credential.ready;
+				if (closing || credential.cleanup) throw new Error("Pane credential expired");
+				return filePath;
+			} catch (error) {
+				await removeCredential(token);
+				throw error;
+			}
+		},
 		expect(token, timeoutMs) {
 			if (
 				closing ||
@@ -205,6 +271,9 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 			const result = Promise.withResolvers<PaneConnection>();
 			const timer = setTimeout(() => {
 				pending.delete(token);
+				void removeCredential(token).catch(error =>
+					logger.warn("rex-panes: credential cleanup failed", { error: String(error) }),
+				);
 				result.reject(new Error("Pane HELLO timed out"));
 			}, timeoutMs);
 			pending.set(token, {
@@ -217,6 +286,8 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 		},
 		close() {
 			if (closing) return closing;
+			const complete = Promise.withResolvers<void>();
+			closing = complete.promise;
 			for (const entry of pending.values()) {
 				clearTimeout(entry.timer);
 				entry.reject(new Error("Pane server closed"));
@@ -224,8 +295,11 @@ export async function startPaneServer(options: { dir?: string } = {}): Promise<P
 			pending.clear();
 			for (const socket of sockets) socket.destroy();
 			const closed = Promise.withResolvers<void>();
-			closing = closed.promise;
 			server.close(error => (error ? closed.reject(error) : closed.resolve()));
+			Promise.all([closed.promise, ...Array.from(credentials.keys(), removeCredential)]).then(
+				() => complete.resolve(),
+				complete.reject,
+			);
 			return closing;
 		},
 	};

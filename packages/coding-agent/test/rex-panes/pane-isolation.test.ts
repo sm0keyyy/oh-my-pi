@@ -11,13 +11,14 @@ import * as extensionLinks from "@oh-my-pi/pi-tui/render/extension-links";
 import { Text } from "@oh-my-pi/pi-tui";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
+import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import * as cfg from "../../src/internal-urls/cfg-protocol";
 import * as autoQa from "../../src/tools/report-tool-issue";
 import * as title from "../../src/utils/title-generator";
 import { HistoryStorage } from "../../src/session/history-storage";
 import { StreamPublisher } from "../../src/stream/publisher";
-import { createPaneView } from "../../src/rex-panes/pane-view";
+import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
 import { InteractiveMode } from "../../src/modes/interactive-mode";
 import * as rpcSocket from "../../src/modes/rpc/rpc-socket";
 import { cfgRpcSocketEnabled } from "../../src/modes/rpc/settings";
@@ -44,10 +45,14 @@ afterEach(() => {
 test("run status stays on the pane stream instead of the main reporter", async () => {
 	const fixture = createPaneSessionFixture();
 	const terminal = new RecordingTerminal(100, 30);
-	const mainWrite = vi.spyOn(tui, "writeTerminalSequence");
-	const titleReport = vi.spyOn(title, "setTerminalTitleState");
-	const view = await createPaneView({ session: fixture.session, agentId: "status", terminal, onSubmit() {} });
+	const previousHeadless = setTerminalHeadless(false);
+	const ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+	const mainWrite = vi.spyOn(tui, "writeTerminalSequence").mockImplementation(() => {});
+	const titleReport = vi.spyOn(title, "setTerminalTitleState").mockImplementation(() => {});
+	let view: PaneView | undefined;
 	try {
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		view = await createPaneView({ session: fixture.session, agentId: "status", terminal, onSubmit() {} });
 		const started = Promise.withResolvers<void>();
 		const unsubscribe = fixture.session.subscribe(event => {
 			if (event.type === "agent_start") started.resolve();
@@ -55,15 +60,21 @@ test("run status stays on the pane stream instead of the main reporter", async (
 		const run = fixture.session.prompt("Report pane activity");
 		await started.promise;
 		await terminal.waitForRender();
-		expect(terminal.output.join("")).toContain("\x1b]7501;state=working");
 		expect(mainWrite).not.toHaveBeenCalled();
+		expect(terminal.output.join("")).toContain("\x1b]7501;state=working");
 		expect(titleReport).not.toHaveBeenCalled();
 		fixture.finish();
 		await run;
 		unsubscribe();
 	} finally {
-		await view.dispose();
-		await fixture.close();
+		try {
+			await view?.dispose();
+			await fixture.close();
+		} finally {
+			if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
+			else Reflect.deleteProperty(process.stdout, "isTTY");
+			setTerminalHeadless(previousHeadless);
+		}
 	}
 });
 

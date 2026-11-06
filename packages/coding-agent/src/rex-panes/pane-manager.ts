@@ -22,6 +22,7 @@ export interface PaneManagerDeps {
 	socketPath: string;
 	relayPath: string;
 	newToken(): string;
+	prepareToken(token: string): Promise<string>;
 	openPane(agentId: string, session: AgentSession, token: string): Promise<OpenPane>;
 	onPaneOpened(agentId: string): void;
 }
@@ -202,7 +203,12 @@ class Manager implements PaneManager {
 		const sessionId = group.sessionId;
 		group.sessionId = undefined;
 		group.label = undefined;
-		await this.deps.rex.killSession(sessionId);
+		try {
+			await this.deps.rex.killSession(sessionId);
+		} finally {
+			// Request collection of closed pane trees without blocking the main TUI.
+			Bun.gc(false);
+		}
 	}
 
 	async #label(group: Group): Promise<void> {
@@ -238,7 +244,7 @@ class Manager implements PaneManager {
 				pane => ({ pane }),
 				error => ({ error }),
 			);
-			const argv = [this.deps.relayPath, this.deps.socketPath, token];
+			const argv = [this.deps.relayPath, this.deps.socketPath, await this.deps.prepareToken(token)];
 			if (!group.sessionId) {
 				const label = `omp: ${group.first}`;
 				const created = await this.deps.rex.newSession(label, member.id, member.id, argv);
@@ -318,6 +324,7 @@ class Manager implements PaneManager {
 		this.#disposePromise = Promise.all([...this.#groups.values()].map(group => group.tail)).then(() => {
 			this.#members.clear();
 			this.#groups.clear();
+			Bun.gc(false);
 		});
 		return this.#disposePromise;
 	}

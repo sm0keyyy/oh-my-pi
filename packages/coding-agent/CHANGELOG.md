@@ -7,6 +7,8 @@
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
 - Added remote subagent stop, reason-bearing abort, idle follow-up, pane toggles, and opt-in plan reviews, with matching sessions-web controls and additive SDK contracts.
+- Show live subagent TUIs in background Rex panes on macOS, with pane steering, follow-ups, `/stop`, and `/abort`; control them with `rex.subagentPanes` (on by default).
+- Subagents of the main interactive TUI can ask questions in the main dialog, connected sessions clients, and their Rex pane; unanswered asks time out after 10 minutes.
 
 ### Changed
 
@@ -18,6 +20,7 @@
 ### Fixed
 
 - Subagents stopped by an operator or a soft request budget regain normal tool use when a parent message revives them.
+- Request non-blocking memory collection when a Rex subagent pane group closes or its manager shuts down.
 - Advertise backward message paging so web clients can safely connect to older TUIs.
 - Keep web transcript follow mode during streamed row resizing, detach on upward scrolling, and resume live messages when returning to the bottom.
 - Read-only delegated agents keep their capability tags when using operator-question tools or LSP; LSP workspace mutations are blocked on spawn and cold revival.

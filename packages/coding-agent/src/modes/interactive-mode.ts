@@ -238,6 +238,7 @@ import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
+import { startSubagentSurfaces } from "../rex-panes";
 import { getEditorCommand, getEditorName, openInEditor } from "../utils/external-editor";
 import { openPath } from "../utils/open";
 import { resumeCommand } from "../utils/resume-command";
@@ -1726,6 +1727,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 	#streamPublisher: StreamPublisher | undefined;
+	#subagentSurfaces: { dispose(): Promise<void> } | undefined;
 	#recorder: SessionRecorder | undefined;
 	#recorderStarting = false;
 
@@ -2202,12 +2204,31 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async suspendRpcSocket(): Promise<void> {
 		this.#rpcSocketSuspended = true;
+		const surfaces = this.#subagentSurfaces;
+		await surfaces?.dispose();
+		if (this.#subagentSurfaces === surfaces) this.#subagentSurfaces = undefined;
 		await this.stopRpcSocket();
 	}
 
 	async resumeRpcSocket(): Promise<void> {
+		const wasSuspended = this.#rpcSocketSuspended;
 		this.#rpcSocketSuspended = false;
-		if (this.isInitialized) await this.startRpcSocket(this.#rpcSocketOptions);
+		if (this.isInitialized) {
+			if (wasSuspended) this.#startSubagentSurfaces();
+			await this.startRpcSocket(this.#rpcSocketOptions);
+		}
+	}
+
+	#startSubagentSurfaces(): void {
+		const toolUi = this.getToolUIContext();
+		if (!this.embedded && !this.collabGuest && !this.#rpcSocketSuspended && toolUi) {
+			this.#subagentSurfaces = startSubagentSurfaces({
+				settings: this.settings,
+				subagentEventBus: this.#subagentEventBus ?? this.#eventBus,
+				toolUi,
+				mainTerminal: this.ui.terminal,
+			});
+		}
 	}
 
 	constructor(
@@ -2741,6 +2762,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
+				await this.#subagentSurfaces?.dispose();
 				await this.stopRpcSocket();
 				await this.#btwController.dispose();
 				await this.session.dispose({
@@ -3082,6 +3104,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Initialize hooks with TUI-based UI context
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
+		this.#startSubagentSurfaces();
 		// A live `disabledExtensions` edit suspends or resumes extensions: drop (or restore) their link
 		// schemes and renderers from the transcript.
 		const extensionRunner = this.session.extensionRunner;
@@ -8208,6 +8231,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.disposeEmbedded();
 			return;
 		}
+		void this.#subagentSurfaces?.dispose().catch(error => {
+			logger.warn("rex-panes: surface teardown failed", { error: String(error) });
+		});
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
@@ -8477,6 +8503,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Guests get goodbye and the registry entry disappears before the
 			// session is disposed, under the same still-closing progress notice.
 			await this.collabController.shutdown("host exited");
+			await this.#subagentSurfaces?.dispose();
 			await this.stopRpcSocket();
 			await this.#liveCommandController.stop();
 			await this.#btwController.dispose();

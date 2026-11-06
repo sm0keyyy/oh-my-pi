@@ -57,6 +57,8 @@ interface Member {
 interface Group {
 	first: string;
 	members: Set<Member>;
+	// Failed kills retain identities even after a new group session opens.
+	blocks: Map<string, Set<string>>;
 	nextSlot: number;
 	sessionId?: string;
 	label?: string;
@@ -101,7 +103,7 @@ class Manager implements PaneManager {
 					if (this.deps.registry.get(member.id)) return;
 					member.group.members.delete(member);
 					this.#members.delete(member.id);
-					if (member.group.members.size === 0 && !member.group.sessionId) {
+					if (member.group.members.size === 0 && !member.group.sessionId && member.group.blocks.size === 0) {
 						for (const [key, group] of this.#groups) if (group === member.group) this.#groups.delete(key);
 					}
 				});
@@ -172,7 +174,7 @@ class Manager implements PaneManager {
 			if (!group) {
 				group = this.#groups.get(key);
 				if (!group) {
-					group = { first: id, members: new Set(), nextSlot: 0, tail: Promise.resolve() };
+					group = { first: id, members: new Set(), blocks: new Map(), nextSlot: 0, tail: Promise.resolve() };
 					this.#groups.set(key, group);
 				}
 			}
@@ -225,6 +227,27 @@ class Manager implements PaneManager {
 		});
 	}
 
+	#removeRecord(group: Group, sessionId: string, blockId: string): void {
+		try {
+			removePaneRecord(blockId);
+			const blocks = group.blocks.get(sessionId);
+			blocks?.delete(blockId);
+			if (blocks?.size === 0) group.blocks.delete(sessionId);
+		} catch (error) {
+			this.#warn(error);
+		}
+	}
+
+	async #closeBlock(group: Group, sessionId: string, blockId: string): Promise<void> {
+		await this.deps.rex.closeBlock(sessionId, blockId);
+		this.#removeRecord(group, sessionId, blockId);
+	}
+
+	async #killSession(group: Group, sessionId: string): Promise<void> {
+		await this.deps.rex.killSession(sessionId);
+		for (const blockId of group.blocks.get(sessionId) ?? []) this.#removeRecord(group, sessionId, blockId);
+	}
+
 	async #killEmpty(group: Group): Promise<void> {
 		if (!group.sessionId) return;
 		for (const member of group.members) if (member.active) return;
@@ -232,7 +255,7 @@ class Manager implements PaneManager {
 		group.sessionId = undefined;
 		group.label = undefined;
 		try {
-			await this.deps.rex.killSession(sessionId);
+			await this.#killSession(group, sessionId);
 		} finally {
 			// Request collection of closed pane trees without blocking the main TUI.
 			Bun.gc(false);
@@ -253,13 +276,8 @@ class Manager implements PaneManager {
 		const active = member.active;
 		if (this.#disposed || !active) return;
 		member.active = undefined;
-		try {
-			removePaneRecord(active.blockId);
-		} catch (error) {
-			this.#warn(error);
-		}
 		if (member.group.sessionId) {
-			await this.deps.rex.closeBlock(member.group.sessionId, active.blockId).catch(error => this.#warn(error));
+			await this.#closeBlock(member.group, member.group.sessionId, active.blockId).catch(error => this.#warn(error));
 		}
 		await active.pane.dispose().catch(error => this.#warn(error));
 		await this.#killEmpty(member.group).catch(error => this.#warn(error));
@@ -302,9 +320,14 @@ class Manager implements PaneManager {
 						)
 					).blockId;
 				} else {
-					block = (await this.deps.rex.newWindow(group.sessionId, `omp: ${member.id}`, argv)).blockId;
+					block = (await this.deps.rex.newWindow(group.sessionId, member.id, `omp: ${member.id}`, argv)).blockId;
 				}
 			}
+			const sessionId = group.sessionId;
+			if (!sessionId) throw new Error("Pane group lost its session");
+			let blocks = group.blocks.get(sessionId);
+			if (!blocks) group.blocks.set(sessionId, (blocks = new Set()));
+			blocks.add(block);
 			writePaneRecord(block, { kind: "relay", pid: process.pid, group: true });
 			const result = await opened;
 			if ("error" in result) throw result.error;
@@ -316,11 +339,6 @@ class Manager implements PaneManager {
 					if (this.#disposed || member.active !== active) return;
 					member.active = undefined;
 					member.requested = false;
-					try {
-						removePaneRecord(active.blockId);
-					} catch (error) {
-						this.#warn(error);
-					}
 					this.#queue(group, async () => {
 						await active.pane.dispose().catch(error => this.#warn(error));
 						await this.#killEmpty(group);
@@ -339,15 +357,8 @@ class Manager implements PaneManager {
 			if (member.active) {
 				await this.#close(member);
 			} else {
-				if (block) {
-					try {
-						removePaneRecord(block);
-					} catch (cleanup) {
-						this.#warn(cleanup);
-					}
-				}
 				if (!this.#disposed && block && group.sessionId)
-					await this.deps.rex.closeBlock(group.sessionId, block).catch(error => this.#warn(error));
+					await this.#closeBlock(group, group.sessionId, block).catch(error => this.#warn(error));
 				const result = await opened;
 				if (result && "pane" in result) await result.pane.dispose().catch(error => this.#warn(error));
 				await this.#killEmpty(group).catch(error => this.#warn(error));
@@ -362,21 +373,16 @@ class Manager implements PaneManager {
 		this.#unsubscribers.length = 0;
 		for (const group of this.#groups.values()) {
 			this.#queue(group, async () => {
-				const sessionId = group.sessionId;
+				const sessionIds = new Set(group.blocks.keys());
+				if (group.sessionId) sessionIds.add(group.sessionId);
 				group.sessionId = undefined;
 				group.label = undefined;
-				if (sessionId) await this.deps.rex.killSession(sessionId).catch(error => this.#warn(error));
+				for (const sessionId of sessionIds)
+					await this.#killSession(group, sessionId).catch(error => this.#warn(error));
 				for (const member of group.members) {
 					member.session = null;
 					const active = member.active;
 					member.active = undefined;
-					if (active) {
-						try {
-							removePaneRecord(active.blockId);
-						} catch (error) {
-							this.#warn(error);
-						}
-					}
 					if (active) await active.pane.dispose().catch(error => this.#warn(error));
 				}
 			});

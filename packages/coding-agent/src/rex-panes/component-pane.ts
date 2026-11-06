@@ -10,7 +10,14 @@ import { SocketTerminal } from "./socket-terminal";
 
 export type PaneBounds = readonly [x: number, y: number, w: number, h: number];
 export type PanePlacement =
-	| { kind: "dock"; sessionId: string; anchorBlockId: string; direction: "right" | "below"; ratio?: number }
+	| {
+			kind: "dock";
+			sessionId: string;
+			anchorBlockId: string;
+			direction: "right" | "below";
+			/** New pane's share of the split, as a fraction from 0 to 1. */
+			ratio?: number;
+	  }
 	| { kind: "float"; sessionId: string; windowId?: string; bounds: PaneBounds };
 export interface RexLocation {
 	sessionId: string;
@@ -233,7 +240,10 @@ class HostedPane<T> implements ComponentPane<T> {
 			this.#overlay = tui.showOverlay(component, { fullscreen: true });
 			this.#unsubscribeRepaint = terminal.onRepaintNeeded(() => tui.requestRender(true));
 		} finally {
-			if (this.#closed) await this.#cleanup();
+			if (this.#closed) {
+				await this.#closing;
+				await this.#cleanup();
+			}
 		}
 	}
 
@@ -250,6 +260,16 @@ class HostedPane<T> implements ComponentPane<T> {
 		return this.#closing;
 	}
 	async #cleanup(): Promise<void> {
+		// Ending the relay first can remove the block before Rex confirms our close.
+		if (this.blockId && !this.#blockClosed && !this.#eof) {
+			this.#blockClosed = true;
+			try {
+				await this.runtime.rex.closeBlock(this.placement.sessionId, this.blockId);
+				removePaneRecord(this.blockId);
+			} catch (error) {
+				this.warn(error);
+			}
+		}
 		this.#unsubscribeRepaint?.();
 		this.#unsubscribeRepaint = undefined;
 		this.#overlay?.hide();
@@ -268,14 +288,5 @@ class HostedPane<T> implements ComponentPane<T> {
 		this.#terminal = undefined;
 		this.#connection?.output.close();
 		this.#connection = undefined;
-		if (this.blockId && !this.#blockClosed) {
-			this.#blockClosed = true;
-			try {
-				removePaneRecord(this.blockId);
-			} catch (error) {
-				this.warn(error);
-			}
-			if (!this.#eof) await this.runtime.rex.closeBlock(this.placement.sessionId, this.blockId).catch(this.warn);
-		}
 	}
 }

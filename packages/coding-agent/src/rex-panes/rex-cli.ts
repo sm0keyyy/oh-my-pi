@@ -14,9 +14,15 @@ export interface RexCli {
 		direction: "right" | "below",
 		label: string,
 		argv: string[],
+		/** New pane's share, as a fraction from 0 to 1; rounded to a whole percent. */
 		ratio?: number,
 	): Promise<{ blockId: string }>;
-	newWindow(sessionId: string, label: string, argv: string[]): Promise<{ windowId: string; blockId: string }>;
+	newWindow(
+		sessionId: string,
+		windowLabel: string,
+		blockLabel: string,
+		argv: string[],
+	): Promise<{ windowId: string; blockId: string }>;
 	newLayer(
 		sessionId: string,
 		windowId: string | undefined,
@@ -93,6 +99,10 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 			}
 		},
 		async split(sessionId, anchorBlockId, direction, label, argv, ratio) {
+			const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
+			if (percent !== undefined && (!Number.isInteger(percent) || percent < 1 || percent > 99)) {
+				throw new Error("Rex split ratio must round to a percentage from 1 to 99");
+			}
 			const result = await json([
 				"split",
 				"-s",
@@ -104,20 +114,20 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 				"--shell=none",
 				"--label",
 				label,
-				...(ratio === undefined ? [] : ["--ratio", String(ratio)]),
+				...(percent === undefined ? [] : ["--ratio", String(percent)]),
 				"--json",
 				"--",
 				...argv,
 			]);
 			return { blockId: blockId(result) };
 		},
-		async newWindow(sessionId, label, argv) {
+		async newWindow(sessionId, windowLabel, blockLabel, argv) {
 			const result = await json([
 				"window",
 				"new",
 				"-s",
 				sessionId,
-				label,
+				windowLabel,
 				"--focus=false",
 				"--shell=none",
 				"--json",
@@ -127,7 +137,7 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 			const id = blockId(result);
 			try {
 				const windowId = identifier(result.window_id);
-				await call(["block", "rename", "-s", sessionId, id, label]);
+				await call(["block", "rename", "-s", sessionId, id, blockLabel]);
 				return { windowId, blockId: id };
 			} catch (error) {
 				await closeBlock(sessionId, id).catch(cleanup => {

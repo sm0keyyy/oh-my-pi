@@ -17,9 +17,15 @@ import {
 	registerComponentPaneHost,
 	rexHostEligible,
 } from "../../src/rex-panes/component-pane";
+import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
+import { AgentRegistry } from "../../src/registry/agent-registry";
+import { startPaneManager } from "../../src/rex-panes/pane-manager";
 import { paneRecordPath } from "../../src/rex-panes/pane-records";
+import { newPaneToken } from "../../src/rex-panes/pane-server";
 import { startPaneServer } from "../../src/rex-panes/pane-server";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
+import type { AgentSession } from "../../src/session/agent-session";
+import { EventBus } from "../../src/utils/event-bus";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { frame, hello, until } from "./helpers/build-relay";
 
@@ -47,11 +53,9 @@ async function harness() {
 	const run: RexRunner = async args => {
 		calls.push(args);
 		if (fail) return { exitCode: 1, stdout: "", stderr: "refused" };
-		if (args[1] !== "split" && args[1] !== "api") return { exitCode: 0, stdout: "{}", stderr: "" };
+		if (!["new", "window", "split", "api"].includes(args[1]!)) return { exitCode: 0, stdout: "{}", stderr: "" };
 		const argv: string[] =
-			args[1] === "split"
-				? args.slice(args.indexOf("--") + 1)
-				: JSON.parse(args.at(-1)!).layout.block.options.command;
+			args[1] !== "api" ? args.slice(args.indexOf("--") + 1) : JSON.parse(args.at(-1)!).layout.block.options.command;
 		const token = await Bun.file(argv[2]!).text();
 		const ready = Promise.withResolvers<void>();
 		const socket = net.connect(argv[1]!, () => ready.resolve());
@@ -63,12 +67,17 @@ async function harness() {
 		greeting.writeUInt32BE(process.pid + 1234, 11);
 		socket.write(greeting);
 		const block = `block:00000000-0000-0000-0000-${String(++next).padStart(12, "0")}`;
-		return { exitCode: 0, stdout: JSON.stringify({ block_ids: [block], layer_id: "layer:1" }), stderr: "" };
+		const result =
+			args[1] === "new"
+				? { session_id: "s1", initial_windows: [{ window_id: "w1", block_ids: [block] }] }
+				: { block_ids: [block], layer_id: "layer:1", window_id: "w1" };
+		return { exitCode: 0, stdout: JSON.stringify(result), stderr: "" };
 	};
+	const rex = createRexCli({ binary: "rex", run });
 	const host = createComponentPaneHost({
 		mainTerminal: new VirtualTerminal(100, 30),
 		runtime: async () => ({
-			rex: createRexCli({ binary: "rex", run }),
+			rex,
 			server,
 			relayPath: "/relay",
 			prepareToken: token => server.prepare(token),
@@ -84,11 +93,16 @@ async function harness() {
 	});
 	return {
 		host,
+		server,
+		rex,
 		calls,
 		peers,
 		output,
 		fail: () => {
 			fail = true;
+		},
+		resume: () => {
+			fail = false;
 		},
 	};
 }
@@ -145,7 +159,70 @@ test("open docks or floats, uses one-shot credential argv, writes owner pid, ans
 	h.peers.at(-1)!.end();
 	expect(await floating!.result).toBeUndefined();
 	await floating!.close();
-	expect(await Bun.file(paneRecordPath(floating!.blockId)!).exists()).toBe(false);
+	expect(await Bun.file(paneRecordPath(floating!.blockId)!).exists()).toBe(true);
+});
+
+test("records component server teardown preserves restore identity and failed closes never remove records", async () => {
+	const h = await harness();
+	const pane = await h.host.open(dock, "omp: teardown", () => new Text("keep restore identity"));
+	expect(pane).toBeDefined();
+	const record = Bun.file(paneRecordPath(pane!.blockId)!);
+	await h.server.close();
+	expect(await pane!.result).toBeUndefined();
+	await h.host.dispose();
+	expect(await record.text()).toContain(`pid=${process.pid}\n`);
+	expect(h.calls.some(call => call[1] === "block")).toBe(false);
+
+	const failed = await harness();
+	const other = await failed.host.open(dock, "omp: failed-close", () => new Text("keep failed-close identity"));
+	expect(other).toBeDefined();
+	const otherRecord = Bun.file(paneRecordPath(other!.blockId)!);
+	failed.fail();
+	await other!.close();
+	expect(await otherRecord.exists()).toBe(true);
+});
+
+test("records manager server teardown preserves crash identity until a successful session kill", async () => {
+	const h = await harness();
+	const registry = new AgentRegistry();
+	const bus = new EventBus();
+	const opened: string[] = [];
+	const manager = startPaneManager({
+		rex: h.rex,
+		registry,
+		subagentEventBus: bus,
+		socketPath: h.server.socketPath,
+		relayPath: "/relay",
+		newToken: newPaneToken,
+		prepareToken: token => h.server.prepare(token),
+		async openPane(_id, _session, token) {
+			const connection = await h.server.expect(token, 1000);
+			const closed = Promise.withResolvers<void>();
+			connection.attach({ input() {}, resize() {}, drained() {}, closed: () => closed.resolve() });
+			return {
+				ui: {} as ExtensionUIContext,
+				closed: closed.promise,
+				async dispose() {
+					connection.output.close();
+				},
+			};
+		},
+		onPaneOpened: id => opened.push(id),
+	});
+	cleanup.push(() => manager.dispose());
+	for (const id of ["first", "second"]) {
+		registry.register({ id, displayName: id, kind: "sub", parentId: "main", session: {} as AgentSession });
+		bus.emit("task:subagent:lifecycle", { id, status: "started", parentToolCallId: "task" });
+	}
+	await until(() => opened.length === 2);
+	const records = ["first", "second"].map(id => paneRecordPath(manager.location(id)!.blockId)!);
+	h.fail();
+	await h.server.close();
+	await until(() => !manager.location("first") && !manager.location("second"));
+	expect(await Promise.all(records.map(record => Bun.file(record).exists()))).toEqual([true, true]);
+	h.resume();
+	await manager.dispose();
+	expect(await Promise.all(records.map(record => Bun.file(record).exists()))).toEqual([false, false]);
 });
 
 test("open refuses unowned labels or Rex failure without throwing or starting a component", async () => {

@@ -164,7 +164,7 @@ describe("pane manager", () => {
 			"new",
 			"-s",
 			"s1",
-			"omp: e",
+			"e",
 			"--focus=false",
 			"--shell=none",
 			"--json",
@@ -258,7 +258,7 @@ describe("pane manager", () => {
 		await h.until(() => h.opened.length === 7);
 		const reopened = h.calls.slice(before).filter(call => call[1] === "split" || call[1] === "window");
 		expect(reopened[0]?.slice(1, 7)).toEqual(["split", "-s", "s1", "-b", "b2", "--split=below"]);
-		expect(reopened[1]?.slice(1, 6)).toEqual(["window", "new", "-s", "s1", "omp: e"]);
+		expect(reopened[1]?.slice(1, 6)).toEqual(["window", "new", "-s", "s1", "e"]);
 		expect(h.calls.slice(before).some(call => call[1] === "block" && call[2] === "close")).toBe(false);
 		h.start("other", "task2");
 		await h.until(() => h.opened.length === 8);
@@ -360,7 +360,7 @@ describe("pane manager", () => {
 		first.close();
 		await h.until(() => first.disposed);
 		expect(h.manager.location("a")).toBeUndefined();
-		expect(h.records.has("b1")).toBe(false);
+		expect(h.records.has("b1")).toBe(true);
 		expect(await h.manager.reveal("a")).toBe(true);
 		const location = h.manager.location("a")!;
 		expect(location.sessionId).toBe("s1");
@@ -370,6 +370,22 @@ describe("pane manager", () => {
 		h.registry.setStatus("a", "parked");
 		await h.until(() => !h.manager.location("a"));
 		expect(await h.manager.reveal("a")).toBe(false);
+		await h.manager.dispose();
+		expect(h.records.size).toBe(0);
+	});
+
+	it("records survive a failed close and are removed only after the owning session is successfully killed", async () => {
+		const options: { failCommand?: string } = {};
+		const h = harness(options);
+		h.start("a");
+		h.start("b");
+		await h.until(() => h.opened.length === 2);
+		options.failCommand = "block";
+		h.registry.setStatus("a", "parked");
+		await h.until(() => h.panes.get("a")![0]!.disposed);
+		expect(h.records.has("b1")).toBe(true);
+		expect(h.records.has("b2")).toBe(true);
+		options.failCommand = undefined;
 		await h.manager.dispose();
 		expect(h.records.size).toBe(0);
 	});

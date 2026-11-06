@@ -95,13 +95,22 @@ describe("native edit format pipeline", () => {
 		expect(mutations).toBeGreaterThanOrEqual(5);
 	});
 
-	it("prettier line movement requires a fresh read before anchored edits", async () => {
+	it("prettier line movement preserves the original diff and requires a fresh read before anchored edits", async () => {
 		await prettier();
 		const current = session({ "edit.mode": "hashline" });
 		const write = await new WriteTool(current).execute("initial", {
 			path: "value.ts",
 			content: "const a=1;\nconst b=2;\n",
 		});
+		const baselineSession = session({ "edit.mode": "hashline", "edit.formatPipeline": false });
+		const baselineRead = await new ReadTool(baselineSession).execute("baseline-read", { path: "value.ts" });
+		const baselineHeader = text(baselineRead).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
+		const baseline = await new EditTool(baselineSession, "hashline").execute("baseline-edit", {
+			input: `${baselineHeader}\nPUT 1.=1:\n+const a=3;\n`,
+		});
+		expect(baseline.isError).not.toBe(true);
+		expect(baseline.details?.diff).toContain("const a=3;");
+		await Bun.write(path.join(root, "value.ts"), "const a = 1;\nconst b = 2;\n");
 		await executable(
 			"prettier",
 			`
@@ -114,6 +123,13 @@ if (!content.startsWith("// moved\\n")) await Bun.write(file, "// moved\\n" + co
 		const edit = new EditTool(current, "hashline");
 		const result = await edit.execute("move-lines", { input: `${header}\nPUT 1.=1:\n+const a=3;\n` });
 		expect(result.isError).not.toBe(true);
+		expect(result.details?.diff).toBe(baseline.details?.diff);
+		expect(result.details?.firstChangedLine).toBe(baseline.details?.firstChangedLine);
+		expect(result.content[0]).not.toMatchObject({ text: expect.stringContaining("line numbers changed") });
+		expect(result.content.slice(1)).toContainEqual({
+			type: "text",
+			text: "Formatted by prettier.\nline numbers changed by prettier; re-read before anchored edits",
+		});
 		expect(text(result)).toContain("line numbers changed by prettier; re-read before anchored edits");
 		expect(text(result)).not.toMatch(/^[ +*-]?\d+(?:-\d+)?[:|]/m);
 		expect(text(result)).not.toContain("editor/IDE");

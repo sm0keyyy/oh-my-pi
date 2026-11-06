@@ -582,11 +582,8 @@ export class EditTool implements AgentTool<TInput> {
 				warning => !warning.includes("the file on disk after this write differs from what was sent — the client"),
 			);
 			const lines = body.split("\n").filter(line => !/^[ +*-]?\d+(?:-\d+)?[:|]/.test(line));
-			lines.push(`line numbers changed by ${value.formatters.join(", ")}; re-read before anchored edits`);
 			if (file.warnings.length > 0) lines.push("", "Warnings:", ...file.warnings);
 			file.text = lines.join("\n");
-			file.diff = "";
-			file.firstChangedLine = undefined;
 			outcome.text = outcome.text.replace(original, file.text);
 		}
 
@@ -604,7 +601,12 @@ export class EditTool implements AgentTool<TInput> {
 			...(details ? { details } : {}),
 		};
 		const formatters = new Set([...formatted.values()].flatMap(value => value.formatters));
-		for (const tool of formatters) result.content.push({ type: "text", text: `Formatted by ${tool}.` });
+		for (const tool of formatters) {
+			result.content.push({
+				type: "text",
+				text: `Formatted by ${tool}.\nline numbers changed by ${tool}; re-read before anchored edits`,
+			});
+		}
 		const record = createEditBlackboxRecorder(this.session, this.mode, params);
 		const notes: string[] = [];
 		for (const file of outcome.files) {

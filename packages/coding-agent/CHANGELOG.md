@@ -10,6 +10,7 @@
 - Show live subagent TUIs in background Rex panes on macOS, with pane steering, follow-ups, `/stop`, and `/abort`; control them with `rex.subagentPanes` (on by default).
 - Subagents of the main interactive TUI can ask questions in the main dialog, connected sessions clients, and their Rex pane; unanswered asks time out after 10 minutes.
 - Added configurable todo nudges every five mutating calls without a default cap, a turn-end done-check nudge, and open-todo reminders after compaction.
+- Added transcript-backed subagent threads and team IRC history.
 
 ### Changed
 
@@ -17,6 +18,7 @@
 - Bundled code agents share code-intelligence and operator-question guidance; reviewers and scouts report their queries. Operator questions require the ask-bridge extension. The history-only seance agent retains its isolated read-only tools.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
 - User messages now have a colored left bar, including skill invocations and collab prompts. Synthetic input uses a dim bar.
+- Sessions-web shows bead IDs and preserves them when saving todo edits.
 
 ### Fixed
 
@@ -31,6 +33,8 @@
 - Fixed the TUI closing every session when an RPC socket client disconnected during connection startup.
 - Fixed table headers disappearing from scrollback when a chart grew below a streamed reply.
 - Fixed table rows and following text disappearing under an Ask dialog without stranding restored drafts.
+- Fixed subagent panes failing to open with deep configuration paths on macOS.
+- Fixed pending interviews appearing out of enqueue order when created in the same millisecond.
 
 ## [18.16.0] - 2026-11-02
 

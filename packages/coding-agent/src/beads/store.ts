@@ -130,13 +130,16 @@ class BeadsStore implements TodoStore {
 	#uninitialized(): false {
 		this.#missing = true;
 		this.#healthy = false;
-		this.#info = this.#reconcilePending
-			? {
-					state: "pending",
-					store: this.route.kind,
-					reason: "Store is not initialized; session changes await the first write",
-				}
-			: { state: "synced", store: this.route.kind };
+		if (this.#reconcilePending) {
+			this.#info = {
+				state: "pending",
+				store: this.route.kind,
+				reason: "Store is not initialized; session changes await the first write",
+			};
+		} else {
+			this.#info = { state: "synced", store: this.route.kind };
+			this.#failureWarned = false;
+		}
 		return false;
 	}
 	async #prepareInitRoot(): Promise<void> {

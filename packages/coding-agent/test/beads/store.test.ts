@@ -427,6 +427,29 @@ describe("beads store", () => {
 		expect((await f.store.refresh(base, base)).info.state).toBe("synced");
 		expect(f.calls.filter(argv => argv.includes("where"))).toHaveLength(2);
 	});
+	it("[I4] warns again after a quiet uninitialized recovery and a failed init", async () => {
+		const f = await fixture();
+		let now = 800_000;
+		spyOn(Date, "now").mockImplementation(() => now);
+		const runner: BdRunner = async (argv, options) => {
+			if (argv.includes("init")) f.setFault("exit");
+			return f.options.runner(argv, options);
+		};
+		const store = openTodoStore({ ...f.options, runner });
+		f.setFault("spawn");
+		expect((await store.refresh([], undefined)).info.state).toBe("pending");
+		expect(f.notices.filter(notice => notice.level === "warning")).toHaveLength(1);
+		f.setFault(undefined);
+		now += 60_000;
+		expect((await store.refresh([], undefined)).info.state).toBe("synced");
+		expect(f.notices).toHaveLength(1);
+		const next = store.assignIds([], [{ name: "Work", tasks: [{ content: "Task", status: "pending" }] }]);
+		expect((await store.write([], next)).state).toBe("pending");
+		expect(f.calls.filter(argv => argv.includes("init"))).toHaveLength(1);
+		expect(f.notices.filter(notice => notice.level === "warning")).toHaveLength(2);
+		await store.write([], next);
+		expect(f.notices.filter(notice => notice.level === "warning")).toHaveLength(2);
+	});
 	it("[F1] admits bd init only after the dedicated global directory is a checkout", async () => {
 		const f = await fixture();
 		const globalDir = path.join(f.root, "global");

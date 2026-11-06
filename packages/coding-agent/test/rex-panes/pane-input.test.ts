@@ -9,6 +9,8 @@ import { routePaneInput } from "../../src/rex-panes/pane-input";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
 import { attachIrcWakeTurnMonitor } from "../../src/task/executor";
 import { registerSubagentRunControl } from "../../src/task/run-controls";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../../src/task/types";
+import { EventBus } from "../../src/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
 const agent = { name: "pane-test", description: "test", systemPrompt: "test", source: "bundled" as const };
@@ -52,6 +54,14 @@ describe("pane input", () => {
 		ref.status = "parked";
 		ref.session = null;
 		expect((await routePaneInput("Live", "do not revive")).kind).toBe("refused");
+		expect(await routePaneInput("Live", "/stop too slow")).toEqual({
+			kind: "refused",
+			message: "Cannot stop Live: not-running",
+		});
+		expect(await routePaneInput("Missing", "/abort wrong repo")).toEqual({
+			kind: "refused",
+			message: "Cannot abort Missing: unknown-agent",
+		});
 	});
 
 	it("routes reason-bearing stop and abort commands to the pane's agent", async () => {
@@ -62,6 +72,7 @@ describe("pane input", () => {
 			session,
 			stop: reason => {
 				reasons.push(reason);
+				return true;
 			},
 			abort: () => {},
 		});
@@ -76,7 +87,7 @@ describe("pane input", () => {
 	});
 
 	it.each([false, true])(
-		"an idle accepted agent follows up with one parent IRC notice and no async delivery (structured=%s)",
+		"a pane follow-up sends one IRC notice; its later wake registers a job and keeps an accepted yield (structured=%s)",
 		async structured => {
 			using temp = TempDir.createSync("@omp-pane-input-");
 			const listeners = new Set<(event: AgentSessionEvent) => void>();
@@ -85,9 +96,24 @@ describe("pane input", () => {
 				| undefined;
 			let last: unknown;
 			let reply: Promise<void> | undefined;
+			let wakeCancelled = false;
 			const finished = Promise.withResolvers<void>();
+			const continueTurn = Promise.withResolvers<void>();
+			const laterFinished = Promise.withResolvers<void>();
+			const delivered = Promise.withResolvers<string>();
+			const statuses: string[] = [];
+			const eventBus = new EventBus();
+			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, frame => {
+				if (frame && typeof frame === "object" && "status" in frame && typeof frame.status === "string") {
+					statuses.push(frame.status);
+				}
+			});
 			const received: Array<{ from: string; body: string }> = [];
 			const manager = new AsyncJobManager({});
+			const send = vi.spyOn(IrcBus.global(), "send");
+			manager.registerDeliverySink("Parent", (_id, text) => {
+				delivered.resolve(text);
+			});
 			const publish = vi.spyOn(manager, "publishCompleted");
 			const register = vi.spyOn(manager, "register");
 			const emit = (event: AgentSessionEvent) => {
@@ -129,6 +155,33 @@ describe("pane input", () => {
 						} as AgentSessionEvent);
 					await finish?.();
 					finished.resolve();
+					await continueTurn.promise;
+					const finishWake = observer?.([
+						{
+							role: "custom",
+							customType: "irc:incoming",
+							content: "later request",
+							display: false,
+							details: { id: "later", from: "Parent", message: "later request" },
+							attribution: "agent",
+							timestamp: Date.now(),
+						},
+					]);
+					emit({ type: "agent_start" } as AgentSessionEvent);
+					last = { role: "assistant", content: [{ type: "text", text: "later wake answer" }], stopReason: "stop" };
+					emit({ type: "message_end", message: last } as AgentSessionEvent);
+					if (structured) {
+						emit({
+							type: "tool_execution_end",
+							toolCallId: "later-yield",
+							toolName: "yield",
+							result: { content: [], details: { status: "success", data: { report: "later wake answer" } } },
+							isError: false,
+						} as AgentSessionEvent);
+						wakeCancelled = manager.cancel("Child");
+					}
+					await finishWake?.();
+					laterFinished.resolve();
 					return true;
 				},
 			} as unknown as AgentSession;
@@ -148,7 +201,7 @@ describe("pane input", () => {
 				status: "idle",
 				lifecycle: { acceptedAt: Date.now() },
 			});
-			attachIrcWakeTurnMonitor(session, { id: "Child", agent, structured, artifactsDir: temp.path() });
+			attachIrcWakeTurnMonitor(session, { id: "Child", agent, structured, artifactsDir: temp.path(), eventBus });
 			try {
 				expect(await routePaneInput("Child", "follow up")).toEqual({ kind: "follow-up" });
 				await finished.promise;
@@ -158,7 +211,23 @@ describe("pane input", () => {
 				expect(received[0]?.body).toContain("follow-up answer");
 				expect(publish).not.toHaveBeenCalled();
 				expect(register).not.toHaveBeenCalled();
+				continueTurn.resolve();
+				await laterFinished.promise;
+				await reply;
+				expect(send).toHaveBeenCalledTimes(1);
+				expect(register).toHaveBeenCalledTimes(1);
+				expect(register).toHaveBeenCalledWith(
+					"task",
+					"Child",
+					expect.any(Function),
+					expect.objectContaining({ ownerId: "Parent" }),
+				);
+				expect(statuses).toEqual(["started", "completed", "started", "completed"]);
+				expect(wakeCancelled).toBe(structured);
+				if (!structured) expect(await delivered.promise).toContain("later wake answer");
 			} finally {
+				continueTurn.resolve();
+				await laterFinished.promise;
 				await manager.dispose({ timeoutMs: 1000 });
 			}
 		},

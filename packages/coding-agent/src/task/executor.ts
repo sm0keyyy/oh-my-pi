@@ -1293,7 +1293,7 @@ interface SubagentRunMonitor {
 	/** Resolves when the budget-stop session abort has settled (immediately when no stop fired). */
 	waitForBudgetStop(): Promise<void>;
 	operatorStopReason(): string | undefined;
-	requestOperatorStop(reason: string): void;
+	requestOperatorStop(reason: string): boolean;
 	/**
 	 * True when a recorded yield was invalidated by a later async-result
 	 * injection and no fresh yield has landed since: the yield payload
@@ -1524,9 +1524,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			: Promise.resolve();
 	};
 	const requestOperatorStop = (reason: string) => {
-		if (budgetStopRequested || abortSent || resolved) return;
-		operatorStopReason = reason;
+		if (abortSent || resolved) return false;
+		operatorStopReason ??= reason;
 		requestBudgetStop();
+		return true;
 	};
 
 	const failWithError = (message: string) => {
@@ -3436,7 +3437,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
 			const aborted =
 				runtimeLimitExceeded ||
-				(turnMonitor.abortSignal.aborted && turnMonitor.isAbortedRun()) ||
+				(turnMonitor.abortSignal.aborted &&
+					turnMonitor.isAbortedRun() &&
+					(!yielded || operatorAbortReason(session) !== undefined)) ||
 				(lastAssistant?.stopReason === "aborted" && !yielded);
 			// Two error lanes. `error` carries full diagnostics (a thrown turn
 			// error's stack) for `done.error`, logs, and lifecycle. `errorForPeer`

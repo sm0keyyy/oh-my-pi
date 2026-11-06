@@ -9,11 +9,14 @@ export type PaneInputOutcome =
 	| { kind: "steered" | "follow-up" | "stopped" | "aborted" }
 	| { kind: "refused"; message: string };
 
-const panePrompt = new AsyncLocalStorage<AgentSession>();
+const panePrompt = new AsyncLocalStorage<{ session: AgentSession; claimed: boolean }>();
 
-/** The wake observer reads this at prompt admission, before the turn starts. */
+/** Only the first observed turn admitted by this pane prompt owns its reply. */
 export function isPaneFollowUp(session: AgentSession): boolean {
-	return panePrompt.getStore() === session;
+	const marker = panePrompt.getStore();
+	if (marker?.session !== session || marker.claimed) return false;
+	marker.claimed = true;
+	return true;
 }
 
 export async function routePaneInput(agentId: string, text: string): Promise<PaneInputOutcome> {
@@ -33,7 +36,7 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 			message:
 				outcome.reason === "no-driven-run"
 					? "This wake turn has no wrap-up driver; use /abort <reason>."
-					: outcome.reason,
+					: `Cannot ${command.slice(1)} ${agentId}: ${outcome.reason}`,
 		};
 	}
 	const registry = AgentRegistry.global();
@@ -66,7 +69,7 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 				throwOnDrop: true,
 				onPromptQueued: () => accepted.resolve(),
 			});
-		const turn = followUp ? panePrompt.run(session, submit) : submit();
+		const turn = followUp ? panePrompt.run({ session, claimed: false }, submit) : submit();
 		turn.then(
 			() => accepted.resolve(),
 			error => {

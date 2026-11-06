@@ -17,6 +17,7 @@ function target(id: string, driven = true) {
 			? {
 					stop: (reason: string) => {
 						stops.push(reason);
+						return true;
 					},
 				}
 			: {}),

@@ -7,7 +7,7 @@ import { AgentRegistry } from "../../src/registry/agent-registry";
 import * as sdk from "../../src/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
 import { runSubagentFollowUpTurn, runSubprocess } from "../../src/task/executor";
-import { abortSubagent, stopSubagent } from "../../src/task/run-controls";
+import { abortSubagent, type StopOutcome, stopSubagent } from "../../src/task/run-controls";
 import { formatTaskResultSummary } from "../../src/task/result-summary";
 import { MAX_OUTPUT_BYTES } from "../../src/task/types";
 import { EventBus } from "../../src/utils/event-bus";
@@ -15,15 +15,23 @@ import { createSessionDefaults } from "../helpers/session-defaults";
 
 const agent = { name: "control-test", description: "test", systemPrompt: "test", source: "bundled" as const };
 
-function createRun(id: string, action: "stop" | "abort" | "abort-after-yield", report = "partial summary") {
+function createRun(
+	id: string,
+	action: "stop" | "stop-during-budget" | "abort" | "abort-after-yield",
+	report = "partial summary",
+) {
 	const listeners = new Set<(event: AgentSessionEvent) => void>();
 	const prompts: Array<{ text: string; options?: PromptOptions }> = [];
+	const stopAttempts: StopOutcome[] = [];
+	const abort = vi.fn(async () => {});
+	let abortCallsAtStop = 0;
 	let last: unknown;
 	const emit = (event: AgentSessionEvent) => {
 		for (const listener of listeners) listener(event);
 	};
 	const session = {
 		...createSessionDefaults(),
+		abort,
 		state: { messages: [] },
 		agent: { state: { systemPrompt: ["test"] } },
 		model: { api: "anthropic-messages" },
@@ -47,8 +55,14 @@ function createRun(id: string, action: "stop" | "abort" | "abort-after-yield", r
 					stopReason: "aborted",
 				};
 				emit({ type: "message_end", message: last } as AgentSessionEvent);
-				if (action === "stop") expect(stopSubagent(id, "too slow")).toEqual({ ok: true });
-				else expect(await abortSubagent(id, "wrong repo")).toEqual({ ok: true });
+				if (action === "stop-during-budget") {
+					emit({ type: "message_end", message: last } as AgentSessionEvent);
+					emit({ type: "message_end", message: last } as AgentSessionEvent);
+				}
+				if (action === "stop" || action === "stop-during-budget") {
+					abortCallsAtStop = abort.mock.calls.length;
+					stopAttempts.push(stopSubagent(id, "too slow"));
+				} else expect(await abortSubagent(id, "wrong repo")).toEqual({ ok: true });
 			} else {
 				last = {
 					role: "assistant",
@@ -67,6 +81,7 @@ function createRun(id: string, action: "stop" | "abort" | "abort-after-yield", r
 					isError: false,
 				} as AgentSessionEvent);
 				if (action === "abort-after-yield") expect(await abortSubagent(id, "wrong repo")).toEqual({ ok: true });
+				if (action === "stop" || action === "stop-during-budget") stopAttempts.push(stopSubagent(id, "late"));
 			}
 			return true;
 		},
@@ -78,17 +93,17 @@ function createRun(id: string, action: "stop" | "abort" | "abort-after-yield", r
 		setToolUIContext: () => {},
 		eventBus: new EventBus(),
 	});
-	return { session, prompts };
+	return { session, prompts, stopAttempts, abortCallsAtStop: () => abortCallsAtStop };
 }
 
-function run(id: string) {
+function run(id: string, softRequestBudget = 0) {
 	return runSubprocess({
 		cwd: "/tmp",
 		agent,
 		task: "inspect",
 		index: 0,
 		id,
-		settings: Settings.isolated({ "task.softRequestBudget": 0 }),
+		settings: Settings.isolated({ "task.softRequestBudget": softRequestBudget }),
 		modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
 		enableLsp: false,
 	});
@@ -108,7 +123,7 @@ describe("subagent run controls", () => {
 	});
 
 	it("stop forces one final yield with the reason and returns a partial summary to the parent", async () => {
-		const { prompts } = createRun("Stop", "stop");
+		const { prompts, stopAttempts } = createRun("Stop", "stop");
 		const result = await run("Stop");
 		expect(prompts).toHaveLength(2);
 		expect(prompts[1]?.text).toContain("too slow");
@@ -120,6 +135,20 @@ describe("subagent run controls", () => {
 		expect(parent).toContain("Stopped by operator: too slow");
 		expect(parent).toContain("partial summary");
 		expect(stopSubagent("Stop", "again")).toEqual({ ok: false, reason: "not-running" });
+		expect(stopAttempts).toEqual([{ ok: true }, { ok: false, reason: "not-running" }]);
+	});
+
+	it("stop during budget grace preserves the operator reason in the parent result", async () => {
+		const handle = createRun("Grace", "stop-during-budget");
+		const result = await run("Grace", 2);
+		expect(handle.abortCallsAtStop()).toBe(1);
+		expect(handle.stopAttempts).toEqual([{ ok: true }, { ok: false, reason: "not-running" }]);
+		expect(handle.prompts).toHaveLength(2);
+		expect(handle.prompts[1]?.text).toContain("Stopped by operator: too slow");
+		expect(result.aborted).toBe(false);
+		expect(formatTaskResultSummary(result, { totalDurationMs: result.durationMs })).toContain(
+			"Stopped by operator: too slow",
+		);
 	});
 
 	it("stop preserves the reason when a large partial summary is truncated", async () => {

@@ -7,7 +7,7 @@ export type AbortOutcome = { ok: true } | { ok: false; reason: "unknown-agent" |
 
 interface RunControl {
 	session: AgentSession;
-	stop?: (reason: string) => void;
+	stop?: (reason: string) => boolean;
 	abort(reason: string): void;
 }
 
@@ -33,7 +33,7 @@ export function stopSubagent(id: string, reason: string): StopOutcome {
 	if (ref.status !== "running" || !ref.session) return { ok: false, reason: "not-running" };
 	const run = runs.get(id);
 	if (run?.session !== ref.session || !run.stop) return { ok: false, reason: "no-driven-run" };
-	run.stop(reason.trim());
+	if (!run.stop(reason.trim())) return { ok: false, reason: "not-running" };
 	return { ok: true };
 }
 

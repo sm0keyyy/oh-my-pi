@@ -1,7 +1,7 @@
 import type { SlashCommandSpec } from "../slash-commands/types";
 import { clearSubmittedText } from "../slash-commands/helpers/draft";
 import { subagentAskHostFor } from "../task/subagent-ask-host";
-import { answerPending, dirCount } from "./drain";
+import { answerPending, answerPendingForSession, dirCount } from "./drain";
 import { queuePaths } from "./paths";
 import { listPending } from "./queue";
 
@@ -47,6 +47,19 @@ export const BUILTIN_INTERVIEW_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	{
 		name: "interview-next",
 		description: "Answer all pending interviews oldest-first; stop on cancel or timeout",
+		handle: async (_command, runtime) => {
+			const run = async (): Promise<void> => {
+				try {
+					if (!(await answerPendingForSession(runtime.sessionManager.getSessionId()))) {
+						await runtime.output("/interview-next needs the omp TUI.");
+					}
+				} catch (error) {
+					await runtime.output(`operator-queue: ${String(error)}`);
+				}
+			};
+			if (runtime.runCommandInBackground) runtime.runCommandInBackground(run);
+			else await run();
+		},
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
 			const ui = runtime.ctx.getToolUIContext();
@@ -57,7 +70,7 @@ export const BUILTIN_INTERVIEW_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			try {
 				await answerPending({
 					ui,
-					askUi: subagentAskHostFor(runtime.ctx.subagentEventBus)?.externalUi(),
+					askUi: () => subagentAskHostFor(runtime.ctx.subagentEventBus)?.externalUi(),
 					sessionId: () => runtime.ctx.sessionManager.getSessionId(),
 				});
 			} catch (error) {

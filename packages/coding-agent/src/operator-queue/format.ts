@@ -1,4 +1,5 @@
 import type { QuestionResult as NativeQuestionResult } from "@oh-my-pi/pi-tui/tools/ask";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type { AnswersPayload, AskQuestion } from "./queue";
 
 export interface QuestionResult extends NativeQuestionResult {
@@ -6,17 +7,18 @@ export interface QuestionResult extends NativeQuestionResult {
 }
 export function buildResults(questions: AskQuestion[], payload: AnswersPayload): QuestionResult[] {
 	return questions.map(q => {
-		const answer = payload.answers[q.id] ?? {};
+		const value = payload.answers[q.id];
+		const answer = isRecord(value) ? value : {};
 		const result: QuestionResult = {
 			id: q.id,
 			question: q.question,
 			options: q.options.map(o => o.label),
 			multi: q.multi === true,
-			selectedOptions: answer.selected ?? [],
+			selectedOptions: Array.isArray(answer.selected) ? answer.selected : [],
 			timedOut: false,
 		};
-		if (answer.customInput !== undefined) result.customInput = answer.customInput;
-		if (answer.note !== undefined) result.note = answer.note;
+		if (typeof answer.customInput === "string") result.customInput = answer.customInput;
+		if (typeof answer.note === "string") result.note = answer.note;
 		return result;
 	});
 }
@@ -29,9 +31,11 @@ export function formatAnswerText(questions: AskQuestion[], payload: AnswersPaylo
 			lines.push(`- ${q.id}: (no answer)`);
 			continue;
 		}
-		const selected = answer.selected ?? [];
-		lines.push(`- ${q.id}: ${selected.length ? selected.join(", ") : (answer.customInput ?? "(no answer)")}`);
-		if (answer.note !== undefined) lines.push(`  User added note: ${answer.note}`);
+		const selected = isRecord(answer) && Array.isArray(answer.selected) ? answer.selected : [];
+		lines.push(
+			`- ${q.id}: ${selected.length ? selected.join(", ") : isRecord(answer) && typeof answer.customInput === "string" ? answer.customInput : "(no answer)"}`,
+		);
+		if (isRecord(answer) && typeof answer.note === "string") lines.push(`  User added note: ${answer.note}`);
 	}
 	if (payload.note !== undefined) lines.push(`User added note: ${payload.note}`);
 	return lines.join("\n");

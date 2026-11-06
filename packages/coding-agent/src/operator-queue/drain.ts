@@ -15,11 +15,12 @@ import {
 export interface OperatorQueueMain {
 	ui: ExtensionUIContext;
 	sessionId(): string | undefined;
-	/** The registered subagent ask host's externalUi(), when available. */
-	askUi?: ExtensionUIContext;
+	/** Resolves the current registered subagent ask host's external UI. */
+	askUi?: () => ExtensionUIContext | undefined;
 }
 const WIDGET_KEY = "interview-queue";
 const services = new WeakMap<ExtensionUIContext, { run(): Promise<void> }>();
+const liveServices = new Set<{ main: OperatorQueueMain; run(): Promise<void> }>();
 
 export async function dirCount(dir: string, excludeRequests = false): Promise<number> {
 	try {
@@ -105,7 +106,7 @@ async function drainPending(
 					await quarantine(paths, ref);
 					continue;
 				}
-				const outcome = await renderQuestions(main.askUi ?? main.ui, ref.interview.questions, signal);
+				const outcome = await renderQuestions(main.askUi?.() ?? main.ui, ref.interview.questions, signal);
 				if (outcome.kind === "aborted") return "done";
 				if (outcome.kind === "cancelled") {
 					stopped = "Cancelled.";
@@ -144,6 +145,16 @@ export async function answerPending(main: OperatorQueueMain): Promise<void> {
 	const paths = queuePaths();
 	await ensureDirs(paths);
 	await drainPending(main, paths);
+}
+
+/** Runs the main TUI service for text-mode commands received over its RPC socket. */
+export async function answerPendingForSession(sessionId: string): Promise<boolean> {
+	for (const service of liveServices) {
+		if (service.main.sessionId() !== sessionId) continue;
+		await service.run();
+		return true;
+	}
+	return false;
 }
 
 export function startOperatorQueue(main: OperatorQueueMain): { dispose(): void } {
@@ -221,11 +232,13 @@ export function startOperatorQueue(main: OperatorQueueMain): { dispose(): void }
 		else if (result === "done") await refresh(false);
 	};
 	const service = {
+		main,
 		run: async (): Promise<void> => {
 			if ((await run()) === "done") await refresh(false);
 		},
 	};
 	services.set(main.ui, service);
+	liveServices.add(service);
 	void ensureDirs(paths)
 		.then(() => {
 			if (stop.signal.aborted) return;
@@ -243,6 +256,7 @@ export function startOperatorQueue(main: OperatorQueueMain): { dispose(): void }
 			watcher?.close();
 			clearTimeout(timer);
 			if (services.get(main.ui) === service) services.delete(main.ui);
+			liveServices.delete(service);
 			main.ui.setWidget(WIDGET_KEY, undefined);
 		},
 	};

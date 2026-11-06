@@ -8,9 +8,15 @@ import type {
 	ExtensionUIDialogOptions,
 	ExtensionUIContext,
 } from "../../src/extensibility/extensions/types";
-import { startOperatorQueue } from "../../src/operator-queue";
+import { answerPending, type OperatorQueueMain, startOperatorQueue } from "../../src/operator-queue";
 import { ensureDirs, queuePaths } from "../../src/operator-queue/paths";
 import { enqueueRequest, listPending } from "../../src/operator-queue/queue";
+import {
+	registerSubagentAskHost,
+	subagentAskHostFor,
+	unregisterSubagentAskHost,
+} from "../../src/task/subagent-ask-host";
+import { EventBus } from "../../src/utils/event-bus";
 
 let root: string;
 let previous: string | undefined;
@@ -47,6 +53,7 @@ function app(
 		questions: ExtensionAskDialogQuestion[],
 		options?: ExtensionUIDialogOptions,
 	) => Promise<ExtensionAskDialogResult | undefined>,
+	askUi?: OperatorQueueMain["askUi"],
 ) {
 	let widget: string[] | undefined;
 	const notices: string[] = [];
@@ -60,9 +67,9 @@ function app(
 			widget = lines;
 		},
 	} as ExtensionUIContext;
-	const service = startOperatorQueue({ ui, sessionId: () => "main" });
+	const service = startOperatorQueue({ ui, askUi, sessionId: () => "main" });
 	dispose = service.dispose;
-	return { notices, widget: () => widget };
+	return { ui, notices, widget: () => widget };
 }
 
 // Real timers cover fs.watch delivery and the platform debounce/retry contract together.
@@ -143,3 +150,73 @@ it("retries a foreign live holder after three seconds without requiring a new pe
 		await child.exited;
 	}
 }, 10_000);
+
+it("shares FIFO order with subagent asks and resolves a replaced host during the same main session", async () => {
+	process.env.INTERVIEW_AUTO_OPEN = "false";
+	const bus = new EventBus();
+	const dialogs: Array<{
+		questions: ExtensionAskDialogQuestion[];
+		resolve(result: ExtensionAskDialogResult | undefined): void;
+	}> = [];
+	let resolved = 0;
+	const main = app(
+		async (q, options) => {
+			const pending = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+			dialogs.push({ questions: q, resolve: pending.resolve });
+			options?.signal?.addEventListener("abort", () => pending.resolve(undefined), { once: true });
+			options?.onTimeoutStart?.();
+			return pending.promise;
+		},
+		() => {
+			resolved++;
+			return subagentAskHostFor(bus)?.externalUi();
+		},
+	);
+	let host = registerSubagentAskHost({ main: main.ui, subagentEventBus: bus });
+	const submit = (index: number): void => {
+		const dialog = dialogs[index]!;
+		dialog.resolve({
+			kind: "submit",
+			results: dialog.questions.map(q => ({
+				id: q.id,
+				question: q.question,
+				options: ["Yes"],
+				multi: false,
+				selectedOptions: ["Yes"],
+			})),
+		});
+	};
+	try {
+		const first = host.uiFor("first", "First").askDialog!(questions);
+		await enqueueRequest("interview", "fixture", questions, "main");
+		const drain = answerPending({ ui: main.ui, sessionId: () => "main" });
+		await until(() => resolved === 1);
+		const last = host.uiFor("last", "Last").askDialog!(questions);
+		expect(dialogs.map(d => d.questions[0]!.question)).toEqual(["First: Which?"]);
+		submit(0);
+		await first;
+		await until(() => dialogs.length === 2);
+		expect(dialogs[1]!.questions[0]!.question).toBe("Which?");
+		submit(1);
+		await until(() => dialogs.length === 3);
+		expect(dialogs[2]!.questions[0]!.question).toBe("Last: Which?");
+		submit(2);
+		await Promise.all([last, drain]);
+
+		host = registerSubagentAskHost({ main: main.ui, subagentEventBus: bus });
+		const replacementAsk = host.uiFor("replacement", "Replacement").askDialog!(questions);
+		await enqueueRequest("after-replacement", "fixture", questions, "main");
+		const replacedDrain = answerPending({ ui: main.ui, sessionId: () => "main" });
+		await until(() => resolved === 2);
+		expect(dialogs).toHaveLength(4);
+		submit(3);
+		await replacementAsk;
+		await until(() => dialogs.length === 5);
+		expect(dialogs[4]!.questions[0]!.question).toBe("Which?");
+		submit(4);
+		await replacedDrain;
+		expect((await fs.readdir(queuePaths().answered)).sort()).toEqual(["after-replacement.json", "interview.json"]);
+	} finally {
+		unregisterSubagentAskHost(host);
+	}
+});

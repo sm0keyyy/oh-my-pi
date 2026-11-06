@@ -1,8 +1,8 @@
 import * as fs from "node:fs/promises";
 import { type } from "@oh-my-pi/omptype";
-import { isEnoent, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { writeFileAtomically } from "../utils/atomic-file";
-import { ensureDirs, entryPath, envMilliseconds, queuePaths, type QueuePaths } from "./paths";
+import { ensureDirs, entryPath, envMilliseconds, isSafeId, queuePaths, type QueuePaths } from "./paths";
 
 export const questionSchema = type({
 	id: "string",
@@ -29,8 +29,8 @@ export interface Answer {
 export type Answers = Record<string, Answer>;
 export interface AnswersPayload {
 	id?: string;
-	answers: Answers;
-	note?: string;
+	answers: Record<string, unknown>;
+	note?: unknown;
 }
 export type ConsumeOutcome =
 	| { kind: "answered"; payload: AnswersPayload }
@@ -81,6 +81,10 @@ export async function listPending(paths: QueuePaths): Promise<PendingRef[]> {
 	for (const name of await fs.readdir(paths.pending)) {
 		if (!name.endsWith(".json")) continue;
 		const corrId = name.slice(0, -5);
+		if (!isSafeId(corrId)) {
+			logger.warn("operator-queue: skipping pending entry with unsafe correlation id", { name });
+			continue;
+		}
 		const file = entryPath(paths.pending, corrId);
 		try {
 			const parsed: unknown = JSON.parse(await readQueueFile(file));
@@ -143,16 +147,20 @@ export async function completeInterview(
 function parseAnswers(raw: string): AnswersPayload | undefined {
 	try {
 		const body: unknown = JSON.parse(raw);
-		return answersSchema.allows(body) ? body : undefined;
+		return isAnswersPayload(body) ? body : undefined;
 	} catch {
 		return undefined;
 	}
 }
-const answersSchema = type({
-	"id?": "string",
-	"note?": "string",
-	answers: type({ "[string]": type({ "selected?": "string[]", "customInput?": "string", "note?": "string" }) }),
-});
+function isAnswersPayload(value: unknown): value is AnswersPayload {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"answers" in value &&
+		typeof value.answers === "object" &&
+		value.answers !== null
+	);
+}
 
 export async function isKnownInterview(id: string, paths = queuePaths()): Promise<boolean> {
 	for (const file of [
@@ -178,12 +186,7 @@ export async function readConsumed(id: string, paths = queuePaths()): Promise<Co
 		const payload = parseAnswers(raw);
 		if (payload) return { kind: "answered", payload };
 		const wrapped: unknown = JSON.parse(raw);
-		if (
-			typeof wrapped === "object" &&
-			wrapped !== null &&
-			"payload" in wrapped &&
-			answersSchema.allows(wrapped.payload)
-		)
+		if (typeof wrapped === "object" && wrapped !== null && "payload" in wrapped && isAnswersPayload(wrapped.payload))
 			return { kind: "answered", payload: wrapped.payload };
 		return { kind: "malformed", raw };
 	} catch (error) {

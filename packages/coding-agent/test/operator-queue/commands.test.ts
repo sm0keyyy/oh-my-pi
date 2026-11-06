@@ -5,8 +5,11 @@ import * as path from "node:path";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ExtensionAskDialogResult, ExtensionUIContext } from "../../src/extensibility/extensions/types";
 import { queuePaths } from "../../src/operator-queue/paths";
+import { startOperatorQueue } from "../../src/operator-queue";
 import { enqueueRequest } from "../../src/operator-queue/queue";
 import { executeBuiltinSlashCommand } from "../../src/slash-commands/builtin-registry";
+import { executeAcpBuiltinSlashCommand } from "../../src/slash-commands/acp-builtins";
+import type { SlashCommandRuntime } from "../../src/slash-commands/types";
 import { createInteractiveModeContext } from "../helpers/interactive-mode-context";
 
 let root: string;
@@ -84,4 +87,70 @@ it("cancel stops the manual batch without answering or consuming the remaining i
 	expect(await fs.readdir(queuePaths().answered)).toEqual([]);
 	expect(notices).toHaveLength(1);
 	expect(notices[0]).toContain("Cancelled.");
+});
+
+it("dispatches the RPC interview-next command through the live TUI service without holding the command response", async () => {
+	const opened = Promise.withResolvers<void>();
+	const response = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+	const notices: string[] = [];
+	const output: string[] = [];
+	const ui: Partial<ExtensionUIContext> = {
+		timeoutStartsOnPresentation: true,
+		askDialog: async () => {
+			opened.resolve();
+			return response.promise;
+		},
+		notify: text => {
+			notices.push(text);
+		},
+		setWidget: () => {},
+	};
+	const mainUi = ui as ExtensionUIContext;
+	const ctx = createInteractiveModeContext({ getToolUIContext: () => mainUi });
+	const service = startOperatorQueue({ ui: mainUi, sessionId: () => ctx.sessionManager.getSessionId() });
+	let operation: Promise<void> | undefined;
+	const runtime: SlashCommandRuntime = {
+		session: ctx.session,
+		sessionManager: ctx.sessionManager,
+		settings: ctx.settings,
+		cwd: root,
+		output: text => {
+			output.push(text);
+		},
+		refreshCommands: () => {},
+		reloadPlugins: async () => {},
+		runCommandInBackground: task => {
+			operation = task();
+		},
+	};
+	try {
+		await enqueueRequest(
+			"remote",
+			"another-process",
+			[{ id: "go", question: "Proceed remotely?", options: [{ label: "Yes" }] }],
+			"elsewhere",
+		);
+		expect(await executeAcpBuiltinSlashCommand("/interview-next", runtime)).toEqual({ consumed: true });
+		await opened.promise;
+		expect(await Bun.file(path.join(queuePaths().pending, "remote.json")).exists()).toBe(true);
+		response.resolve({
+			kind: "submit",
+			results: [
+				{ id: "go", question: "Proceed remotely?", options: ["Yes"], multi: false, selectedOptions: ["Yes"] },
+			],
+		});
+		await operation;
+		expect(JSON.parse(await Bun.file(path.join(queuePaths().answered, "remote.json")).text())).toMatchObject({
+			answers: { go: { selected: ["Yes"] } },
+		});
+		expect(notices).toEqual(["Interviews answered: 1. Still pending: 0."]);
+		expect(output).toEqual([]);
+	} finally {
+		response.resolve(undefined);
+		await operation;
+		service.dispose();
+	}
+	delete runtime.runCommandInBackground;
+	await executeAcpBuiltinSlashCommand("/interview-next", runtime);
+	expect(output).toEqual(["/interview-next needs the omp TUI."]);
 });

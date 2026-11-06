@@ -95,3 +95,25 @@ it("withdraws a timed-out interview and replays the timeout notice instead of as
 	expect(await Bun.file(entryPath(queuePaths().expired, "expired")).exists()).toBe(true);
 	expect(await tool.execute("replay", { id: "expired" })).toEqual(outcome);
 });
+
+it("consumes legacy answer objects verbatim while tolerating non-array selected fields", async () => {
+	await enqueueRequest("legacy", "fixture", questions);
+	const paths = queuePaths();
+	const raw = JSON.stringify({
+		answers: { go: { selected: "legacy-label", customInput: "typed answer" }, future: null },
+		note: "legacy note",
+	});
+	await Bun.write(entryPath(paths.answered, "legacy"), raw);
+	const tool = new AskOperatorResultTool();
+	const result = await tool.execute("consume-legacy", { id: "legacy" });
+	expect(result.details?.malformed).toBeUndefined();
+	expect(result.details?.results).toMatchObject([{ id: "go", selectedOptions: [], customInput: "typed answer" }]);
+	expect(result.content).toEqual([
+		{ type: "text", text: "User answers:\n- go: typed answer\nUser added note: legacy note" },
+	]);
+	expect(await Bun.file(entryPath(paths.done, "legacy")).text()).toBe(raw);
+	expect(await tool.execute("replay-legacy", { id: "legacy" })).toEqual(result);
+
+	await Bun.write(entryPath(paths.done, "legacy-array"), JSON.stringify({ payload: { answers: [] } }));
+	expect((await tool.execute("replay-array", { id: "legacy-array" })).details).toEqual({ results: [] });
+});

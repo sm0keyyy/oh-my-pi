@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { logger } from "@oh-my-pi/pi-utils";
 import { acquireLock } from "../../src/operator-queue/lock";
 import { ensureDirs, entryPath, queuePaths, queueRoot, type QueuePaths } from "../../src/operator-queue/paths";
 import {
@@ -75,4 +76,19 @@ it("refuses unsafe ids before writing and preserves root override precedence inc
 	expect(queueRoot({ ASK_BRIDGE_QUEUE_DIR: "  ", PI_CODING_AGENT_DIR: "/agent" })).toBe("/agent/queue");
 	expect(queueRoot({ HOME: "/home/fixture" })).toBe("/home/fixture/.omp/agent/queue");
 	expect(await fs.readdir(paths.pending)).toEqual([]);
+});
+
+it("skips an unsafe pending filename without hiding valid interviews", async () => {
+	await enqueueRequest("valid", "fixture", questions, "main", paths);
+	await Bun.write(path.join(paths.pending, ".json"), "{}");
+	const warnings = spyOn(logger, "warn");
+	try {
+		expect((await listPending(paths)).map(ref => ref.corrId)).toEqual(["valid"]);
+		expect(warnings).toHaveBeenCalledTimes(1);
+		expect(warnings).toHaveBeenCalledWith("operator-queue: skipping pending entry with unsafe correlation id", {
+			name: ".json",
+		});
+	} finally {
+		warnings.mockRestore();
+	}
 });

@@ -11,6 +11,7 @@ import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
+import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 import type { TodoDoneInput } from "./todo-done-check";
 
@@ -257,7 +258,7 @@ export class TodoTracker {
 	}
 
 	/** Builds the open-list reminder queued by each committed compaction. */
-	createPostCompactionTodoReminder(): AgentMessage | undefined {
+	createPostCompactionTodoReminder(): CustomMessage | undefined {
 		if (
 			!cfgTodoEnabled.get(this.#host.settings) ||
 			this.#host.planModeEnabled() ||

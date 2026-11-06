@@ -2818,7 +2818,10 @@ export class AgentSession implements SettingsScope {
 				if (this.#postCompactionTodoPending) {
 					this.#postCompactionTodoPending = false;
 					const reminder = this.#todo.createPostCompactionTodoReminder();
-					if (reminder) this.#recordWithoutTurn([reminder]);
+					if (reminder) {
+						this.agent.appendMessage(reminder);
+						this.sessionManager.appendMessage(reminder);
+					}
 				}
 			},
 			resetAdvisorRuntimes: (reason, options) => {

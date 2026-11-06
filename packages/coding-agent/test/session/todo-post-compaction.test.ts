@@ -194,6 +194,17 @@ describe("post-compaction todo reminder", () => {
 						message => message.role === "custom" && message.customType === "post-compaction-todo",
 					),
 				).toHaveLength(1);
+				expect(
+					manager
+						.getBranch()
+						.filter(
+							entry =>
+								(entry.type === "custom_message" && entry.customType === "post-compaction-todo") ||
+								(entry.type === "message" &&
+									entry.message.role === "custom" &&
+									entry.message.customType === "post-compaction-todo"),
+						),
+				).toHaveLength(1);
 			} finally {
 				await session.dispose();
 				auth.close();

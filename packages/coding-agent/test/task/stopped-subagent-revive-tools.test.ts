@@ -364,3 +364,55 @@ it("keeps a live forced wrap-up restricted through two automatic retries", async
 		reopened.authStorage.close();
 	}
 }, 30_000);
+
+it("expires an unowned restored wrap-up after retry before the next prompt", async () => {
+	let request = 0;
+	const reopened = await reopenInterruptedWrapUp(
+		false,
+		context => {
+			request++;
+			if (request === 1) return { stopReason: "error", errorMessage: "503 service unavailable: overloaded_error" };
+			if (request === 2) return { content: ["restored partial report"] };
+			if (
+				context.messages.some(
+					message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON),
+				)
+			) {
+				return { content: ["Tools remained disabled after restore."] };
+			}
+			if (context.messages.at(-1)?.role === "toolResult") return { content: ["new assignment completed"] };
+			return { content: [{ type: "toolCall", name: "read", arguments: { path: "notes.txt" } }] };
+		},
+		true,
+	);
+	try {
+		await expect(reopened.session.restoreInterruptedTurn()).resolves.toBe(true);
+		await reopened.session.waitForIdle();
+		for (const call of reopened.mock.calls) {
+			expect(call.options?.toolChoice).toBe("none");
+			expect(
+				call.context.messages.some(
+					message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON),
+				),
+			).toBe(true);
+		}
+		expect(reopened.mock.calls).toHaveLength(2);
+		await reopened.session.prompt("Read notes.txt as a new assignment.");
+		await reopened.session.waitForIdle();
+		const followUp = reopened.mock.calls[2]!;
+		expect(followUp.options?.toolChoice).toBeUndefined();
+		expect(
+			followUp.context.messages.some(
+				message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON),
+			),
+		).toBe(false);
+		const result = reopened.session.messages.findLast(
+			message => message.role === "toolResult" && message.toolName === "read",
+		);
+		expect(result).toMatchObject({ isError: false });
+		expect(JSON.stringify(result)).toContain("revived tool access");
+	} finally {
+		await reopened.session.dispose();
+		reopened.authStorage.close();
+	}
+}, 30_000);

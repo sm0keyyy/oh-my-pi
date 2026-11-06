@@ -1107,6 +1107,9 @@ export class AgentSession implements SettingsScope {
 	 */
 	#asyncDeliveryEpoch = 0;
 
+	/** A live prompt owns its wrap-up directive through the full retry saga; a restored continuation does not. */
+	#ownedWrapUp: CustomMessage | undefined;
+
 	readonly #irc: IrcBridge;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
@@ -5375,9 +5378,9 @@ export class AgentSession implements SettingsScope {
 							this.#toolChoiceQueue.removeByLabel(SUBAGENT_WRAP_UP_MESSAGE_TYPE);
 							const messages = this.agent.state.messages;
 							const wrapUpIndex = messages.indexOf(wrapUp);
-							// The owning prompt spans automatic retries and expires the directive after recovery settles.
+							// Only a live prompt owns cleanup across successful automatic retry attempts.
 							if (
-								request.options.source !== "automatic-retry" &&
+								!(wrapUp === this.#ownedWrapUp && request.options.source === "automatic-retry") &&
 								wrapUpIndex >= 0 &&
 								messages.some(
 									(message, index) =>
@@ -8876,7 +8879,9 @@ export class AgentSession implements SettingsScope {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
-		if (message.role !== "custom" || message.customType !== SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+		if (message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			this.#ownedWrapUp = message;
+		} else {
 			// A new assignment supersedes a wrap-up that crashed before producing its report.
 			this.#dropPendingSubagentWrapUp();
 		}
@@ -9145,6 +9150,7 @@ export class AgentSession implements SettingsScope {
 			if (message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
 				// Expire before releasing the turn: an IRC wake must not inherit the stop restriction.
 				this.agent.replaceMessages(this.agent.state.messages.filter(candidate => candidate !== message));
+				if (this.#ownedWrapUp === message) this.#ownedWrapUp = undefined;
 			}
 			// The per-turn before_agent_start override lives only for this turn.
 			this.#tools.clearTurnSystemPromptOverride();

@@ -171,7 +171,7 @@ export function Rail({
 									{text(agent.status)} · {text(agent.description)}
 								</div>
 							</div>
-							<div className="agent-act">
+							<div className="agent-act" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
 								{(agent.status === "running" ||
 									agent.status === "pending" ||
 									agent.followUpAvailable === true) && (

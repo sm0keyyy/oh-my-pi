@@ -20,12 +20,26 @@ const PACKAGE_DIR = path.resolve(import.meta.dir, "../..");
 const WIRE_DIR = path.join(PACKAGE_DIR, "src/modes/rpc/wire");
 const SDK_DIR = path.resolve(PACKAGE_DIR, "../../sdk");
 
+function formatGeneratedJson(contents: string): string {
+	const formatter = Bun.spawnSync(
+		[
+			process.execPath,
+			path.resolve(PACKAGE_DIR, "../../node_modules/.bin/oxfmt"),
+			"--stdin-filepath",
+			path.join(WIRE_DIR, "rpc-wire.schema.json"),
+		],
+		{ stdin: Buffer.from(contents), stdout: "pipe", stderr: "pipe", timeout: 10000 },
+	);
+	if (formatter.exitCode !== 0) throw new Error(`RPC schema formatting failed: ${formatter.stderr.toString()}`);
+	return formatter.stdout.toString();
+}
+
 /** Generated file path → contents. */
 export function generateRpcArtifacts(): Map<string, string> {
 	const bundle = buildRpcWireBundle();
 	const model = buildWireModel(bundle);
 	return new Map([
-		[path.join(WIRE_DIR, "rpc-wire.schema.json"), `${JSON.stringify(bundle, null, "\t")}\n`],
+		[path.join(WIRE_DIR, "rpc-wire.schema.json"), formatGeneratedJson(`${JSON.stringify(bundle, null, "\t")}\n`)],
 		[path.join(WIRE_DIR, "rpc-wire.generated.ts"), emitTypeScript(model)],
 		[path.join(SDK_DIR, "python/omp-rpc/src/omp_rpc/_wire.py"), emitPython(model)],
 		[path.join(SDK_DIR, "rust/omp-rpc/src/wire.rs"), emitRust(model)],

@@ -1,0 +1,101 @@
+[
+	{
+		"width": 1440,
+		"review": "deferred to plan-approval main ui.review integration",
+		"commands": [
+			{
+				"id": "ed2b31f4-7a22-44a8-a91a-0d1ab00e662c",
+				"type": "response",
+				"command": "stop_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "5eea476b-90c5-4902-bb02-ccefab59df7c",
+				"type": "response",
+				"command": "abort_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "0c943156-4019-40b6-922d-01ab9c38aa2b",
+				"type": "response",
+				"command": "follow_up_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			}
+		]
+	},
+	{
+		"width": 768,
+		"review": "deferred to plan-approval main ui.review integration",
+		"commands": [
+			{
+				"id": "04d3c06f-f058-4242-98ec-a7b0c61a67b8",
+				"type": "response",
+				"command": "stop_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "2cd68713-9149-44ee-b2e6-2dc455dbd978",
+				"type": "response",
+				"command": "abort_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "e0a47bbb-250e-48cb-aeec-457a380eeb1c",
+				"type": "response",
+				"command": "follow_up_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			}
+		]
+	},
+	{
+		"width": 390,
+		"review": "deferred to plan-approval main ui.review integration",
+		"commands": [
+			{
+				"id": "f1330e69-39f2-43aa-924b-59fd2725f73f",
+				"type": "response",
+				"command": "stop_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "35151c14-ebe1-4ec8-88b1-b45241422d5e",
+				"type": "response",
+				"command": "abort_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			},
+			{
+				"id": "80484511-a0ac-42da-84f0-84ca5d26f027",
+				"type": "response",
+				"command": "follow_up_subagent",
+				"success": true,
+				"data": {
+					"ok": true
+				}
+			}
+		]
+	}
+]

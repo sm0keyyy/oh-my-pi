@@ -12,7 +12,8 @@ import { createAccessFixture } from "../../sessions-gateway/test/access-fixture"
 const root = path.resolve(import.meta.dir, "../../..");
 const widthFixture = process.env.SESSIONS_WIDTH_FIXTURE === "1";
 const reviewFixture = process.env.SESSIONS_REVIEW_FIXTURE === "1";
-const prefix = widthFixture ? "mobile-width-" : reviewFixture ? "review-fixes-" : "";
+const rpcFixture = process.env.SESSIONS_RPC_FIXTURE === "1";
+const prefix = widthFixture ? "mobile-width-" : reviewFixture ? "review-fixes-" : rpcFixture ? "sessions-rpc-" : "";
 const cli = process.env.SESSIONS_FIXTURE_CLI ?? path.join(root, "packages/coding-agent/src/cli.ts");
 if (!(await Bun.file(cli).exists())) throw new Error("The source TUI entrypoint does not exist");
 const config = path.join(
@@ -21,7 +22,9 @@ const config = path.join(
 		? ".sessions-width-test-config"
 		: reviewFixture
 			? ".sessions-review-test-config"
-			: ".sessions-d-test-config",
+			: rpcFixture
+				? ".sessions-rpc-test-config"
+				: ".sessions-d-test-config",
 );
 await fs.mkdir(config, { recursive: false, mode: 0o700 });
 const evidence = path.join(root, "packages/sessions-web/evidence");
@@ -30,7 +33,8 @@ const agentDir = path.join(config, "agent");
 await fs.mkdir(agentDir, { mode: 0o700 });
 await Bun.write(
 	path.join(agentDir, "config.yml"),
-	"compaction:\n  keepRecentTokens: 1\n  methodOrder: [soft]\nspelling:\n  autocomplete: off\n",
+	'compaction:\n  keepRecentTokens: 1\n  methodOrder: [soft]\nspelling:\n  autocomplete: off\ntask:\n  perCallModel: "on"\n  perCallModelAllow: [fake/gpt-4.1]\n  agentIdleTtlMs: 300000\n' +
+		(rpcFixture ? "async:\n  enabled: false\n" : ""),
 );
 const owned = new Map<string, Bun.Subprocess>();
 const browserStreams = new Set<AbortController>();
@@ -62,6 +66,7 @@ const provider = Bun.serve({
 			messages: Array<{ role: string; content: unknown; tool_calls?: Array<{ function: { name: string } }> }>;
 			tools?: Array<{ function: { name: string } }>;
 			stream?: boolean;
+			tool_choice?: { function?: { name?: string } };
 		};
 		const last = body.messages.at(-1);
 		const content =
@@ -90,22 +95,40 @@ const provider = Bun.serve({
 					? { name: "write", args: { path: "xd://resolve", content: "Apply isolated width fixture rewrites." } }
 					: undefined;
 		const tool =
-			last?.role === "user" && content.includes("[tool]") && tools.includes("read")
-				? { name: "read", args: { path: path.join(config, "sample.txt") } }
-				: (widthTool ??
-					(last?.role === "user" && content.includes("[agent]") && tools.includes("task")
-						? {
-								name: "task",
-								args: {
-									name: "BrowserAgent",
-									agent: "task",
-									task: "[slow] Local browser acceptance. Reply with local text.",
-									solutionSpace: "Only the local fixture.",
-									model: "fake/gpt-4.1",
-									tools: [],
-								},
-							}
-						: undefined));
+			tools.includes("yield") &&
+			(body.tool_choice?.function?.name === "yield" ||
+				content.includes("[accept]") ||
+				content.includes("follow-up marker"))
+				? {
+						name: "yield",
+						args: {
+							data: {
+								report: content.includes("follow-up marker")
+									? "fixture follow-up reply"
+									: "fixture partial summary",
+							},
+						},
+					}
+				: last?.role === "user" && content.includes("[tool]") && tools.includes("read")
+					? { name: "read", args: { path: path.join(config, "sample.txt") } }
+					: (widthTool ??
+						(last?.role === "user" &&
+						(content.includes("[agent]") || content.includes("[agent-idle]")) &&
+						tools.includes("task")
+							? {
+									name: "task",
+									args: {
+										name: "BrowserAgent",
+										agent: "task",
+										task: content.includes("[agent-idle]")
+											? "[accept] Local browser accepted agent."
+											: "[slow] Local browser acceptance. Reply with local text.",
+										solutionSpace: "Only the local fixture.",
+										model: "fake/gpt-4.1",
+										tools: [],
+									},
+								}
+							: undefined));
 		const reply = tool
 			? {
 					role: "assistant",
@@ -122,9 +145,11 @@ const provider = Bun.serve({
 					role: "assistant",
 					content: widthFixture
 						? widthTranscript
-						: last?.role === "tool"
-							? `Tool result received: ${content}`
-							: `Local answer: ${content || "summary"}`,
+						: content.includes("follow-up marker")
+							? "fixture follow-up reply"
+							: last?.role === "tool"
+								? `Tool result received: ${content}`
+								: `Local answer: ${content || "summary"}`,
 				};
 		const usage = { prompt_tokens: 100, completion_tokens: 30, total_tokens: 130 };
 		if (!body.stream)
@@ -200,7 +225,7 @@ const serviceHeaders = {
 const token = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
 const gateway = await startGateway({
 	token,
-	siteDir: path.join(root, "packages/sessions-web/dist"),
+	siteDir: process.env.SESSIONS_FIXTURE_SITE_DIR ?? path.join(root, "packages/sessions-web/dist"),
 	hostname: "127.0.0.1",
 	port: 0,
 	accessCertsUrl: access.certsUrl,
@@ -211,6 +236,19 @@ const proxy = Bun.serve({
 	async fetch(request, server) {
 		const url = new URL(request.url);
 		if (url.pathname === "/fixture/receipts") return Response.json(receipts);
+		if (rpcFixture && url.pathname === "/fixture/show-panels.js")
+			return new Response(
+				`
+				const timer = setInterval(() => {
+					const button = document.querySelector('[aria-label="Panels"]');
+					if (!document.querySelector('.agent input[name="reason"]')) return;
+					if (button && button.getClientRects().length) button.click();
+					clearInterval(timer);
+				}, 50);
+				setTimeout(() => clearInterval(timer), 10000);
+			`,
+				{ headers: { "content-type": "application/javascript" } },
+			);
 		if (url.pathname === "/fixture/shutdown") {
 			setTimeout(() => void stop().then(() => process.exit(0)), 100);
 			return Response.json({ stopping: true });
@@ -311,6 +349,7 @@ const proxy = Bun.serve({
 			const forwarded: Record<string, string> = {
 				...(isBridge ? serviceHeaders : access.headers),
 				origin: PUBLIC_ORIGIN,
+				"accept-encoding": "identity",
 			};
 			for (const name of [
 				"content-type",
@@ -374,9 +413,28 @@ const proxy = Bun.serve({
 					controller.abort();
 				},
 			});
-			return new Response(body, { headers: upstream.headers });
+			const responseHeaders = new Headers(upstream.headers);
+			// This proxy re-encodes SSE text; upstream compression metadata no longer describes these bytes.
+			responseHeaders.delete("content-encoding");
+			responseHeaders.delete("content-length");
+			return new Response(body, { headers: responseHeaders });
 		}
-		return access.fetch(gateway.url + url.pathname + url.search, { method: request.method });
+		const response = await access.fetch(gateway.url + url.pathname + url.search, {
+			method: request.method,
+			headers: { "accept-encoding": "identity" },
+		});
+		if (rpcFixture && url.pathname.startsWith("/session/") && url.searchParams.has("fixture-panels")) {
+			const html = await response.text();
+			const headers = new Headers(response.headers);
+			headers.delete("content-length");
+			headers.delete("content-encoding");
+			const showPanels = '<script src="/fixture/show-panels.js"></script>';
+			return new Response(html.replace("</body>", `${showPanels}</body>`), {
+				status: response.status,
+				headers,
+			});
+		}
+		return response;
 	},
 });
 const bridge = startBridge({

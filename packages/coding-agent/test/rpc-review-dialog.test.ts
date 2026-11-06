@@ -26,13 +26,11 @@ test("review sends bounded excerpts, not markdown, and accepts only a valid verd
 	expect(frame).toMatchObject({ method: "review", path: request.path, title: "Plan", sections: request.sections });
 	expect(frame).not.toHaveProperty("markdown");
 	expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThan(MAX_RPC_FRAME_BYTES);
-	pending
-		.get(frame.id)
-		?.resolve({
-			type: "extension_ui_response",
-			id: frame.id,
-			review: { verdict: "request-changes", comments: [{ section: "§4 Slices", text: "merge view and wire" }] },
-		});
+	pending.get(frame.id)?.resolve({
+		type: "extension_ui_response",
+		id: frame.id,
+		review: { verdict: "request-changes", comments: [{ section: "§4 Slices", text: "merge view and wire" }] },
+	});
 	expect(await answer).toEqual({
 		kind: "verdict",
 		verdict: "request-changes",
@@ -51,13 +49,11 @@ test("review sends bounded excerpts, not markdown, and accepts only a valid verd
 		pending,
 		frame => {
 			if (isRecord(frame) && typeof frame.id === "string")
-				pending
-					.get(frame.id)
-					?.resolve({
-						type: "extension_ui_response",
-						id: frame.id,
-						review: { verdict: "approve", comments: [{ section: "foreign", text: "note" }] },
-					});
+				pending.get(frame.id)?.resolve({
+					type: "extension_ui_response",
+					id: frame.id,
+					review: { verdict: "approve", comments: [{ section: "foreign", text: "note" }] },
+				});
 		},
 		request,
 	);

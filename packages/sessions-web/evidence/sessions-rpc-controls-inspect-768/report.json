@@ -1,0 +1,463 @@
+{
+ "url": "http://127.0.0.1:55748/session/c42e4513177d81ed?fixture-panels=1",
+ "at": "2026-11-06T19:33:18.849Z",
+ "allow": [
+  "few-pictures",
+  "still-page"
+ ],
+ "viewports": [
+  {
+   "width": 768,
+   "height": 1024,
+   "load": "load",
+   "screens": 1,
+   "filled": [
+    0.96
+   ],
+   "motion": {
+    "elements": 5,
+    "css": 4,
+    "transitions": 1,
+    "scripted": 0,
+    "videos": 0,
+    "playingVideos": 0
+   },
+   "metrics": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "page": {
+     "height": 1024,
+     "screens": 1,
+     "words": 134,
+     "img": 0,
+     "video": 0,
+     "canvas": 0,
+     "svg": 4,
+     "sections": 0,
+     "horizontalOverflow": 0,
+     "overflowCulprits": [],
+     "uiFragments": 0,
+     "uiAbuse": false,
+     "realPictures": 0,
+     "videoCount": 0,
+     "uiPictures": 0,
+     "pictureSamples": [],
+     "blendText": 0,
+     "sideScrollers": 0,
+     "brokenImages": [],
+     "emoji": [],
+     "videosNoPoster": 0
+    },
+    "hero": {
+     "text": "desktop",
+     "words": 1,
+     "chars": 7,
+     "lines": 1,
+     "size": 14,
+     "vw": 1.8,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "h1": {
+     "text": "desktop",
+     "words": 1,
+     "lines": 1,
+     "size": 13.5,
+     "font": "Inter var"
+    },
+    "headings": [],
+    "headingSummary": {
+     "count": 0,
+     "maxLines": 0,
+     "over2Lines": 0,
+     "statements": 0,
+     "centered": 0,
+     "medianWords": null,
+     "mixedFontHeadings": 0
+    },
+    "type": {
+     "families": [
+      {
+       "family": "Inter var",
+       "share": 0.83,
+       "mono": false
+      },
+      {
+       "family": "ui-monospace",
+       "share": 0.17,
+       "mono": false
+      }
+     ],
+     "familyCount": 2,
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14
+     ],
+     "sizeCount": 5,
+     "notLoaded": [],
+     "body": {
+      "font": "ui-monospace",
+      "size": 12.5,
+      "leading": 1.5,
+      "weight": 400,
+      "tracking": 0,
+      "contrast": 7.7
+     },
+     "measureChars": 101,
+     "max": {
+      "size": 13.5,
+      "vw": 1.8,
+      "font": "Inter var",
+      "text": "‹"
+     },
+     "monoShare": 0.17,
+     "monoProseShare": 0.17,
+     "monoFamilies": [
+      "ui-monospace"
+     ],
+     "monoSamples": [
+      "task",
+      "task",
+      "ctx 0%",
+      "0 waiting · 0 queued",
+      "0 m active",
+      "running ·"
+     ],
+     "microLabels": 0,
+     "microLabelShare": 0,
+     "microSamples": [],
+     "upperShare": 0,
+     "centerShare": 0.37,
+     "smallText": 8
+    },
+    "eyebrows": [],
+    "numbered": [],
+    "color": {
+     "bodyBg": "#000000",
+     "bodyBgHsl": {
+      "h": 0,
+      "s": 0,
+      "l": 0
+     },
+     "dark": true,
+     "sectionBgs": [
+      {
+       "color": "#09090a",
+       "top": 99,
+       "hsl": {
+        "h": 240,
+        "s": 0.05,
+        "l": 0.04
+       }
+      }
+     ],
+     "textColors": [
+      {
+       "color": "#ededef",
+       "share": 0.61
+      },
+      {
+       "color": "#a0a0a8",
+       "share": 0.26
+      },
+      {
+       "color": "#6c6c74",
+       "share": 0.08
+      },
+      {
+       "color": "#ff6166",
+       "share": 0.03
+      },
+      {
+       "color": "#3ecf8e",
+       "share": 0.01
+      }
+     ],
+     "button": {
+      "bg": "#0e0e10",
+      "hsl": {
+       "h": 240,
+       "s": 0.07,
+       "l": 0.06
+      },
+      "fg": "#ededef"
+     },
+     "lowContrast": [
+      {
+       "text": "0 of 0 done",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "model",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "thinking",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "context",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "tokens",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      },
+      {
+       "text": "cost",
+       "ratio": 3.8,
+       "need": 4.5,
+       "size": 12.5,
+       "fg": "#6c6c74",
+       "bg": "#09090a"
+      }
+     ]
+    },
+    "buttons": {
+     "count": 29,
+     "inHero": 10,
+     "radius": 8,
+     "height": 44,
+     "withShadow": 1,
+     "withGradient": 0,
+     "mono": 1,
+     "upper": 0,
+     "heroLabels": [
+      "Steer",
+      "Edit todos",
+      "Stop agent",
+      "Abort agent",
+      "Messages"
+     ]
+    },
+    "surfaces": {
+     "shadowStatic": 1,
+     "shadowOverlay": 0,
+     "shadowSamples": [
+      "button → rgba(0, 0, 0, 0.5) 0px 1px 2px 0px"
+     ],
+     "gradients": 0,
+     "scrims": 0,
+     "gradientSamples": [],
+     "gradientText": 0,
+     "hairlines": 7,
+     "hairlineSamples": [
+      "header.top 768px",
+      "footer.foot 768px",
+      "div.status.phone-status 768px",
+      "div.dlg-head 733px",
+      "details.rail-sec 733px"
+     ],
+     "outlinedBoxes": 2,
+     "dashed": 0,
+     "blurred": 1,
+     "roundedBoxes": 3,
+     "boxRadius": 16,
+     "squareMedia": 0,
+     "roundedMedia": 0,
+     "mediaRadius": 0,
+     "textShadow": 0,
+     "cardRows": []
+    },
+    "heroMedia": [],
+    "nav": {
+     "links": 1,
+     "fixed": true,
+     "height": 52,
+     "floatingPill": false,
+     "blur": true
+    },
+    "fontsLoaded": []
+   },
+   "layout": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "pageH": 1024,
+    "margins": {
+     "left": 72,
+     "right": 16
+    },
+    "sections": [],
+    "gaps": [],
+    "h1s": [
+     {
+      "text": "desktop",
+      "size": 14,
+      "top": 17,
+      "firstScreen": true
+     }
+    ],
+    "edgeText": [],
+    "edges": [],
+    "leftBlocks": 0,
+    "bodySize": 16,
+    "stage": false,
+    "explains": false,
+    "slivers": [],
+    "voidShare": 0,
+    "voidBox": null
+   },
+   "app": {
+    "viewport": {
+     "w": 768,
+     "h": 1024
+    },
+    "dark": true,
+    "ground": "#000000",
+    "sidebar": null,
+    "topbar": {
+     "h": 52
+    },
+    "canvas": {
+     "left": 21,
+     "right": 29
+    },
+    "hero": {
+     "text": "desktop",
+     "words": 1,
+     "chars": 7,
+     "lines": 1,
+     "size": 14,
+     "vw": 1.8,
+     "font": "Inter var",
+     "weight": 600,
+     "tracking": 0,
+     "leading": 1.2,
+     "top": 17,
+     "tag": "h1",
+     "kind": "heading",
+     "align": "left",
+     "position": "left"
+    },
+    "charts": 0,
+    "layout": {
+     "panels": 2,
+     "firstScreen": 2,
+     "ragged": [],
+     "voids": []
+    },
+    "tiles": 0,
+    "panels": {
+     "count": 2,
+     "radii": [
+      [
+       12,
+       1
+      ],
+      [
+       16,
+       1
+      ]
+     ],
+     "heavyBorders": 2,
+     "borderSamples": [
+      "#ffffff on #09090a (19.9:1)",
+      "#ffffff on #09090a (19.9:1)"
+     ],
+     "heavyShadows": 0,
+     "softShadows": 0,
+     "shadowSamples": [],
+     "glass": 0
+    },
+    "chips": {
+     "count": 0,
+     "hues": 0,
+     "samples": []
+    },
+    "numbers": {
+     "cells": 0,
+     "leftAligned": 0,
+     "figures": 1,
+     "tabularShare": 0,
+     "kpiMax": 12.5
+    },
+    "rows": null,
+    "chartHues": 0,
+    "placeholders": [],
+    "type": {
+     "under13": 0.1,
+     "tiny": 1,
+     "tinySamples": [
+      "task 10px"
+     ],
+     "sizes": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      16
+     ]
+    },
+    "title": {
+     "text": "desktop",
+     "size": 14,
+     "top": 17
+    },
+    "colourShare": 0.002
+   },
+   "consoleErrors": []
+  }
+ ],
+ "findings": [
+  {
+   "level": "FAIL",
+   "id": "button-fx",
+   "width": 768,
+   "message": "Buttons with shadow/glow.",
+   "fix": "Flat fill, one colour."
+  },
+  {
+   "level": "WARN",
+   "id": "contrast",
+   "width": 768,
+   "message": "Low-contrast text: \"0 of 0 done\" 3.8:1 needs 4.5:1; \"model\" 3.8:1 needs 4.5:1; \"thinking\" 3.8:1 needs 4.5:1; \"context\" 3.8:1 needs 4.5:1",
+   "fix": "Darken or lighten the text colour."
+  }
+ ],
+ "images": [
+  {
+   "viewport": "tablet",
+   "width": 768,
+   "fold": "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-controls-inspect-768/tablet-fold.jpg",
+   "pages": [
+    "/Users/jacobfreed/Developer/omp/wt/rex-sessions-rpc/packages/sessions-web/evidence/sessions-rpc-controls-inspect-768/tablet-page-01.jpg"
+   ],
+   "film": []
+  }
+ ]
+}

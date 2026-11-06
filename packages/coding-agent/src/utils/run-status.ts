@@ -10,6 +10,7 @@
  * send `state=clear` so no stale record outlives the session.
  */
 import { writeTerminalSequence } from "@oh-my-pi/pi-tui";
+import type { Terminal } from "@oh-my-pi/pi-tui/terminal";
 import { truncateLineBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { APP_NAME, isTerminalHeadless, sanitizeText } from "@oh-my-pi/pi-utils";
 import { setTerminalTitleState, type TerminalTitleState } from "./title-generator";
@@ -36,22 +37,6 @@ const ST = "\x1b\\";
 const CLEAR_REPORT = `${OSC_7501}state=clear${ST}`;
 /** The protocol's decoded `msg` limit; its base64 form stays within the 2732-byte encoded limit. */
 const MSG_MAX_BYTES = 2048;
-
-const runtime: {
-	status: RunStatus;
-	/** `terminal.programStatus`; off removes the record and stops reporting. */
-	enabled: boolean;
-	/** Set at teardown so a late transition cannot leave a record in the parent
-	 *  shell's terminal. Released only by {@link initProgramStatus}. */
-	disposed: boolean;
-	/** The report the terminal holds, so a repeated status writes nothing. */
-	reported: string | undefined;
-} = {
-	status: { state: "idle" },
-	enabled: true,
-	disposed: false,
-	reported: undefined,
-};
 
 function titleState(status: RunStatus): TerminalTitleState {
 	if (status.state === "working") return "working";
@@ -80,64 +65,56 @@ function formatReport(status: RunStatus): string {
 	return `${OSC_7501}${body}${ST}`;
 }
 
-function report(): void {
-	if (runtime.disposed || !runtime.enabled) return;
-	if (!process.stdout.isTTY || isTerminalHeadless()) return;
-	const next = formatReport(runtime.status);
-	if (next === runtime.reported) return;
-	writeTerminalSequence(next);
-	runtime.reported = next;
-}
+/** Owns one terminal's run status. Injected terminals never change the main title. */
+export class RunStatusReporter {
+	#status: RunStatus = { state: "idle" };
+	#enabled = true;
+	#disposed = false;
+	#reported: string | undefined;
 
-function clear(): void {
-	if (runtime.reported === undefined) return;
-	runtime.reported = undefined;
-	writeTerminalSequence(CLEAR_REPORT);
-}
+	constructor(private readonly terminal?: Terminal) {}
 
-/**
- * Publish a run status transition from the interactive event flow: the title
- * separator (`tui.titleState`) and, unless `terminal.programStatus` is off, the
- * OSC 7501 root record.
- */
-export function setRunStatus(status: RunStatus): void {
-	runtime.status = status;
-	setTerminalTitleState(titleState(status));
-	report();
-}
+	#report(): void {
+		if (this.#disposed || !this.#enabled) return;
+		if (!this.terminal && (!process.stdout.isTTY || isTerminalHeadless())) return;
+		const next = formatReport(this.#status);
+		if (next === this.#reported) return;
+		if (this.terminal) this.terminal.write(next);
+		else writeTerminalSequence(next);
+		this.#reported = next;
+	}
 
-/** Turn OSC 7501 reporting on or off (`terminal.programStatus`); off removes the record. */
-export function setProgramStatusEnabled(enabled: boolean): void {
-	runtime.enabled = enabled;
-	if (enabled) report();
-	else clear();
-}
+	#clear(): void {
+		if (this.#reported === undefined) return;
+		this.#reported = undefined;
+		if (this.terminal) this.terminal.write(CLEAR_REPORT);
+		else writeTerminalSequence(CLEAR_REPORT);
+	}
 
-/**
- * Re-send the record after resuming from a suspend: the shell prompt shown
- * meanwhile made the terminal drop `working` and `blocked` records. `done` and
- * `error` survive a prompt, so they are left alone rather than reported twice.
- */
-export function resendProgramStatus(): void {
-	if (runtime.status.state === "done" || runtime.status.state === "error") return;
-	runtime.reported = undefined;
-	report();
-}
+	setRunStatus(status: RunStatus): void {
+		this.#status = status;
+		if (!this.terminal) setTerminalTitleState(titleState(status));
+		this.#report();
+	}
 
-/**
- * Claim the terminal's status record when the UI takes over the terminal: the
- * counterpart to {@link disposeProgramStatus} and the only release of its latch.
- */
-export function initProgramStatus(): void {
-	runtime.disposed = false;
-}
+	setProgramStatusEnabled(enabled: boolean): void {
+		this.#enabled = enabled;
+		if (enabled) this.#report();
+		else this.#clear();
+	}
 
-/**
- * Remove omp's record and latch reporting off at UI teardown, before the
- * terminal goes back to the shell. A `done` record would otherwise survive the
- * exit and advertise a result nobody is left to show.
- */
-export function disposeProgramStatus(): void {
-	clear();
-	runtime.disposed = true;
+	resendProgramStatus(): void {
+		if (this.#status.state === "done" || this.#status.state === "error") return;
+		this.#reported = undefined;
+		this.#report();
+	}
+
+	initProgramStatus(): void {
+		this.#disposed = false;
+	}
+
+	disposeProgramStatus(): void {
+		this.#clear();
+		this.#disposed = true;
+	}
 }

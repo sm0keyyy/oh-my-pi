@@ -1,4 +1,6 @@
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { truncateToWidth } from "@oh-my-pi/pi-tui";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Terminal } from "@oh-my-pi/pi-tui/terminal";
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import type { ExtensionUIContext } from "../extensibility/extensions";
@@ -24,6 +26,7 @@ export interface PaneView {
 export async function createPaneView(options: PaneViewOptions): Promise<PaneView> {
 	const composer = new Composer({
 		terminal: options.terminal,
+		tuiOptions: { embedded: true },
 		preferences: { quiet: true, maxInlineImages: 2 },
 		exit: () => {},
 	});
@@ -54,7 +57,10 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 		session: options.session,
 		ui,
 		notice(text) {
-			if (!disposed) mode.showStatus(text);
+			if (!disposed)
+				mode.showStatus(
+					truncateToWidth(sanitizeText(text).replace(/[\r\n]+/g, " "), Math.max(1, options.terminal.columns - 2)),
+				);
 		},
 		repaint() {
 			if (!disposed) mode.ui.requestRender(true, { clearScrollback: true });

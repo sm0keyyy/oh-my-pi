@@ -19,6 +19,8 @@ import { $flag } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import type { TspFrame, TspNode, TspText } from "@oh-my-pi/pi-wire";
+import { getActiveTerminal } from "./active-terminal";
+import { registerSvgFigureTerminal } from "./chat/svg-figure";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
 import { extractPrintableText, isKeyRelease, matchesKey } from "./keys";
@@ -163,6 +165,8 @@ export interface TuiPaint {
 export type PaintListener = (paint: TuiPaint) => void;
 
 export interface TUIOptions {
+	/** Secondary terminal surface; the main UI owns process cleanup and debug services. */
+	embedded?: boolean;
 	renderScheduler?: RenderScheduler;
 	onPaint?: PaintListener;
 }
@@ -821,6 +825,7 @@ export function coalesceAdjacentSgr(line: string): string {
  * TUI - Main class for managing terminal UI with differential rendering
  */
 export class TUI extends Container {
+	readonly #embedded: boolean;
 	terminal: Terminal;
 	#frameProvider: TerminalFrameProvider | undefined;
 	#acceptedHistoryBatchId = 0;
@@ -1126,6 +1131,8 @@ export class TUI extends Container {
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
 		this.terminal = terminal;
+		registerSvgFigureTerminal(this.#imageBudget, terminal);
+		this.#embedded = options?.embedded === true;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
 		if (options?.onPaint) this.#paintListeners.add(options.onPaint);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
@@ -1536,7 +1543,7 @@ export class TUI extends Container {
 		this.#debugServer?.stop();
 		this.#debugServer = undefined;
 		const debugPath = process.env.OMP_TUI_DEBUG;
-		if (debugPath !== undefined && debugPath.length > 0) {
+		if (!this.#embedded && debugPath !== undefined && debugPath.length > 0) {
 			this.#debugServer = new TuiDebugServer(this, debugPath);
 			this.#debugServer.start();
 		}
@@ -1664,7 +1671,9 @@ export class TUI extends Container {
 		backgroundRgb = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getTerminalBackgroundColor() : undefined;
 		if (this.#stopped) return;
 		this.#cancelPostmortemRestore?.();
-		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
+		if (!this.#embedded) {
+			this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
+		}
 		for (const listener of this.#startListeners) this.#runStartListener(listener);
 		this.#started = !this.#stopped;
 		this.terminal.hideCursor();
@@ -1809,7 +1818,7 @@ export class TUI extends Container {
 		this.#resizeSettleTimer = undefined;
 		if (this.#altActive || this.#resizeAltActive) {
 			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
-			setAltScreenActive(false);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 			this.#altActive = false;
 			this.#resizeAltActive = false;
 		}
@@ -2043,7 +2052,7 @@ export class TUI extends Container {
 			this.#resizeAltExitFused = false;
 		} else if (!this.#resizeAltActive) {
 			this.#resizeAltActive = true;
-			setAltScreenActive(true);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(true);
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
 			this.#forgetHardwareCursorState();
@@ -2137,7 +2146,7 @@ export class TUI extends Container {
 		}
 		this.#noteAltBufferToggle();
 		this.terminal.write(this.#takePendingAltEnter() + exitSequence);
-		setAltScreenActive(false);
+		if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 		this.#beginResizeAnchorProbe();
 	}
 	/**
@@ -2675,7 +2684,7 @@ export class TUI extends Container {
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
 			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
-			setAltScreenActive(false);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 		}
 		if (this.#altActive || this.#pendingAltExit) {
 			// A pending fused exit may have been built without an OFF write to
@@ -2688,7 +2697,7 @@ export class TUI extends Container {
 				? `${this.#takePendingAltEnter()}${this.#pendingAltExit}${mouseExit}`
 				: `${mouseExit}${this.#altScreenExit()}`;
 			this.terminal.write(exitSequence);
-			setAltScreenActive(false);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 			this.#altActive = false;
 			this.#mouseTracking = "off";
 			this.#altPreviousLines = [];
@@ -3832,7 +3841,7 @@ export class TUI extends Container {
 			this.#noteAltBufferToggle();
 			this.#pendingAltExit = "";
 			this.#resizeAltExitFused = false;
-			setAltScreenActive(false);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 		}
 		if (target) this.#recordHardwareCursorState(target);
 		else this.#recordHardwareCursorHidden();
@@ -3932,7 +3941,7 @@ export class TUI extends Container {
 				this.terminal.write(`\x1b[?1049h${this.#keyboardEnhancementEnter()}`);
 			}
 			this.#setMouseTracking(wantMouse);
-			setAltScreenActive(true);
+			if (getActiveTerminal() === this.terminal) setAltScreenActive(true);
 			this.terminal.hideCursor();
 			this.#forgetHardwareCursorState();
 			this.#recordHardwareCursorHidden();
@@ -3959,7 +3968,7 @@ export class TUI extends Container {
 			} else {
 				this.#noteAltBufferToggle();
 				this.terminal.write(exitSequence);
-				setAltScreenActive(false);
+				if (getActiveTerminal() === this.terminal) setAltScreenActive(false);
 			}
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;

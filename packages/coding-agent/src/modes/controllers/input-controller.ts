@@ -70,7 +70,6 @@ import {
 import { commandUsage, hintUsage } from "../../utils/usage-counter";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
-import { resendProgramStatus } from "../../utils/run-status";
 import { loadImageInput } from "../../utils/image-loading";
 import { materializeImageChipLinks } from "../utils/ui-helpers";
 import { type ConversationPosition, continuesConversation, conversationPosition } from "../utils/conversation-position";
@@ -183,6 +182,8 @@ const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s
  * a running job) still needs the main session.
  */
 const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
+	stop: () => true,
+	abort: () => true,
 	btw: () => true,
 	effort: () => true,
 	export: () => true,
@@ -1687,6 +1688,10 @@ export class InputController {
 	}
 
 	handleCtrlC(): void {
+		if (this.ctx.embedded) {
+			this.ctx.showStatus("use /stop <reason> or /abort <reason>");
+			return;
+		}
 		// Sync-flush the session JSONL so in-flight writes survive a hard exit.
 		// The TUI consumes Ctrl+C as a key event in raw mode, so postmortem's
 		// process-level SIGINT handler never fires. shutdown() awaits its own
@@ -1736,6 +1741,10 @@ export class InputController {
 	}
 
 	handleCtrlD(): void {
+		if (this.ctx.embedded) {
+			this.ctx.showStatus("use /stop <reason> or /abort <reason>");
+			return;
+		}
 		// Editor text (if any) is snapshotted at the start of shutdown() and
 		// persisted as a draft for the next resume. Empty text is also fine —
 		// shutdown clears any stale sidecar in that case.
@@ -1743,6 +1752,10 @@ export class InputController {
 	}
 
 	handleCtrlZ(): void {
+		if (this.ctx.embedded) {
+			this.ctx.showStatus("use /stop <reason> or /abort <reason>");
+			return;
+		}
 		// Job-control suspend is POSIX-only: on Windows `process.kill(_, "SIGSTOP")`
 		// throws `TypeError: Unknown signal: SIGSTOP` and takes the whole agent down
 		// via an uncaught exception (issue #2036, originally for SIGTSTP — same
@@ -1769,7 +1782,7 @@ export class InputController {
 			clearInterval(suspendKeepalive);
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender(true);
-			resendProgramStatus();
+			this.ctx.runStatus.resendProgramStatus();
 		};
 		process.once("SIGCONT", onResume);
 

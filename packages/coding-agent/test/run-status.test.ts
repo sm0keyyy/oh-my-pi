@@ -1,11 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
-import {
-	disposeProgramStatus,
-	initProgramStatus,
-	resendProgramStatus,
-	setProgramStatusEnabled,
-	setRunStatus,
-} from "@oh-my-pi/pi-coding-agent/utils/run-status";
+import { RunStatusReporter } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import * as titleGenerator from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
@@ -25,6 +19,7 @@ describe("run status OSC 7501 reporting", () => {
 	let writes: string[] = [];
 	let prevHeadless = false;
 	let ttyDescriptor: PropertyDescriptor | undefined;
+	const reporter = new RunStatusReporter();
 
 	beforeEach(() => {
 		// The title is a separate surface with its own suite; keep its writes and spinner out of these.
@@ -38,14 +33,14 @@ describe("run status OSC 7501 reporting", () => {
 			return true;
 		});
 		// Order-independent baseline: the UI owns the terminal, reporting on, idle reported.
-		initProgramStatus();
-		setProgramStatusEnabled(true);
-		setRunStatus({ state: "idle" });
+		reporter.initProgramStatus();
+		reporter.setProgramStatusEnabled(true);
+		reporter.setRunStatus({ state: "idle" });
 		writes.length = 0;
 	});
 
 	afterEach(() => {
-		disposeProgramStatus();
+		reporter.disposeProgramStatus();
 		vi.restoreAllMocks();
 		if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
 		else Reflect.deleteProperty(process.stdout, "isTTY");
@@ -53,12 +48,12 @@ describe("run status OSC 7501 reporting", () => {
 	});
 
 	it("writes each transition as a whole root record, once, with kind only when blocked and msg as one clean line", () => {
-		setRunStatus({ state: "working" });
-		setRunStatus({ state: "working" });
-		setRunStatus({ state: "blocked", kind: "question", msg: "\x1b[1mWhich branch?\x1b[0m\n\tmain or dev?" });
-		setRunStatus({ state: "done" });
-		setRunStatus({ state: "error", msg: "boom" });
-		setRunStatus({ state: "error", msg: " \n " });
+		reporter.setRunStatus({ state: "working" });
+		reporter.setRunStatus({ state: "working" });
+		reporter.setRunStatus({ state: "blocked", kind: "question", msg: "\x1b[1mWhich branch?\x1b[0m\n\tmain or dev?" });
+		reporter.setRunStatus({ state: "done" });
+		reporter.setRunStatus({ state: "error", msg: "boom" });
+		reporter.setRunStatus({ state: "error", msg: " \n " });
 
 		expect(writes).toEqual([
 			report("state=working:app=omp"),
@@ -72,7 +67,7 @@ describe("run status OSC 7501 reporting", () => {
 	});
 
 	it("cuts a long msg on a character boundary within the protocol's 2048-byte decoded limit", () => {
-		setRunStatus({ state: "error", msg: `a${"😀".repeat(1000)}` });
+		reporter.setRunStatus({ state: "error", msg: `a${"😀".repeat(1000)}` });
 
 		expect(writes).toHaveLength(1);
 		const text = decodedMsg(writes[0]!);
@@ -82,38 +77,38 @@ describe("run status OSC 7501 reporting", () => {
 	});
 
 	it("clears the record at teardown and writes nothing more until the UI claims the terminal again", () => {
-		setRunStatus({ state: "done" });
+		reporter.setRunStatus({ state: "done" });
 		writes.length = 0;
 
-		disposeProgramStatus();
-		setRunStatus({ state: "working" });
-		resendProgramStatus();
+		reporter.disposeProgramStatus();
+		reporter.setRunStatus({ state: "working" });
+		reporter.resendProgramStatus();
 		expect(writes).toEqual([CLEAR]);
 
 		writes.length = 0;
-		initProgramStatus();
-		setRunStatus({ state: "idle" });
+		reporter.initProgramStatus();
+		reporter.setRunStatus({ state: "idle" });
 		expect(writes).toEqual([report("state=idle:app=omp")]);
 	});
 
 	it("clears the record when turned off and reports the current status when turned back on", () => {
-		setRunStatus({ state: "working" });
+		reporter.setRunStatus({ state: "working" });
 		writes.length = 0;
 
-		setProgramStatusEnabled(false);
-		setRunStatus({ state: "blocked", kind: "permission" });
-		setProgramStatusEnabled(true);
+		reporter.setProgramStatusEnabled(false);
+		reporter.setRunStatus({ state: "blocked", kind: "permission" });
+		reporter.setProgramStatusEnabled(true);
 
 		expect(writes).toEqual([CLEAR, report("state=blocked:kind=permission:app=omp")]);
 	});
 
 	it("re-sends prompt-invalidated working and blocked records but never repeats a done result", () => {
-		setRunStatus({ state: "working" });
-		resendProgramStatus();
-		setRunStatus({ state: "blocked", kind: "permission", msg: "Approve the command?" });
-		resendProgramStatus();
-		setRunStatus({ state: "done" });
-		resendProgramStatus();
+		reporter.setRunStatus({ state: "working" });
+		reporter.resendProgramStatus();
+		reporter.setRunStatus({ state: "blocked", kind: "permission", msg: "Approve the command?" });
+		reporter.resendProgramStatus();
+		reporter.setRunStatus({ state: "done" });
+		reporter.resendProgramStatus();
 
 		expect(writes).toEqual([
 			report("state=working:app=omp"),

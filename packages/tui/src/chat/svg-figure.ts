@@ -19,6 +19,7 @@ import { fencedCode, type Markdown } from "../components/markdown";
 import { type CellDimensions, getCellDimensions, getImageDimensions } from "../terminal-capabilities";
 import { ensureThemeSync, getThemeEpoch, type ThemeColor, theme } from "../theme";
 import type { Component } from "../tui";
+import type { Terminal } from "../terminal";
 import { closePartialSvg, prepareSvg } from "./svg-source";
 
 /** SVG user units per terminal row; a 1000-unit-wide drawing spans ~125 columns of 1:2 cells. */
@@ -153,13 +154,22 @@ interface Attempt {
 }
 
 let nextFigureId = 0;
+const figureTerminals = new WeakMap<ImageBudget, Terminal>();
+
+/** Bind figures that share an image budget to that budget's terminal viewport. */
+export function registerSvgFigureTerminal(budget: ImageBudget, terminal: Terminal): void {
+	figureTerminals.set(budget, terminal);
+}
 
 /** Cells a figure rendered at `width` may fill: the image's width, the caller's row ceiling (or a share of the viewport), and the raster edge cap. */
 function limitsFor(
 	width: number,
 	cell: CellDimensions,
-	maxRows = Math.floor((process.stdout.rows || 24) * MAX_VIEWPORT_SHARE),
+	maxRows: number | undefined,
+	budget: ImageBudget | undefined,
 ): Limits {
+	const viewportRows = budget ? figureTerminals.get(budget)?.rows : undefined;
+	maxRows ??= Math.floor((viewportRows ?? (process.stdout.rows || 24)) * MAX_VIEWPORT_SHARE);
 	return {
 		columns: Math.min(imageMaxColumns(width), Math.floor(MAX_EDGE_PX / cell.widthPx)),
 		rows: Math.max(1, Math.min(maxRows, Math.floor(MAX_EDGE_PX / cell.heightPx))),
@@ -275,7 +285,7 @@ export class SvgFigure implements Component {
 		const attempt = this.#attempt;
 		if (this.#failed === this.#source) return false;
 		const cell = getCellDimensions();
-		const limits = limitsFor(width, cell, this.#maxRows());
+		const limits = limitsFor(width, cell, this.#maxRows(), this.#options.budget);
 		return (
 			attempt === undefined ||
 			attempt.source !== this.#source ||
@@ -331,7 +341,7 @@ export class SvgFigure implements Component {
 		const attempt: Attempt = {
 			source: this.#source,
 			cell,
-			limits: limitsFor(width, cell, this.#maxRows()),
+			limits: limitsFor(width, cell, this.#maxRows(), this.#options.budget),
 			themeEpoch: getThemeEpoch(),
 			final: this.#final,
 		};

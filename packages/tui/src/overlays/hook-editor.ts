@@ -55,8 +55,8 @@ const PROMPT_TITLE_CHROME_COLUMNS = 4;
  * {@link MAX_PROMPT_TITLE_ROWS} rows (the last ends in `…` when cut). For terminal rendering only:
  * native hosts get the question whole ({@link HookEditorOptions.question}).
  */
-export function boundPromptTitle(prefix: string, question: string): string {
-	const width = Math.max(1, (process.stdout.columns ?? 80) - PROMPT_TITLE_CHROME_COLUMNS);
+export function boundPromptTitle(prefix: string, question: string, columns = process.stdout.columns ?? 80): string {
+	const width = Math.max(1, columns - PROMPT_TITLE_CHROME_COLUMNS);
 	const flat = replaceTabs(`${prefix}${question}`).replace(/\s+/g, " ").trim();
 	const wrapped = wrapTextWithAnsi(flat, width);
 	if (wrapped.length <= MAX_PROMPT_TITLE_ROWS) return wrapped.join("\n");
@@ -135,7 +135,8 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		// bounded ask question) stay as body rows so they are never truncated into
 		// the one-row border.
 		const question = options?.question;
-		const terminalTitle = question === undefined ? title : boundPromptTitle(`${title}: `, question);
+		const terminalTitle =
+			question === undefined ? title : boundPromptTitle(`${title}: `, question, tui.terminal.columns);
 		const [titleLine = "", ...detailLines] = terminalTitle.split("\n");
 		super(titleLine, ROLE);
 
@@ -160,7 +161,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		if (options?.acceptImages) this.#editor.atomicTokenPattern = PLACEHOLDER_REGEX;
 		// Bound the editor so long content scrolls instead of pushing the
 		// submit hint off-screen. Caller may override via options.maxHeight.
-		const termRows = this.#tui.terminal?.rows ?? process.stdout.rows ?? 40;
+		const termRows = this.#tui.terminal.rows;
 		this.#editor.setMaxHeight(options?.maxHeight ?? Math.max(3, termRows - 12));
 		this.#editor.setScrollbarVisible(true);
 		if (prefill) {

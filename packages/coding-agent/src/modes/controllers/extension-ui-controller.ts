@@ -961,7 +961,12 @@ export class ExtensionUiController {
 					prefill,
 					(text, images) => finishPrompt({ text, images }),
 					() => finishPrompt(undefined),
-					{ promptStyle: true, externalEditor: editDialogExternally, question: prompt.question, ...options },
+					{
+						promptStyle: true,
+						externalEditor: this.ctx.embedded ? undefined : editDialogExternally,
+						question: prompt.question,
+						...options,
+					},
 				);
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(promptEditor);
@@ -1013,6 +1018,7 @@ export class ExtensionUiController {
 			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
 			this.ctx.ui.requestRender();
+			dialogOptions?.onTimeoutStart?.();
 
 			return () => {
 				closed = true;
@@ -1371,7 +1377,7 @@ export class ExtensionUiController {
 				prefill,
 				value => settle(value),
 				() => settle(undefined),
-				{ ...editorOptions, externalEditor: editDialogExternally },
+				{ ...editorOptions, externalEditor: this.ctx.embedded ? undefined : editDialogExternally },
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(this.ctx.hookEditor);
@@ -1658,6 +1664,9 @@ export class ExtensionUiController {
 		signal: AbortSignal | undefined,
 		present: (settle: (value: T | undefined) => void) => () => void,
 	): Promise<T | undefined> {
+		if (this.ctx.embedded) {
+			signal = signal ? AbortSignal.any([signal, this.ctx.dialogLifetimeSignal]) : this.ctx.dialogLifetimeSignal;
+		}
 		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
 		let settled = false;
 		let started = false;
@@ -1671,8 +1680,8 @@ export class ExtensionUiController {
 			if (settled) return;
 			settled = true;
 			signal?.removeEventListener("abort", onAbort);
-			if (started) {
-				hide?.();
+			if (started && hide) {
+				hide();
 				this.#dialogActive = false;
 				this.#advanceDialogQueue();
 			}
@@ -1689,6 +1698,12 @@ export class ExtensionUiController {
 			this.#dialogActive = true;
 			try {
 				hide = present(settle);
+				// A presentation callback can synchronously cancel before hide is assigned.
+				if (settled) {
+					hide();
+					this.#dialogActive = false;
+					this.#advanceDialogQueue();
+				}
 			} catch (error) {
 				settled = true;
 				signal?.removeEventListener("abort", onAbort);

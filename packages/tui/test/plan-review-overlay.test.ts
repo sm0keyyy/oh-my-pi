@@ -219,7 +219,15 @@ describe("PlanReviewOverlay", () => {
 		const codeRows = Array.from({ length: 400 }, (_, i) => `L${String(i).padStart(3, "0")}`).join("\n");
 		const overlay = new PlanReviewOverlay(
 			`# Plan\n\n\`\`\`\n${codeRows}\n\`\`\`\n`,
-			{ promptTitle: "next", options: APPROVAL_OPTIONS },
+			{
+				promptTitle: "next",
+				options: APPROVAL_OPTIONS,
+				terminal: {
+					get rows() {
+						return process.stdout.rows || 40;
+					},
+				},
+			},
 			{ onPick: vi.fn(), onCancel: vi.fn() },
 		);
 
@@ -251,7 +259,15 @@ describe("PlanReviewOverlay", () => {
 		const codeRows = Array.from({ length: 400 }, (_, i) => `L${String(i).padStart(3, "0")}`).join("\n");
 		const overlay = new PlanReviewOverlay(
 			`# Plan\n\n\`\`\`\n${codeRows}\n\`\`\`\n`,
-			{ promptTitle: "next", options: APPROVAL_OPTIONS },
+			{
+				promptTitle: "next",
+				options: APPROVAL_OPTIONS,
+				terminal: {
+					get rows() {
+						return process.stdout.rows || 40;
+					},
+				},
+			},
 			{ onPick: vi.fn(), onCancel: vi.fn() },
 		);
 
@@ -280,7 +296,15 @@ describe("PlanReviewOverlay", () => {
 		const codeRows = Array.from({ length: 400 }, (_, i) => `L${String(i).padStart(3, "0")}`).join("\n");
 		const overlay = new PlanReviewOverlay(
 			`# Plan\n\n\`\`\`\n${codeRows}\n\`\`\`\n`,
-			{ promptTitle: "next", options: APPROVAL_OPTIONS },
+			{
+				promptTitle: "next",
+				options: APPROVAL_OPTIONS,
+				terminal: {
+					get rows() {
+						return process.stdout.rows || 40;
+					},
+				},
+			},
 			{ onPick: vi.fn(), onCancel: vi.fn() },
 		);
 
@@ -670,6 +694,7 @@ describe("PlanReviewOverlay", () => {
 				{
 					promptTitle: "next",
 					options: APPROVAL_OPTIONS,
+					terminal: { rows: 14 },
 					annotationState: {
 						annotations: [
 							{
@@ -1100,5 +1125,83 @@ describe("PlanReviewOverlay", () => {
 		render(overlay);
 		expect(hoverRow(overlay, "Approve and keep context")).toBe(true);
 		expect(optionLineRaw(overlay, "Approve and keep context")).not.toContain(selectedBg);
+	});
+});
+
+describe("approval and comment modes", () => {
+	beforeEach(() => {
+		setThemeInstance(darkTheme!);
+		setKeybindings(KeybindingsManager.inMemory());
+	});
+	afterEach(() => setKeybindings(KeybindingsManager.inMemory()));
+
+	it("approval uses section keys, batches section notes, and sizes from its own terminal", () => {
+		const onPick = vi.fn();
+		const onCancel = vi.fn();
+		const onAnnotationStateChange = vi.fn();
+		const overlay = new PlanReviewOverlay(
+			"## 4. Slices\n\nBuild\n\n## 5. Tests\n\nTest\n",
+			{ approval: true, options: [], terminal: { rows: 20 } },
+			{ onPick, onCancel, onAnnotationStateChange },
+		);
+		const originalRows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+		Object.defineProperty(process.stdout, "rows", { configurable: true, value: 50 });
+		try {
+			expect(overlay.render(80).length).toBeLessThanOrEqual(20);
+		} finally {
+			if (originalRows) Object.defineProperty(process.stdout, "rows", originalRows);
+			else Reflect.deleteProperty(process.stdout, "rows");
+		}
+		for (const note of ["merge view and wire", "run both"]) {
+			overlay.handleInput("c");
+			for (const ch of note) overlay.handleInput(ch);
+			overlay.handleInput(ENTER);
+			overlay.handleInput("j");
+			overlay.render(80);
+		}
+		expect(onPick).not.toHaveBeenCalled();
+		expect(onAnnotationStateChange.mock.calls.at(-1)?.[0].annotations).toMatchObject([
+			{ section: { title: "4. Slices" }, target: { kind: "section" }, note: "merge view and wire" },
+			{ section: { title: "5. Tests" }, target: { kind: "section" }, note: "run both" },
+		]);
+		overlay.handleInput("k");
+		overlay.handleInput("r");
+		expect(onPick).toHaveBeenCalledWith("Request changes");
+		const approve = new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel });
+		approve.handleInput("a");
+		expect(onPick).toHaveBeenCalledWith("Approve");
+		new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel }).handleInput("\x1b");
+		expect(onCancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("comment submits only at s and confirms dropping a batch", () => {
+		const onPick = vi.fn();
+		const onCancel = vi.fn();
+		const overlay = new PlanReviewOverlay(
+			"# One\n\n## Two\n",
+			{ mode: "comment", options: [] },
+			{ onPick, onCancel },
+		);
+		overlay.handleInput("c");
+		overlay.handleInput("first");
+		overlay.handleInput(ENTER);
+		overlay.handleInput("j");
+		overlay.handleInput("c");
+		overlay.handleInput("second");
+		overlay.handleInput(ENTER);
+		expect(onPick).not.toHaveBeenCalled();
+		overlay.handleInput("\x1b");
+		expect(render(overlay)).toContain("Discard all comments?");
+		expect(onCancel).not.toHaveBeenCalled();
+		overlay.handleInput("n");
+		overlay.handleInput("s");
+		expect(onPick).toHaveBeenCalledWith("Submit comments");
+		const discard = new PlanReviewOverlay("# One", { mode: "comment", options: [] }, { onPick, onCancel });
+		discard.handleInput("c");
+		discard.handleInput("unsent");
+		discard.handleInput(ENTER);
+		discard.handleInput("\x1b");
+		discard.handleInput("y");
+		expect(onCancel).toHaveBeenCalledTimes(1);
 	});
 });

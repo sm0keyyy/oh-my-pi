@@ -1,0 +1,3 @@
+Request operator approval for a markdown plan. Parameters: path (a .md file or local:// URL, at most 1 MiB), title (optional).
+
+Blocks until the operator approves, requests changes, cancels, or a subagent review times out. The native review is answerable in the main TUI, sessions, or a Rex pane beside the requesting agent. Section comments are batched with the verdict. The result contains only the verdict and section comments. Cancellation and timeout are not approval. This does not enter plan mode or execute the plan. Main reviews have no deadline; subagent reviews have 600 seconds from presentation.

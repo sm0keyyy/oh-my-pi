@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
+	ExtensionReviewResult,
 	ExtensionUIDialogOptions,
 	ExtensionUIContext,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -303,4 +304,41 @@ describe("subagent ask host", () => {
 			expect(pane.dialogs.at(-1)!.options?.signal?.aborted).toBe(true);
 		}
 	});
+});
+
+it("review shares the ask FIFO and times out without approval 600 seconds after presentation", async () => {
+	const main = fakeUi(true);
+	let reviewOptions: ExtensionUIDialogOptions | undefined;
+	main.ui.review = vi.fn((_request, options) => {
+		reviewOptions = options;
+		const result = Promise.withResolvers<ExtensionReviewResult | undefined>();
+		options?.signal?.addEventListener("abort", () => result.resolve(undefined), { once: true });
+		return result.promise;
+	});
+	const host = registerSubagentAskHost({ main: main.ui, subagentEventBus: new EventBus() });
+	hosts.push(host);
+	const ask = host.uiFor("first", "First").askDialog!(questions);
+	const review = host.uiFor("worker", "Worker").review!({
+		path: "/tmp/plan.md",
+		title: "Ship",
+		markdown: "# Plan",
+		sections: [],
+	});
+	expect(main.ui.review).not.toHaveBeenCalled();
+	main.dialogs[0]!.resolve(answer(main.dialogs[0]!, "SQLite"));
+	await ask;
+	expect(main.ui.review).toHaveBeenCalledWith(expect.objectContaining({ title: "Worker: Ship" }), expect.anything());
+	let timeout: (() => void) | undefined;
+	const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, delay: number) => {
+		expect(delay).toBe(600_000);
+		timeout = callback;
+		return {} as NodeJS.Timeout;
+	}) as typeof setTimeout);
+	expect(timeout).toBeUndefined();
+	reviewOptions?.onTimeoutStart?.();
+	expect(timeout).toBeDefined();
+	timeout!();
+	expect(await review).toEqual({ kind: "cancelled", timedOut: true });
+	expect(reviewOptions?.signal?.aborted).toBe(true);
+	timer.mockRestore();
 });

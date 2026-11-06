@@ -6,6 +6,8 @@ import type { AgentRef, AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
 import { TASK_SUBAGENT_EVENT_CHANNEL } from "../task/types";
 import type { EventBus } from "../utils/event-bus";
+import type { RexLocation } from "./component-pane";
+import { removePaneRecord, writePaneRecord } from "./pane-records";
 import type { RexCli } from "./rex-cli";
 import { cfgRexSubagentPanes } from "./settings";
 
@@ -29,6 +31,8 @@ export interface PaneManagerDeps {
 
 export interface PaneManager {
 	paneUi(agentId: string): ExtensionUIContext | undefined;
+	location(agentId: string): RexLocation | undefined;
+	reveal(agentId: string): Promise<boolean>;
 	dispose(): Promise<void>;
 }
 
@@ -53,6 +57,8 @@ interface Member {
 interface Group {
 	first: string;
 	members: Set<Member>;
+	// Failed kills retain identities even after a new group session opens.
+	blocks: Map<string, Set<string>>;
 	nextSlot: number;
 	sessionId?: string;
 	label?: string;
@@ -97,7 +103,7 @@ class Manager implements PaneManager {
 					if (this.deps.registry.get(member.id)) return;
 					member.group.members.delete(member);
 					this.#members.delete(member.id);
-					if (member.group.members.size === 0 && !member.group.sessionId) {
+					if (member.group.members.size === 0 && !member.group.sessionId && member.group.blocks.size === 0) {
 						for (const [key, group] of this.#groups) if (group === member.group) this.#groups.delete(key);
 					}
 				});
@@ -107,6 +113,30 @@ class Manager implements PaneManager {
 
 	paneUi(agentId: string): ExtensionUIContext | undefined {
 		return this.#members.get(agentId)?.active?.pane.ui;
+	}
+
+	location(agentId: string): RexLocation | undefined {
+		const member = this.#members.get(agentId);
+		const sessionId = member?.group.sessionId;
+		return sessionId && member?.active ? { sessionId, blockId: member.active.blockId } : undefined;
+	}
+
+	async reveal(agentId: string): Promise<boolean> {
+		if (this.#disposed || !this.#live(this.deps.registry.get(agentId))) return false;
+		if (!this.#members.has(agentId)) this.#started(agentId, undefined);
+		const member = this.#members.get(agentId);
+		if (!member) return false;
+		member.failed = false;
+		this.#changed(agentId);
+		let revealed = false;
+		this.#queue(member.group, async () => {
+			const location = this.location(agentId);
+			if (this.#disposed || !location) return;
+			await this.deps.rex.focusBlock(location.sessionId, location.blockId);
+			revealed = true;
+		});
+		await member.group.tail;
+		return revealed;
 	}
 
 	#warn(cause: unknown): void {
@@ -144,7 +174,7 @@ class Manager implements PaneManager {
 			if (!group) {
 				group = this.#groups.get(key);
 				if (!group) {
-					group = { first: id, members: new Set(), nextSlot: 0, tail: Promise.resolve() };
+					group = { first: id, members: new Set(), blocks: new Map(), nextSlot: 0, tail: Promise.resolve() };
 					this.#groups.set(key, group);
 				}
 			}
@@ -197,6 +227,27 @@ class Manager implements PaneManager {
 		});
 	}
 
+	#removeRecord(group: Group, sessionId: string, blockId: string): void {
+		try {
+			removePaneRecord(blockId);
+			const blocks = group.blocks.get(sessionId);
+			blocks?.delete(blockId);
+			if (blocks?.size === 0) group.blocks.delete(sessionId);
+		} catch (error) {
+			this.#warn(error);
+		}
+	}
+
+	async #closeBlock(group: Group, sessionId: string, blockId: string): Promise<void> {
+		await this.deps.rex.closeBlock(sessionId, blockId);
+		this.#removeRecord(group, sessionId, blockId);
+	}
+
+	async #killSession(group: Group, sessionId: string): Promise<void> {
+		await this.deps.rex.killSession(sessionId);
+		for (const blockId of group.blocks.get(sessionId) ?? []) this.#removeRecord(group, sessionId, blockId);
+	}
+
 	async #killEmpty(group: Group): Promise<void> {
 		if (!group.sessionId) return;
 		for (const member of group.members) if (member.active) return;
@@ -204,7 +255,7 @@ class Manager implements PaneManager {
 		group.sessionId = undefined;
 		group.label = undefined;
 		try {
-			await this.deps.rex.killSession(sessionId);
+			await this.#killSession(group, sessionId);
 		} finally {
 			// Request collection of closed pane trees without blocking the main TUI.
 			Bun.gc(false);
@@ -226,7 +277,7 @@ class Manager implements PaneManager {
 		if (this.#disposed || !active) return;
 		member.active = undefined;
 		if (member.group.sessionId) {
-			await this.deps.rex.closeBlock(member.group.sessionId, active.blockId).catch(error => this.#warn(error));
+			await this.#closeBlock(member.group, member.group.sessionId, active.blockId).catch(error => this.#warn(error));
 		}
 		await active.pane.dispose().catch(error => this.#warn(error));
 		await this.#killEmpty(member.group).catch(error => this.#warn(error));
@@ -247,7 +298,7 @@ class Manager implements PaneManager {
 			const argv = [this.deps.relayPath, this.deps.socketPath, await this.deps.prepareToken(token)];
 			if (!group.sessionId) {
 				const label = `omp: ${group.first}`;
-				const created = await this.deps.rex.newSession(label, member.id, member.id, argv);
+				const created = await this.deps.rex.newSession(label, member.id, `omp: ${member.id}`, argv);
 				group.sessionId = created.sessionId;
 				group.label = label;
 				block = created.blockId;
@@ -259,12 +310,25 @@ class Manager implements PaneManager {
 				const anchor = peers.find(other => other.slot === anchorSlot) ?? peers[0];
 				if (anchor?.active) {
 					const direction = !member.everOpened && slot === 1 && anchor.slot === anchorSlot ? "right" : "below";
-					block = (await this.deps.rex.split(group.sessionId, anchor.active.blockId, direction, member.id, argv))
-						.blockId;
+					block = (
+						await this.deps.rex.split(
+							group.sessionId,
+							anchor.active.blockId,
+							direction,
+							`omp: ${member.id}`,
+							argv,
+						)
+					).blockId;
 				} else {
-					block = (await this.deps.rex.newWindow(group.sessionId, member.id, argv)).blockId;
+					block = (await this.deps.rex.newWindow(group.sessionId, member.id, `omp: ${member.id}`, argv)).blockId;
 				}
 			}
+			const sessionId = group.sessionId;
+			if (!sessionId) throw new Error("Pane group lost its session");
+			let blocks = group.blocks.get(sessionId);
+			if (!blocks) group.blocks.set(sessionId, (blocks = new Set()));
+			blocks.add(block);
+			writePaneRecord(block, { kind: "relay", pid: process.pid, group: true });
 			const result = await opened;
 			if ("error" in result) throw result.error;
 			const active = { session, blockId: block, pane: result.pane };
@@ -294,7 +358,7 @@ class Manager implements PaneManager {
 				await this.#close(member);
 			} else {
 				if (!this.#disposed && block && group.sessionId)
-					await this.deps.rex.closeBlock(group.sessionId, block).catch(error => this.#warn(error));
+					await this.#closeBlock(group, group.sessionId, block).catch(error => this.#warn(error));
 				const result = await opened;
 				if (result && "pane" in result) await result.pane.dispose().catch(error => this.#warn(error));
 				await this.#killEmpty(group).catch(error => this.#warn(error));
@@ -309,10 +373,12 @@ class Manager implements PaneManager {
 		this.#unsubscribers.length = 0;
 		for (const group of this.#groups.values()) {
 			this.#queue(group, async () => {
-				const sessionId = group.sessionId;
+				const sessionIds = new Set(group.blocks.keys());
+				if (group.sessionId) sessionIds.add(group.sessionId);
 				group.sessionId = undefined;
 				group.label = undefined;
-				if (sessionId) await this.deps.rex.killSession(sessionId).catch(error => this.#warn(error));
+				for (const sessionId of sessionIds)
+					await this.#killSession(group, sessionId).catch(error => this.#warn(error));
 				for (const member of group.members) {
 					member.session = null;
 					const active = member.active;

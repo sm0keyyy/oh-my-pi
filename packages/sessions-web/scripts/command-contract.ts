@@ -7,7 +7,7 @@ const definitions: Array<[string, string[]]> = [
 	["packages/catalog/src/effort.ts", ["Effort"]],
 	["packages/agent/src/thinking.ts", ["ThinkingLevel"]],
 	["packages/ai/src/types.ts", ["ProviderFileReference", "ImageContent"]],
-	["packages/tui/src/tools/todo.ts", ["TodoStatus", "TodoItem", "TodoPhase"]],
+	["packages/coding-agent/src/modes/rpc/wire/rpc-wire.generated.ts", ["TodoStatus", "TodoItem", "TodoPhase"]],
 	["packages/coding-agent/src/session/cache-warmer.ts", ["CacheWarmingMode"]],
 	["packages/coding-agent/src/modes/rpc/rpc-goal.ts", ["RpcGoalOp"]],
 	[

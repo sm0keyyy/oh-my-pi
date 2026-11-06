@@ -2120,6 +2120,10 @@
 				"status": {
 					"$ref": "#/$defs/TodoStatus"
 				},
+				"id": {
+					"type": "string",
+					"description": "Bead ID when the list is stored in beads."
+				},
 				"blocker": {
 					"type": "string",
 					"description": "What a `blocked` task is waiting on."
@@ -2147,6 +2151,10 @@
 					"items": {
 						"$ref": "#/$defs/TodoItem"
 					}
+				},
+				"id": {
+					"type": "string",
+					"description": "Epic bead ID when the list is stored in beads."
 				}
 			},
 			"required": ["name", "tasks"]

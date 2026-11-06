@@ -552,6 +552,8 @@ class ModelInfo:
 class TodoItem:
     content: str
     status: TodoStatus
+    id: str | None = None
+    """Bead ID when the list is stored in beads."""
     blocker: str | None = None
     """What a `blocked` task is waiting on."""
     details: str | None = None
@@ -562,6 +564,8 @@ class TodoItem:
 class TodoPhase:
     name: str
     tasks: tuple[TodoItem, ...]
+    id: str | None = None
+    """Epic bead ID when the list is stored in beads."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2012,6 +2016,7 @@ def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     return TodoItem(
         content=required(payload, "content", decode_str, path),
         status=required(payload, "status", _decode_todo_status, path),
+        id=optional(payload, "id", decode_str, path),
         blocker=optional(payload, "blocker", decode_str, path),
         details=optional(payload, "details", decode_str, path),
         notes=optional(payload, "notes", array(decode_str), path),
@@ -2023,6 +2028,7 @@ def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
     return TodoPhase(
         name=required(payload, "name", decode_str, path),
         tasks=required(payload, "tasks", array(parse_todo_item), path),
+        id=optional(payload, "id", decode_str, path),
     )
 
 

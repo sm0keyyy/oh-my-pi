@@ -33,11 +33,16 @@ export const stateDefs = {
 	TodoItem: {
 		content: "string",
 		status: "TodoStatus",
+		"id?": doc("string", "Bead ID when the list is stored in beads."),
 		"blocker?": doc("string", "What a `blocked` task is waiting on."),
 		"details?": "string",
 		"notes?": "string[]",
 	},
-	TodoPhase: { name: "string", tasks: "TodoItem[]" },
+	TodoPhase: {
+		name: "string",
+		tasks: "TodoItem[]",
+		"id?": doc("string", "Epic bead ID when the list is stored in beads."),
+	},
 	ContextUsage: { tokens: "number.integer", contextWindow: "number.integer", percent: "number" },
 	QueuedMessagesState: doc(
 		{

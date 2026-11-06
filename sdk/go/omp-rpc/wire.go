@@ -2135,6 +2135,8 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 type TodoItem struct {
 	Content string     `json:"content"`
 	Status  TodoStatus `json:"status"`
+	// Bead ID when the list is stored in beads.
+	ID *string `json:"id,omitempty"`
 	// What a `blocked` task is waiting on.
 	Blocker *string  `json:"blocker,omitempty"`
 	Details *string  `json:"details,omitempty"`
@@ -2150,6 +2152,7 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoItem"}
 	d.required("content", &out.Content)
 	d.required("status", &out.Status)
+	d.optional("id", &out.ID)
 	d.optional("blocker", &out.Blocker)
 	d.optional("details", &out.Details)
 	d.optional("notes", &out.Notes)
@@ -2163,6 +2166,8 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 type TodoPhase struct {
 	Name  string     `json:"name"`
 	Tasks []TodoItem `json:"tasks"`
+	// Epic bead ID when the list is stored in beads.
+	ID *string `json:"id,omitempty"`
 }
 
 func (v *TodoPhase) UnmarshalJSON(data []byte) error {
@@ -2174,6 +2179,7 @@ func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
 	d.required("name", &out.Name)
 	d.required("tasks", &out.Tasks)
+	d.optional("id", &out.ID)
 	if d.err != nil {
 		return d.err
 	}

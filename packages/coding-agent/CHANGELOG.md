@@ -6,6 +6,7 @@
 
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
+- Added configurable todo nudges every five mutating calls without a default cap, a turn-end done-check nudge, and open-todo reminders after compaction.
 
 ### Changed
 

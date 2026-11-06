@@ -1,7 +1,7 @@
 import { createSyntheticToolResultMessage, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
-import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "./messages";
+import { type CustomMessage, SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "./messages";
 import type { SessionEntry } from "./session-entries";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
@@ -185,6 +185,22 @@ export function isInterruptedTurnAbort(message: AgentMessage): boolean {
 		message.role === "assistant" &&
 		message.stopReason === "aborted" &&
 		message.errorMessage === INTERRUPTED_TURN_ERROR
+	);
+}
+
+/** An unanswered forced wrap-up, ignoring side-channel context and exit bookkeeping. */
+export function pendingSubagentWrapUp(messages: readonly AgentMessage[]): CustomMessage | undefined {
+	const lastMessage = messages.findLastIndex(
+		message =>
+			(message.role === "user" ||
+				message.role === "developer" ||
+				message.role === "assistant" ||
+				message.role === "toolResult") &&
+			!isInterruptedTurnAbort(message),
+	);
+	return messages.findLast(
+		(message, index): message is CustomMessage =>
+			index > lastMessage && message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 	);
 }
 

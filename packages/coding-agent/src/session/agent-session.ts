@@ -375,6 +375,7 @@ import {
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
 	hasRestorableTurn,
+	pendingSubagentWrapUp,
 	SESSION_EXIT_CUSTOM_TYPE,
 	type SessionExitData,
 	summarizeToolArguments,
@@ -1683,6 +1684,7 @@ export class AgentSession implements SettingsScope {
 					logger.debug("IRC wake turn deferred behind the running turn");
 					return;
 				}
+				this.#dropPendingSubagentWrapUp();
 				observation = this.#startTurnObservation(records);
 				return this.agent.prompt(records);
 			})
@@ -5354,8 +5356,10 @@ export class AgentSession implements SettingsScope {
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
-					const wrapUp = this.agent.state.isStreaming ? undefined : this.agent.state.messages.at(-1);
-					const restoringWrapUp = wrapUp?.role === "custom" && wrapUp.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE;
+					const wrapUp = this.agent.state.isStreaming
+						? undefined
+						: pendingSubagentWrapUp(this.agent.state.messages);
+					const restoringWrapUp = wrapUp !== undefined;
 					if (restoringWrapUp) {
 						const choice =
 							isRecord(wrapUp.details) && wrapUp.details.structured === true
@@ -8835,6 +8839,13 @@ export class AgentSession implements SettingsScope {
 		throw new AgentStartPolicyChangedError();
 	}
 
+	#dropPendingSubagentWrapUp(): void {
+		const wrapUp = pendingSubagentWrapUp(this.agent.state.messages);
+		if (wrapUp) {
+			this.agent.replaceMessages(this.agent.state.messages.filter(candidate => candidate !== wrapUp));
+		}
+	}
+
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
@@ -8851,6 +8862,10 @@ export class AgentSession implements SettingsScope {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		if (message.role !== "custom" || message.customType !== SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			// A new assignment supersedes a wrap-up that crashed before producing its report.
+			this.#dropPendingSubagentWrapUp();
+		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -12587,8 +12602,8 @@ export class AgentSession implements SettingsScope {
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
 		if (!model) return false;
-		const wrapUp = this.agent.state.messages.at(-1);
-		if (wrapUp?.role === "custom" && wrapUp.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+		const wrapUp = pendingSubagentWrapUp(this.agent.state.messages);
+		if (wrapUp) {
 			// Resume the persisted wrap-up itself, not the exploration turn it stopped.
 			this.#scheduleAgentContinue({ source: "manual-retry", turnRecords: [wrapUp] });
 			return true;

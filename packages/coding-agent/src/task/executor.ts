@@ -79,6 +79,7 @@ import { type ArtifactManager, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import type { CostGate } from "../session/cost-gate";
+import { pendingSubagentWrapUp } from "../session/exit-diagnostics";
 import { SKILL_PROMPT_MESSAGE_TYPE, SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "../session/messages";
 import type { SubagentThinkingLevelSource } from "../session/session-entries";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
@@ -1294,6 +1295,8 @@ interface SubagentRunMonitor {
 	waitForBudgetStop(): Promise<void>;
 	operatorStopReason(): string | undefined;
 	requestOperatorStop(reason: string): boolean;
+	/** Restore an interrupted forced report without aborting its replacement turn. */
+	restoreForcedWrapUp(details: unknown): void;
 	/**
 	 * True when a recorded yield was invalidated by a later async-result
 	 * injection and no fresh yield has landed since: the yield payload
@@ -2337,6 +2340,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		waitForBudgetStop: () => budgetStopAbortPromise ?? Promise.resolve(),
 		operatorStopReason: () => operatorStopReason,
 		requestOperatorStop,
+		restoreForcedWrapUp: details => {
+			budgetStopRequested = true;
+			finalYieldForced = true;
+			if (isRecord(details) && typeof details.operatorStopReason === "string") {
+				operatorStopReason = details.operatorStopReason;
+			}
+		},
 		yieldInvalidatedByAsync: () => yieldInvalidatedByAsync,
 		yieldTurnStopRequested: () => yieldTurnStopRequested,
 		waitForYieldTurnStop: async () => {
@@ -2477,6 +2487,8 @@ async function driveSessionToResult(
 ): Promise<DriveOutcome> {
 	const { solutionSpace, onPromptBusy, restore } = options;
 	const structured = options.structured !== false;
+	const restoredWrapUp = restore ? pendingSubagentWrapUp(session.state.messages) : undefined;
+	if (restoredWrapUp) monitor.restoreForcedWrapUp(restoredWrapUp.details);
 	const abortSignal = monitor.abortSignal;
 	const unregisterControl = registerSubagentRunControl(monitor.progress.id, {
 		session,
@@ -2537,7 +2549,7 @@ async function driveSessionToResult(
 								customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 								content: text,
 								display: false,
-								details: { structured },
+								details: { structured, operatorStopReason: monitor.operatorStopReason() },
 								attribution: "agent",
 							},
 							{ toolChoice: promptOptions.toolChoice },
@@ -3408,6 +3420,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			onToolResult: result => appendToolResult(tools, result),
 			onYieldAccepted: registerWakeJob,
 		});
+		const restoredWrapUp = pendingSubagentWrapUp(records);
+		if (restoredWrapUp) turnMonitor.restoreForcedWrapUp(restoredWrapUp.details);
 
 		const startedPayload = {
 			id,

@@ -420,7 +420,9 @@ export function buildSessionContext(
 
 	// Exit recovery's empty abort is bookkeeping, not a reply to the crashed wrap-up.
 	const conversationTail = path.findLast(
-		entry => (entry.type === "message" && !isInterruptedTurnAbort(entry.message)) || entry.type === "custom_message",
+		entry =>
+			(entry.type === "message" && !isInterruptedTurnAbort(entry.message)) ||
+			(entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE),
 	);
 
 	const appendMessage = (entry: SessionEntry) => {

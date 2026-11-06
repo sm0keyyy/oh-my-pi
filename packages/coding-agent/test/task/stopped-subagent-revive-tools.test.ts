@@ -3,20 +3,23 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
-import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
+import { createMockModel, type MockHandler, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "../../src/async";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
 import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../src/registry/agent-registry";
+import { createAgentSession } from "../../src/sdk";
 import { AgentStorage } from "../../src/session/agent-storage";
 import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "../../src/session/messages";
-import { runSubprocess } from "../../src/task/executor";
+import { SessionManager } from "../../src/session/session-manager";
+import { runSubagentFollowUpTurn, runSubprocess } from "../../src/task/executor";
 import { stopSubagent } from "../../src/task/run-controls";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
-import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
+import { createAssistantMessage, createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 const SOURCE = "test/stopped-subagent-revive-tools";
 const ID = "StoppedReader";
@@ -140,8 +143,8 @@ it.each([false, true])(
 				AgentRegistry.global()
 					.get(ID)!
 					.session!.sessionManager.getBranch()
-					.some(entry => entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE),
-			).toBe(true);
+					.find(entry => entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE),
+			).toMatchObject({ details: { structured, operatorStopReason: STOP_REASON } });
 
 			let completedReads = 0;
 			for (const park of [false, true]) {
@@ -179,3 +182,126 @@ it.each([false, true])(
 	},
 	30_000,
 );
+
+async function reopenInterruptedWrapUp(structured: boolean, handler: MockHandler) {
+	const cwd = path.join(root, "crashed-work");
+	await Bun.write(path.join(cwd, "notes.txt"), "revived tool access\n");
+	const authStorage = createInMemoryAuthStorage();
+	authStorage.keys.setRuntime("anthropic", "test-key");
+	const modelRegistry = new ModelRegistry(authStorage);
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected bundled Anthropic test model");
+	const sessionManager = SessionManager.inMemory(cwd);
+	sessionManager.appendMessage({ role: "user", content: "inspect notes", timestamp: Date.now() });
+	sessionManager.appendMessage({ ...createAssistantMessage(""), stopReason: "aborted" });
+	sessionManager.appendCustomMessageEntry(
+		SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+		`<system-reminder>${STOP_REASON}: report partial findings for this forced wrap-up only.</system-reminder>`,
+		false,
+		{ structured, operatorStopReason: STOP_REASON },
+		"agent",
+	);
+	sessionManager.appendCustomMessageEntry("memory-recall", "memory side context", false);
+	const mock = createMockModel({ handler });
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir: path.join(root, "agent"),
+		model,
+		modelRegistry,
+		sessionManager,
+		settings: Settings.isolated({
+			"task.softRequestBudget": 0,
+			"async.enabled": false,
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			"todo.reminders": false,
+			"advisor.enabled": false,
+		}),
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+		enableIrc: true,
+		skipPythonPreflight: true,
+		requireYieldTool: structured,
+		toolNames: structured ? ["yield"] : ["read"],
+		taskDepth: 1,
+		agentId: ID,
+		parentAgentId: MAIN_AGENT_ID,
+		parentTaskPrefix: ID,
+	});
+	session.agent.streamFn = mock.stream;
+	AgentRegistry.global().register({
+		id: ID,
+		kind: "sub",
+		displayName: ID,
+		session,
+		status: "idle",
+		parentId: MAIN_AGENT_ID,
+	});
+	return { session, mock, authStorage };
+}
+
+it("restores a forced yield past memory context and preserves the operator stop result", async () => {
+	const reopened = await reopenInterruptedWrapUp(true, {
+		content: [{ type: "toolCall", name: "yield", arguments: { type: ["partial"], data: "restored partial report" } }],
+	});
+	try {
+		const result = await runSubagentFollowUpTurn({
+			id: ID,
+			agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+			message: "restore interrupted wrap-up",
+			restore: true,
+			structured: true,
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toContain(`Stopped by operator: ${STOP_REASON}`);
+		expect(result.output).toContain("restored partial report");
+		expect(reopened.session.messages.filter(message => message.role === "toolResult")).toEqual([
+			expect.objectContaining({ isError: false }),
+		]);
+		expect(result.extractedToolData?.yield).toHaveLength(1);
+		expect(reopened.mock.calls[0]?.options?.toolChoice).toEqual({ type: "tool", name: "yield" });
+		expect(JSON.stringify(reopened.mock.calls[0]?.context.messages)).toContain(STOP_REASON);
+		expect(JSON.stringify(reopened.mock.calls[0]?.context.messages)).toContain("memory side context");
+	} finally {
+		await reopened.session.dispose();
+		reopened.authStorage.close();
+	}
+}, 30_000);
+
+it("a parent IRC assignment supersedes a crashed wrap-up without inheriting its restriction", async () => {
+	const reopened = await reopenInterruptedWrapUp(false, context => {
+		if (
+			context.messages.some(message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON))
+		) {
+			return { content: ["Tools remain disabled."] };
+		}
+		if (context.messages.at(-1)?.role === "toolResult") return { content: ["read completed"] };
+		return { content: [{ type: "toolCall", name: "read", arguments: { path: "notes.txt" } }] };
+	});
+	try {
+		const receipt = await IrcBus.global().send({
+			from: MAIN_AGENT_ID,
+			to: ID,
+			body: "Read notes.txt as a new assignment.",
+		});
+		expect(receipt.outcome).toBe("woken");
+		await reopened.session.waitForIdle();
+		await reopened.session.waitForIrcReplies();
+		expect(reopened.mock.calls[0]?.options?.toolChoice).toBeUndefined();
+		const result = reopened.session.messages.findLast(
+			message => message.role === "toolResult" && message.toolName === "read",
+		);
+		expect(result).toMatchObject({ isError: false });
+		expect(JSON.stringify(result)).toContain("revived tool access");
+		expect(JSON.stringify(reopened.mock.calls[0]?.context.messages)).toContain("memory side context");
+	} finally {
+		await reopened.session.dispose();
+		reopened.authStorage.close();
+	}
+}, 30_000);

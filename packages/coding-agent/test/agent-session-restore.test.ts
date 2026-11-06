@@ -249,9 +249,22 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				}),
 			);
 		}
+		history.push({
+			role: "custom",
+			customType: "memory-recall",
+			content: "memory side context",
+			display: false,
+			timestamp: Date.now(),
+		});
 		const { session, mock } = reopen(model, history, [], [{ content: ["partial findings"] }]);
 		expect(hasRestorableTurn(session.sessionManager.getBranch())).toBe(true);
-		expect(session.sessionManager.buildSessionContext().messages.at(-1)).toMatchObject({
+		expect(
+			session.sessionManager
+				.buildSessionContext()
+				.messages.find(
+					message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+				),
+		).toMatchObject({
 			role: "custom",
 			customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 		});
@@ -260,6 +273,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		expect(mock.calls).toHaveLength(1);
 		expect(mock.calls[0]?.options?.toolChoice).toBe("none");
 		expect(JSON.stringify(mock.calls[0]?.context.messages)).toContain("Report partial findings");
+		expect(JSON.stringify(mock.calls[0]?.context.messages)).toContain("memory side context");
 		expect(
 			session.messages.some(
 				message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,

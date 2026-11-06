@@ -17,6 +17,7 @@ const pendingSchema = type({
 	id: "string",
 	"from?": "string",
 	created: "string",
+	"enqueueOrder?": "number",
 	"session?": "string",
 	questions: questionSchema.array(),
 });
@@ -66,7 +67,14 @@ export async function enqueueRequest(
 ): Promise<PendingInterview> {
 	const file = entryPath(paths.pending, id);
 	await ensureDirs(paths);
-	const request: PendingInterview = { id, from, created: new Date().toISOString(), questions };
+	const request: PendingInterview = {
+		id,
+		from,
+		created: new Date().toISOString(),
+		// Epoch milliseconds retain sub-millisecond precision across writer processes.
+		enqueueOrder: performance.timeOrigin + performance.now(),
+		questions,
+	};
 	if (session !== undefined) request.session = session;
 	await writeFileAtomically(file, JSON.stringify(request, null, 2));
 	return request;
@@ -99,6 +107,7 @@ export async function listPending(paths: QueuePaths): Promise<PendingRef[]> {
 		(a, b) =>
 			Number(!!a.corrupt) - Number(!!b.corrupt) ||
 			a.created.localeCompare(b.created) ||
+			(a.interview?.enqueueOrder ?? 0) - (b.interview?.enqueueOrder ?? 0) ||
 			a.corrId.localeCompare(b.corrId),
 	);
 }

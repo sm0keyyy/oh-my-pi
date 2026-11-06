@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { $ } from "bun";
 import { logger } from "@oh-my-pi/pi-utils";
 import { acquireLock } from "../../src/operator-queue/lock";
 import { ensureDirs, entryPath, queuePaths, queueRoot, type QueuePaths } from "../../src/operator-queue/paths";
@@ -23,6 +25,46 @@ afterEach(async () => {
 	await fs.rm(paths.root, { recursive: true, force: true });
 });
 const questions = [{ id: "go", question: "Proceed?", options: [{ label: "Yes" }] }];
+
+it("keeps same-millisecond requests FIFO across writer processes and accepts legacy records", async () => {
+	const created = "2026-11-06T12:00:00.000Z";
+	const clock = spyOn(Date.prototype, "toISOString").mockReturnValue(created);
+	try {
+		await enqueueRequest("z-first", "parent", questions, "main", paths);
+		const module = pathToFileURL(path.resolve(import.meta.dir, "../../src/operator-queue/queue.ts")).href;
+		const script = `
+			import { enqueueRequest } from ${JSON.stringify(module)};
+			Date.prototype.toISOString = () => ${JSON.stringify(created)};
+			const paths = ${JSON.stringify(paths)};
+			const questions = ${JSON.stringify(questions)};
+			await enqueueRequest("y-second", "child", questions, "main", paths);
+			await enqueueRequest("x-third", "child", questions, "main", paths);
+		`;
+		await $`${process.execPath} -e ${script}`.quiet();
+		await enqueueRequest("a-last", "parent", questions, "main", paths);
+		const refs = await listPending(paths);
+		expect(refs.map(ref => ref.created)).toEqual([created, created, created, created]);
+		expect(refs.map(ref => ref.corrId)).toEqual(["z-first", "y-second", "x-third", "a-last"]);
+		for (const id of ["legacy-b", "legacy-a"]) {
+			await writeFileAtomically(entryPath(paths.pending, id), JSON.stringify({ id, created, questions }));
+		}
+		await writeFileAtomically(
+			entryPath(paths.pending, "oldest"),
+			JSON.stringify({ id: "oldest", created: "2000-01-01T00:00:00Z", questions }),
+		);
+		expect((await listPending(paths)).map(ref => ref.corrId)).toEqual([
+			"oldest",
+			"legacy-a",
+			"legacy-b",
+			"z-first",
+			"y-second",
+			"x-third",
+			"a-last",
+		]);
+	} finally {
+		clock.mockRestore();
+	}
+});
 
 it("orders by created, quarantines malformed entries, and moves request and answer bytes without copying", async () => {
 	const later = await enqueueRequest("a", "fixture", questions, "main", paths);

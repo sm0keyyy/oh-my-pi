@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -30,8 +30,13 @@ afterEach(async () => {
 
 it("lists the pending table and answers all sessions oldest-first with one summary notice", async () => {
 	const first = [{ id: "older", question: "Older question", options: [{ label: "Yes" }] }];
-	await enqueueRequest("older", "peer", first, "other-session");
-	await enqueueRequest("newer", "fixture", [{ ...first[0]!, id: "newer" }], "main");
+	const clock = spyOn(Date.prototype, "toISOString").mockReturnValue("2026-11-06T12:00:00.000Z");
+	try {
+		await enqueueRequest("older", "peer", first, "other-session");
+		await enqueueRequest("newer", "fixture", [{ ...first[0]!, id: "newer" }], "main");
+	} finally {
+		clock.mockRestore();
+	}
 	const status: string[] = [];
 	const notices: string[] = [];
 	const presented: string[] = [];

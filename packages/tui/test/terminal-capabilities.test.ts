@@ -170,6 +170,13 @@ it("selects Kitty graphics for Rex via TERM_PROGRAM or TERM=xterm-rex (over SSH)
 	}
 });
 
+it("uses OSC 9 notification bytes and enables OSC 8 hyperlinks for Rex", () => {
+	const rex = getTerminalInfo("rex");
+	expect<string>(rex.notifyProtocol).toBe("\x1b]9;");
+	expect(rex.hyperlinks).toBe(true);
+	expect(shouldEnableHyperlinksByDefault({}, "rex")).toBe(true);
+});
+
 describe("iTerm2 over SSH", () => {
 	// Env as reported in #12419: an iTerm2 session reached over SSH keeps only
 	// LC_TERMINAL/LC_TERMINAL_VERSION — ITERM_SESSION_ID and TERM_PROGRAM are

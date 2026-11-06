@@ -12,6 +12,7 @@ import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../src/registry/agent-registry";
 import { AgentStorage } from "../../src/session/agent-storage";
+import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "../../src/session/messages";
 import { runSubprocess } from "../../src/task/executor";
 import { stopSubagent } from "../../src/task/run-controls";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
@@ -86,6 +87,13 @@ it.each([false, true])(
 						? { content: [{ type: "toolCall", name: "yield", arguments: { data: "partial summary" } }] }
 						: { content: ["partial summary"] };
 				}
+				if (
+					context.messages.some(
+						message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON),
+					)
+				) {
+					return { content: ["Tools remained disabled after the operator stop."] };
+				}
 				if (context.messages.at(-1)?.role === "toolResult") return { content: ["read completed"] };
 				return { content: [{ type: "toolCall", name: "read", arguments: { path: "notes.txt" } }] };
 			},
@@ -128,7 +136,14 @@ it.each([false, true])(
 			const wrapup = model.calls[1]!;
 			expect(wrapup.context.messages.some(message => JSON.stringify(message).includes(STOP_REASON))).toBe(true);
 			if (!structured) expect(wrapup.options?.toolChoice).toBe("none");
+			expect(
+				AgentRegistry.global()
+					.get(ID)!
+					.session!.sessionManager.getBranch()
+					.some(entry => entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE),
+			).toBe(true);
 
+			let completedReads = 0;
 			for (const park of [false, true]) {
 				if (park) {
 					await AgentLifecycleManager.global().park(ID);
@@ -146,6 +161,9 @@ it.each([false, true])(
 				const readResult = session.messages.findLast(
 					message => message.role === "toolResult" && message.toolName === "read",
 				);
+				expect(
+					session.messages.filter(message => message.role === "toolResult" && message.toolName === "read"),
+				).toHaveLength(++completedReads);
 				expect(readResult).toMatchObject({ isError: false });
 				expect(JSON.stringify(readResult)).toContain("revived tool access");
 				// Historical reports remain, but the expired developer restriction must not replay as an active instruction.

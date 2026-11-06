@@ -2537,6 +2537,7 @@ async function driveSessionToResult(
 								customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 								content: text,
 								display: false,
+								details: { structured },
 								attribution: "agent",
 							},
 							{ toolChoice: promptOptions.toolChoice },

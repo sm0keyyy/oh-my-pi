@@ -4299,12 +4299,9 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		if (message.role === "hookMessage" || message.role === "custom") {
-			// One-run instructions must not return from persisted history.
-			if (
-				!isPrewalkPlanNudge(message) &&
-				message.customType !== VIBE_MODE_CONTEXT_MESSAGE_TYPE &&
-				message.customType !== SUBAGENT_WRAP_UP_MESSAGE_TYPE
-			) {
+			// One-run instructions must not return from persisted history: prewalk
+			// nudges are consumed once, and Vibe context is rebuilt only while active.
+			if (!isPrewalkPlanNudge(message) && message.customType !== VIBE_MODE_CONTEXT_MESSAGE_TYPE) {
 				this.sessionManager.appendCustomMessageEntry(
 					message.customType,
 					message.content,
@@ -5357,7 +5354,24 @@ export class AgentSession implements SettingsScope {
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
-					await this.agent.continue(signal);
+					const wrapUp = this.agent.state.isStreaming ? undefined : this.agent.state.messages.at(-1);
+					const restoringWrapUp = wrapUp?.role === "custom" && wrapUp.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE;
+					if (restoringWrapUp) {
+						const choice =
+							isRecord(wrapUp.details) && wrapUp.details.structured === true
+								? buildNamedToolChoice("yield", this.model)
+								: "none";
+						if (choice)
+							this.#toolChoiceQueue.pushOnce(choice, { label: SUBAGENT_WRAP_UP_MESSAGE_TYPE, now: true });
+					}
+					try {
+						await this.agent.continue(signal);
+					} finally {
+						if (restoringWrapUp) {
+							this.#toolChoiceQueue.removeByLabel(SUBAGENT_WRAP_UP_MESSAGE_TYPE);
+							this.agent.replaceMessages(this.agent.state.messages.filter(message => message !== wrapUp));
+						}
+					}
 					return { status: "completed" };
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
@@ -12573,6 +12587,12 @@ export class AgentSession implements SettingsScope {
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
 		if (!model) return false;
+		const wrapUp = this.agent.state.messages.at(-1);
+		if (wrapUp?.role === "custom" && wrapUp.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			// Resume the persisted wrap-up itself, not the exploration turn it stopped.
+			this.#scheduleAgentContinue({ source: "manual-retry", turnRecords: [wrapUp] });
+			return true;
+		}
 		const abort = createInterruptedTurnAbortMessage(
 			branch,
 			{ api: model.api, provider: model.provider, model: model.id },

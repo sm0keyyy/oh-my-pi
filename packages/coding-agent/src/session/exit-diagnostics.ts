@@ -1,5 +1,7 @@
 import { createSyntheticToolResultMessage, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { customMessageEntryMessage } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "./messages";
 import type { SessionEntry } from "./session-entries";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
@@ -142,6 +144,11 @@ function findUnfinishedTurn(
 	let tail: AgentMessage | undefined;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+			tailIndex = index;
+			tail = customMessageEntryMessage(entry);
+			break;
+		}
 		if (entry.type !== "message") continue;
 		tailIndex = index;
 		tail = entry.message;
@@ -191,6 +198,7 @@ export function hasRestorableTurn(entries: readonly SessionEntry[]): boolean {
 		const entry = entries[index]!;
 		const exit = readSessionExit(entry);
 		if (exit?.kind === "normal") return false;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) break;
 		if (entry.type !== "message") continue;
 		if (isInterruptedTurnAbort(entry.message)) return true;
 		break;
@@ -241,6 +249,7 @@ export function createInterruptedTurnAbortMessage(
 export function sessionExitFollowsLastMessage(entries: readonly SessionEntry[]): boolean {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
+		if (entry.type === "custom_message" && entry.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) return false;
 		if (entry.type === "message") return false;
 		if (readSessionExit(entry)) return true;
 	}

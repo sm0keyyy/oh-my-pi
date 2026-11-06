@@ -6,6 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { prompt, TempDir } from "@oh-my-pi/pi-utils";
 import submitReminderTemplate from "../src/prompts/system/subagent-yield-reminder.md" with { type: "text" };
@@ -137,6 +138,24 @@ describe("SDK data-less yield report", () => {
 			}
 		});
 	}
+
+	it("submits preceding prose across a custom forced wrap-up reminder", async () => {
+		const { session } = await harness();
+		const report = "Partial findings before the stop.";
+		session.agent.replaceMessages([
+			createAssistantMessage(report),
+			{
+				role: "custom",
+				customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+				content: prompt.render(submitReminderTemplate, { budgetStop: true, structured: true }),
+				display: false,
+				timestamp: Date.now(),
+			},
+		]);
+		await session.agent.continue();
+		const result = session.messages.find(message => message.role === "toolResult");
+		expect(result).toMatchObject({ isError: false, details: { status: "success", data: report } });
+	});
 
 	for (const [name, boundary] of [
 		["new user task", { role: "user", content: "A different task", timestamp: Date.now() }],

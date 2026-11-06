@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { type OpenPane, type PaneManager, rexPanesEligible, startPaneManager } from "../../src/rex-panes/pane-manager";
+import * as paneRecords from "../../src/rex-panes/pane-records";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
@@ -17,12 +18,20 @@ interface TestPane extends OpenPane {
 const managers: PaneManager[] = [];
 afterEach(async () => {
 	await Promise.all(managers.splice(0).map(manager => manager.dispose()));
+	vi.restoreAllMocks();
 });
 
 function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: string } = {}) {
 	const registry = new AgentRegistry();
 	const bus = new EventBus();
 	const calls: string[][] = [];
+	const records = new Map<string, paneRecords.PaneRecord>();
+	spyOn(paneRecords, "writePaneRecord").mockImplementation((id, record) => {
+		records.set(id, record);
+	});
+	spyOn(paneRecords, "removePaneRecord").mockImplementation(id => {
+		records.delete(id);
+	});
 	const panes = new Map<string, TestPane[]>();
 	const opened: string[] = [];
 	const sessions = new Set<string>();
@@ -70,8 +79,9 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		notify();
 		return { exitCode: 0, stdout: JSON.stringify(result), stderr: "" };
 	};
+	const rex = createRexCli({ binary: "rex", run });
 	const manager = startPaneManager({
-		rex: createRexCli({ binary: "rex", run }),
+		rex,
 		registry,
 		subagentEventBus: bus,
 		socketPath: "/private/run/panes.sock",
@@ -111,7 +121,20 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		bus.emit("task:subagent:lifecycle", { id, status: "started", parentToolCallId });
 		return session;
 	}
-	return { registry, bus, calls, panes, opened, sessions, manager, start, until, maxInFlight: () => maxInFlight };
+	return {
+		registry,
+		bus,
+		calls,
+		panes,
+		opened,
+		sessions,
+		manager,
+		start,
+		until,
+		rex,
+		records,
+		maxInFlight: () => maxInFlight,
+	};
 }
 
 describe("pane manager", () => {
@@ -318,6 +341,54 @@ describe("pane manager", () => {
 		}
 	});
 
+	it("reveal locates and focuses an existing or reopened agent, preserving records and excluding host blocks from grid slots", async () => {
+		const h = harness();
+		h.start("a");
+		await h.until(() => h.opened.length === 1);
+		expect(h.manager.location("a")).toEqual({ sessionId: "s1", blockId: "b1" });
+		expect(h.records.get("b1")).toEqual({ kind: "relay", pid: process.pid, group: true });
+		expect(await h.manager.reveal("a")).toBe(true);
+		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", "b1"]);
+		await h.rex.split("s1", "b1", "right", "omp: panel", ["/relay"]);
+		for (const id of ["b", "c", "d"]) h.start(id);
+		await h.until(() => h.opened.length === 4);
+		expect(h.calls.some(call => call[1] === "window")).toBe(false);
+		h.start("e");
+		await h.until(() => h.opened.length === 5);
+		expect(h.calls.filter(call => call[1] === "window")).toHaveLength(1);
+		const first = h.panes.get("a")![0]!;
+		first.close();
+		await h.until(() => first.disposed);
+		expect(h.manager.location("a")).toBeUndefined();
+		expect(h.records.has("b1")).toBe(true);
+		expect(await h.manager.reveal("a")).toBe(true);
+		const location = h.manager.location("a")!;
+		expect(location.sessionId).toBe("s1");
+		expect(location.blockId).not.toBe("b1");
+		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", location.blockId]);
+		expect(await h.manager.reveal("missing")).toBe(false);
+		h.registry.setStatus("a", "parked");
+		await h.until(() => !h.manager.location("a"));
+		expect(await h.manager.reveal("a")).toBe(false);
+		await h.manager.dispose();
+		expect(h.records.size).toBe(0);
+	});
+
+	it("records survive a failed close and are removed only after the owning session is successfully killed", async () => {
+		const options: { failCommand?: string } = {};
+		const h = harness(options);
+		h.start("a");
+		h.start("b");
+		await h.until(() => h.opened.length === 2);
+		options.failCommand = "block";
+		h.registry.setStatus("a", "parked");
+		await h.until(() => h.panes.get("a")![0]!.disposed);
+		expect(h.records.has("b1")).toBe(true);
+		expect(h.records.has("b2")).toBe(true);
+		options.failCommand = undefined;
+		await h.manager.dispose();
+		expect(h.records.size).toBe(0);
+	});
 	it("gate enables only Rex on macOS with the setting on, including the default", () => {
 		const settings = Settings.isolated();
 		expect(rexPanesEligible({ TERM_PROGRAM: "rex" }, "darwin", settings)).toBe(true);

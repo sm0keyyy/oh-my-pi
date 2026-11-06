@@ -298,6 +298,16 @@ export class TranscriptContainer extends Container {
 	#entriesUnverified = false;
 	/** Block list handed to the native frame provider, reused while the children are unchanged. */
 	#nativeBlocks: readonly Component[] = [];
+	#maxLiveBlocks = MAX_LIVE_BLOCKS;
+	#maxCommittedBlocks = Number.POSITIVE_INFINITY;
+	#onPrune: (() => void) | undefined;
+
+	/** Bound a secondary view's retained history; its session remains the replay source. */
+	setRetentionLimits(live: number, committed: number, onPrune?: () => void): void {
+		this.#maxLiveBlocks = live;
+		this.#maxCommittedBlocks = committed;
+		this.#onPrune = onPrune;
+	}
 	#nativeNode: NativeNode | undefined;
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -475,7 +485,7 @@ export class TranscriptContainer extends Container {
 	/** Whether visible active capacity and live-block memory permit another admission. */
 	canAdmit(rows: number): boolean {
 		const active = this.#entries.filter(entry => entry.state === "active").length;
-		return Math.max(0, Math.trunc(rows)) > active && this.#liveCount() < MAX_LIVE_BLOCKS;
+		return Math.max(0, Math.trunc(rows)) > active && this.#liveCount() < this.#maxLiveBlocks;
 	}
 
 	/** Prepares one atomic replay of the committed ledger and an emitted active-head prefix. */
@@ -850,7 +860,7 @@ export class TranscriptContainer extends Container {
 			}
 			if (!fits && appendHead === undefined) break;
 		}
-		const overflowing = keep > 0 || this.#liveCount() >= MAX_LIVE_BLOCKS;
+		const overflowing = keep > 0 || this.#liveCount() >= this.#maxLiveBlocks;
 		if (policy === "pressure" && !overflowing) {
 			this.#pinnedFrontier = undefined;
 			return undefined;
@@ -881,8 +891,8 @@ export class TranscriptContainer extends Container {
 		// Shutdown retires everything eligible; pressure retires exactly the
 		// blocks that no longer fit, plus whatever the live-block cap demands.
 		let limit = this.#frontier + keep;
-		if (this.#liveCount() >= MAX_LIVE_BLOCKS) {
-			limit = Math.max(limit, this.#frontier + (this.#liveCount() - (MAX_LIVE_BLOCKS - 1)));
+		if (this.#liveCount() >= this.#maxLiveBlocks) {
+			limit = Math.max(limit, this.#frontier + (this.#liveCount() - (this.#maxLiveBlocks - 1)));
 		}
 		if (policy === "flush") limit = this.#entries.length;
 		// The block straddling the top edge commits only the rows that left the
@@ -997,6 +1007,21 @@ export class TranscriptContainer extends Container {
 			this.#releaseCommittedRenderCaches();
 		}
 		this.#offered = undefined;
+		const drop = Math.max(0, this.#frontier - this.#maxCommittedBlocks);
+		if (drop > 0) {
+			for (let index = 0; index < drop; index++) {
+				const entry = this.#entries[index]!;
+				entry.component.dispose?.();
+				this.#childStartRows.delete(entry.component);
+				this.#frameRows.delete(entry);
+			}
+			this.children.splice(0, drop);
+			this.#entries.splice(0, drop);
+			this.#frontier -= drop;
+			this.#nativeBlocks = [];
+			this.#nativeNode = undefined;
+			this.#onPrune?.();
+		}
 		if (this.#replayRequested) this.#startReplay();
 	}
 

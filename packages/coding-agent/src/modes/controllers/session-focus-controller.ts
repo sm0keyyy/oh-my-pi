@@ -2,7 +2,6 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type AgentRef, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
-import { setRunStatus } from "../../utils/run-status";
 import type { InteractiveModeContext } from "../types";
 
 /**
@@ -210,7 +209,7 @@ export class SessionFocusController {
 			// Reset run bookkeeping before replay populates pending tool handles.
 			if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
 			else {
-				setRunStatus({ state: "idle" });
+				this.ctx.runStatus.setRunStatus({ state: "idle" });
 				this.ctx.eventController.markViewIdle();
 			}
 			if (generation !== this.#attachGeneration) return;

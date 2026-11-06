@@ -10,7 +10,6 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { cfgToolsApproval } from "@oh-my-pi/pi-coding-agent/tools/settings";
-import * as runStatus from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -77,8 +76,9 @@ describe("EventController run status at turn end", () => {
 		["an interrupted turn goes back to idle", [assistant("aborted", "Interrupted by user")], { state: "idle" }],
 		["a turn without a reply goes back to idle", [], { state: "idle" }],
 	])("%s", async (_name, messages, expected) => {
-		const report = vi.spyOn(runStatus, "setRunStatus").mockImplementation(() => {});
-		const controller = new EventController(createInteractiveModeContext());
+		const ctx = createInteractiveModeContext();
+		const report = vi.spyOn(ctx.runStatus, "setRunStatus").mockImplementation(() => {});
+		const controller = new EventController(ctx);
 
 		await controller.handleEvent(AGENT_START);
 		await controller.handleEvent(agentEnd(messages));
@@ -87,8 +87,9 @@ describe("EventController run status at turn end", () => {
 	});
 
 	it("reports idle, not error, for a failure an auto-retry is about to start over", async () => {
-		const report = vi.spyOn(runStatus, "setRunStatus").mockImplementation(() => {});
-		const controller = new EventController(createInteractiveModeContext());
+		const ctx = createInteractiveModeContext();
+		const report = vi.spyOn(ctx.runStatus, "setRunStatus").mockImplementation(() => {});
+		const controller = new EventController(ctx);
 
 		await controller.handleEvent({
 			type: "auto_retry_start",
@@ -141,8 +142,9 @@ describe("EventController settle with a queued compaction", () => {
 
 describe("EventController run status while prompts wait on the user", () => {
 	it("reports the prompt still waiting when another resolves, and working once none is left", async () => {
-		const report = vi.spyOn(runStatus, "setRunStatus").mockImplementation(() => {});
-		const controller = new EventController(createInteractiveModeContext());
+		const ctx = createInteractiveModeContext();
+		const report = vi.spyOn(ctx.runStatus, "setRunStatus").mockImplementation(() => {});
+		const controller = new EventController(ctx);
 
 		await controller.handleEvent(AGENT_START);
 		await controller.handleEvent(toolStart("ask-1", "ask", askArgs("Use Postgres?")));
@@ -157,10 +159,11 @@ describe("EventController run status while prompts wait on the user", () => {
 	});
 
 	it("reports a tool call that needs approval as blocked on permission", async () => {
-		const report = vi.spyOn(runStatus, "setRunStatus").mockImplementation(() => {});
 		cfgToolsApproval.override(settings, { bash: "prompt" });
 		const bash = { name: "bash", label: "Bash" } as unknown as AgentTool;
-		const controller = new EventController(createInteractiveModeContext({ session: { getToolByName: () => bash } }));
+		const ctx = createInteractiveModeContext({ session: { getToolByName: () => bash } });
+		const report = vi.spyOn(ctx.runStatus, "setRunStatus").mockImplementation(() => {});
+		const controller = new EventController(ctx);
 
 		await controller.handleEvent(AGENT_START);
 		await controller.handleEvent(toolStart("bash-1", "bash", { command: "rm -rf build" }));

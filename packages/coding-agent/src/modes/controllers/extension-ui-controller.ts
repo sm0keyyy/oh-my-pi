@@ -50,7 +50,7 @@ import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { launchTerminal } from "../../subprocess/terminal-launch";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { RpcSocketServer } from "../rpc/rpc-socket";
 import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 import { approvalAnswerForChoice, approvalChoiceLabels, approvalOnceLabel } from "../../tools/approval";
@@ -205,11 +205,7 @@ export class ExtensionUiController {
 		}
 	}
 
-	/**
-	 * Initialize the hook system with TUI-based UI context.
-	 */
-	async initHooksAndCustomTools(): Promise<void> {
-		// Create and set hook & tool UI context
+	createToolUIContext(): ExtensionUIContext {
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
 			supportsEditor: true,
@@ -225,7 +221,9 @@ export class ExtensionUiController {
 			setStatus: (key, text) => this.setHookStatus(key, text),
 			setWorkingMessage: message => this.ctx.setWorkingMessage(message),
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
-			setTitle: title => setExtensionTerminalTitle(title),
+			setTitle: title => {
+				if (!this.ctx.embedded) setExtensionTerminalTitle(title);
+			},
 			custom: (factory, options) => this.showHookCustom(factory, options),
 			setEditorText: text => {
 				this.ctx.editor.setText(text);
@@ -246,6 +244,7 @@ export class ExtensionUiController {
 			getAllThemes: async () => (await getAvailableThemesWithPaths()).map(t => ({ name: t.name, path: t.path })),
 			getTheme: name => getThemeByName(name),
 			setTheme: async themeArg => {
+				if (this.ctx.embedded) return { success: false, error: "Panes use the main theme" };
 				if (typeof themeArg === "string") {
 					return await setTheme(themeArg, true);
 				}
@@ -258,9 +257,13 @@ export class ExtensionUiController {
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
-		const enrichedUiContext = withTerminalLauncher(uiContext, true);
+		this.#toolUIContext = this.ctx.embedded ? uiContext : withTerminalLauncher(uiContext, true);
+		return this.#toolUIContext;
+	}
+
+	async initHooksAndCustomTools(): Promise<void> {
+		const enrichedUiContext = this.createToolUIContext();
 		this.ctx.setToolUIContext(enrichedUiContext, true);
-		this.#toolUIContext = enrichedUiContext;
 		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
 			const reserve =
 				confirmation.remainingPercent === undefined
@@ -958,7 +961,12 @@ export class ExtensionUiController {
 					prefill,
 					(text, images) => finishPrompt({ text, images }),
 					() => finishPrompt(undefined),
-					{ promptStyle: true, externalEditor: editDialogExternally, question: prompt.question, ...options },
+					{
+						promptStyle: true,
+						externalEditor: this.ctx.embedded ? undefined : editDialogExternally,
+						question: prompt.question,
+						...options,
+					},
 				);
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(promptEditor);
@@ -1010,6 +1018,11 @@ export class ExtensionUiController {
 			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
 			this.ctx.ui.requestRender();
+			try {
+				dialogOptions?.onTimeoutStart?.();
+			} catch (error) {
+				logger.warn("Ask dialog presentation callback failed", { error: String(error) });
+			}
 
 			return () => {
 				closed = true;
@@ -1368,7 +1381,7 @@ export class ExtensionUiController {
 				prefill,
 				value => settle(value),
 				() => settle(undefined),
-				{ ...editorOptions, externalEditor: editDialogExternally },
+				{ ...editorOptions, externalEditor: this.ctx.embedded ? undefined : editDialogExternally },
 			);
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(this.ctx.hookEditor);
@@ -1655,6 +1668,9 @@ export class ExtensionUiController {
 		signal: AbortSignal | undefined,
 		present: (settle: (value: T | undefined) => void) => () => void,
 	): Promise<T | undefined> {
+		if (this.ctx.embedded) {
+			signal = signal ? AbortSignal.any([signal, this.ctx.dialogLifetimeSignal]) : this.ctx.dialogLifetimeSignal;
+		}
 		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
 		let settled = false;
 		let started = false;
@@ -1668,8 +1684,8 @@ export class ExtensionUiController {
 			if (settled) return;
 			settled = true;
 			signal?.removeEventListener("abort", onAbort);
-			if (started) {
-				hide?.();
+			if (started && hide) {
+				hide();
 				this.#dialogActive = false;
 				this.#advanceDialogQueue();
 			}
@@ -1686,6 +1702,12 @@ export class ExtensionUiController {
 			this.#dialogActive = true;
 			try {
 				hide = present(settle);
+				// A presentation callback can synchronously cancel before hide is assigned.
+				if (settled) {
+					hide();
+					this.#dialogActive = false;
+					this.#advanceDialogQueue();
+				}
 			} catch (error) {
 				settled = true;
 				signal?.removeEventListener("abort", onAbort);

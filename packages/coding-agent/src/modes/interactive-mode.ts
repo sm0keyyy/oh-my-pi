@@ -244,12 +244,7 @@ import { resumeCommand } from "../utils/resume-command";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-tui/theme/session-color";
 import { messageHasDisplayableThinking } from "@oh-my-pi/pi-tui/chat/thinking-display";
 import type { TokenRateMeter } from "../utils/token-rate";
-import {
-	disposeProgramStatus,
-	initProgramStatus,
-	resendProgramStatus,
-	setProgramStatusEnabled,
-} from "../utils/run-status";
+import { RunStatusReporter } from "../utils/run-status";
 import {
 	disposeTerminalTitleState,
 	initTerminalTitleState,
@@ -1345,6 +1340,7 @@ const JOBS_SHEET_REFRESH_MS = 250;
 
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
+	readonly runStatus: RunStatusReporter;
 	session: AgentSession;
 	sessionManager: SessionManager;
 	refreshScopedModelsAfterLogin?: () => Promise<void>;
@@ -1436,6 +1432,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		| ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor)
 		| undefined;
 	#composerStatusPersistTimer: NodeJS.Timeout | undefined;
+	#embeddedSubmit: ((text: string) => void) | undefined;
 	readonly #initialComposerModel: Model | undefined;
 	readonly #judgmentBatchProgressHud = new JudgmentBatchProgressHud();
 	readonly #downloadActivityHud = new DownloadActivityHud(() => this.ui.requestRender());
@@ -1841,6 +1838,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * then deny instead of prompting onto a torn-down UI. Refreshed by `init`.
 	 */
 	#dialogLifetime = new AbortController();
+	get dialogLifetimeSignal(): AbortSignal {
+		return this.#dialogLifetime.signal;
+	}
 	readonly #inputController: InputController;
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
@@ -2025,6 +2025,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async startRpcSocket(options?: RpcSocketOptions): Promise<void> {
+		if (this.embedded) return;
 		if (this.#rpcSocketStart) return this.#rpcSocketStart;
 		if (
 			this.#rpcSocketServer ||
@@ -2220,6 +2221,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		composer?: Composer,
 		subagentEventBus?: EventBus,
 		refreshScopedModelsAfterLogin?: () => Promise<void>,
+		readonly embedded = false,
 	) {
 		this.refreshScopedModelsAfterLogin = refreshScopedModelsAfterLogin;
 		this.session = session;
@@ -2232,7 +2234,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			...this.#liveComposerPreferences(),
 		};
 		const wasStarted = composer?.started ?? false;
-		setMagicKeywords(MAGIC_KEYWORDS);
+		if (!embedded) setMagicKeywords(MAGIC_KEYWORDS);
 		this.composer =
 			composer ??
 			new Composer({
@@ -2241,6 +2243,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		this.composer.setPreferences(preferences);
 		this.ui = this.composer.ui;
+		this.runStatus = new RunStatusReporter(embedded ? this.ui.terminal : undefined);
 		this.editor = this.composer.editor;
 		this.editor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		this.editor.placeholder = () => this.#composerHint();
@@ -2299,51 +2302,63 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		setTuiTight(cfgTuiTight.get(settings));
-		setMarkdownMermaidRendering(cfgTuiRenderMermaid.get(settings));
-		setSvgFigureRendering(cfgTuiRenderSvg.get(settings));
-		this.#applyAutoGraphSetting();
-		this.#applyTextSizingSetting();
-		// Keep generic pi-tui renderers aligned with the coding-agent setting.
-		applyFileLinkSetting();
-		applyHyperlinkSetting();
+		if (!embedded) {
+			setTuiTight(cfgTuiTight.get(settings));
+			setMarkdownMermaidRendering(cfgTuiRenderMermaid.get(settings));
+			setSvgFigureRendering(cfgTuiRenderSvg.get(settings));
+			this.#applyAutoGraphSetting();
+			this.#applyTextSizingSetting();
+			// Keep generic pi-tui renderers aligned with the coding-agent setting.
+			applyFileLinkSetting();
+			applyHyperlinkSetting();
+		}
 		// The TUI polls the provider every frame, so it reads a field kept in sync by
 		// subscription rather than resolving the setting per render.
 		// Session settings overlay the global layer and forward its changes.
 		this.#mouseCapture = cfgTuiMouse.get(this.settings);
-		this.#eventBusUnsubscribers.push(
-			cfgTuiMouse.listen(this.settings, on => {
-				const linksWereAvailable = extensionLinkClicksAvailable();
-				this.#mouseCapture = on;
-				// With the hint key unbound, the mouse is the only way to activate extension links.
-				if (extensionLinkClicksAvailable() !== linksWereAvailable) this.#redrawExtensionLinks();
-				// Dropping capture must also drop the band: with reporting off no
-				// motion event will ever arrive to clear a mid-hover highlight.
-				// The controller cache goes too, or a re-enable plus motion over
-				// the same card would look unchanged and skip restoring the band.
-				if (!on) {
-					this.composer.setHoveredClickId(undefined);
-					this.#inputController?.clearHoverHighlight();
-				}
-				this.ui.requestRender();
-			}),
-		);
-		this.ui.setInlineMouseTrackingProvider(() => this.#mouseCapture);
-		setExtensionLinkPicking(this.#linkPickable);
-		// Tern's native view routes link clicks itself, so claimed links stop (or start) being
-		// pickable here: re-run the renderers reading `getLinkClicksAvailable()`.
-		this.#eventBusUnsubscribers.push(
-			onNativeRenderingChange(() => {
-				if ((this.viewSession.extensionRunner?.getLinkSchemes().length ?? 0) > 0) this.#redrawExtensionLinks();
-			}),
-		);
+		if (!embedded) {
+			this.#eventBusUnsubscribers.push(
+				cfgTuiMouse.listen(this.settings, on => {
+					const linksWereAvailable = extensionLinkClicksAvailable();
+					this.#mouseCapture = on;
+					// With the hint key unbound, the mouse is the only way to activate extension links.
+					if (extensionLinkClicksAvailable() !== linksWereAvailable) this.#redrawExtensionLinks();
+					// Dropping capture must also drop the band: with reporting off no
+					// motion event will ever arrive to clear a mid-hover highlight.
+					// The controller cache goes too, or a re-enable plus motion over
+					// the same card would look unchanged and skip restoring the band.
+					if (!on) {
+						this.composer.setHoveredClickId(undefined);
+						this.#inputController?.clearHoverHighlight();
+					}
+					this.ui.requestRender();
+				}),
+			);
+			this.ui.setInlineMouseTrackingProvider(() => this.#mouseCapture);
+			setExtensionLinkPicking(this.#linkPickable);
+			// Tern's native view routes link clicks itself, so claimed links stop (or start) being
+			// pickable here: re-run the renderers reading `getLinkClicksAvailable()`.
+			this.#eventBusUnsubscribers.push(
+				onNativeRenderingChange(() => {
+					if ((this.viewSession.extensionRunner?.getLinkSchemes().length ?? 0) > 0) this.#redrawExtensionLinks();
+				}),
+			);
+		}
 		this.chatContainer = new TranscriptContainer();
+		if (embedded) {
+			this.chatContainer.setRetentionLimits(64, 64, () => {
+				this.transcriptMessageComponents = new WeakMap();
+				this.#eventController.releaseSettledTranscriptReferences();
+			});
+		}
 		this.pendingShellContainer = new AnchoredLiveContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.progressHudContainer = new AnchoredLiveContainer();
 		this.progressHudContainer.addChild(this.#judgmentBatchProgressHud);
 		this.progressHudContainer.addChild(this.#downloadActivityHud);
-		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
+		if (!embedded) {
+			this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
+		}
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
 		this.subagentContainer = new AnchoredLiveContainer();
@@ -2366,6 +2381,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 		this.#applyVimMode(this.editor);
+		if (embedded) {
+			this.editor.onYank = undefined;
+			this.editor.onToggleDictation = undefined;
+		}
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
@@ -2377,22 +2396,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncEditorMaxHeight();
 		// Sync editor geometry only. TUI owns the alternate-buffer drag paint and
 		// settled normal-buffer repaint for each SIGWINCH.
-		this.#resizeHandler = () => {
-			this.#syncEditorMaxHeight();
-		};
-		process.stdout.on("resize", this.#resizeHandler);
-		setWordPredictionHost(textPredictionBackend);
-		try {
-			this.historyStorage = HistoryStorage.open();
-			this.editor.setHistoryStorage(this.historyStorage);
-			this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
-			// The prediction daemon learns from history.db; nudge it once each prompt is durable.
-			this.historyStorage.setAddListener(syncTextPrediction);
-			this.historyStorage.setErrorListener(() => {
-				this.showWarning("Prompt history could not be saved; this prompt may be unavailable after restart.");
-			});
-		} catch (error) {
-			logger.warn("History storage unavailable", { error: String(error) });
+		if (!embedded) {
+			this.#resizeHandler = () => {
+				this.#syncEditorMaxHeight();
+			};
+			process.stdout.on("resize", this.#resizeHandler);
+			setWordPredictionHost(textPredictionBackend);
+			try {
+				this.historyStorage = HistoryStorage.open();
+				this.editor.setHistoryStorage(this.historyStorage);
+				this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
+				// The prediction daemon learns from history.db; nudge it once each prompt is durable.
+				this.historyStorage.setAddListener(syncTextPrediction);
+				this.historyStorage.setErrorListener(() => {
+					this.showWarning("Prompt history could not be saved; this prompt may be unavailable after restart.");
+				});
+			} catch (error) {
+				logger.warn("History storage unavailable", { error: String(error) });
+			}
 		}
 		this.hookWidgetContainerAbove = new Container();
 		this.hookWidgetContainerAbove.addChild(new EditorTopGap(() => this.statusRowOccupied));
@@ -2406,9 +2427,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.draftImageLinkMaterializer = images => materializeImageChipLinks(images, this.sessionManager);
 		// Transcript images without a file of their own (pasted, tool-produced, rendered figures)
 		// link to a blob copy of their bytes, the same store that backs composer chips.
-		this.#disposeImageBlobWriter = setImageBlobWriter((data, options) =>
-			this.sessionManager.putBlobSync(data, options),
-		);
+		if (!embedded) {
+			this.#disposeImageBlobWriter = setImageBlobWriter((data, options) =>
+				this.sessionManager.putBlobSync(data, options),
+			);
+		}
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session, statusLineHost);
@@ -2433,7 +2456,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		};
 		// A TSP terminal has no status strip: the tab title carries the PR.
-		this.statusLine.onNativePullRequest = pr => setTerminalTitlePullRequest(pr?.number);
+		if (!embedded) this.statusLine.onNativePullRequest = pr => setTerminalTitlePullRequest(pr?.number);
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
 		this.#codexResetFireworksController = new CodexResetFireworksController(this);
 		this.statusLine.setCodexResetFireworksHandler(event => {
@@ -2471,7 +2494,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.collabController = new CollabController(this);
-		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
+		if (!embedded) this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
 	}
 
@@ -2560,11 +2583,126 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
+	#configureEmbeddedEditor(onSubmit: (text: string) => void): void {
+		this.editor.onYank = undefined;
+		this.editor.onToggleDictation = undefined;
+		this.editor.setActionKeys("app.clear", ["ctrl+c"]);
+		this.editor.setActionKeys("app.exit", ["ctrl+d"]);
+		this.editor.setActionKeys("app.suspend", ["ctrl+z"]);
+		this.editor.onClear = () => this.handleCtrlC();
+		this.editor.onExit = () => this.handleCtrlD();
+		this.editor.onSuspend = () => this.handleCtrlZ();
+		this.editor.onSubmit = text => {
+			this.editor.clearDraft();
+			onSubmit(text);
+		};
+	}
+
 	playWelcomeIntro(): void {
 		this.composer.playWelcomeIntro();
 	}
 
+	async initEmbedded(onSubmit: (text: string) => void): Promise<void> {
+		if (!this.embedded) throw new Error("initEmbedded requires an embedded view");
+		if (this.isInitialized) return;
+		this.composer.setPreferences({ quiet: true, maxInlineImages: 2 });
+		this.composer.setStatusComponent(this.statusLine);
+		this.composer.setRuntimeChildren([
+			this.chatContainer,
+			this.pendingShellContainer,
+			this.pendingMessagesContainer,
+			this.statusContainer,
+			this.hookWidgetContainerAbove,
+			this.editorContainer,
+			this.hookWidgetContainerBelow,
+		]);
+		this.#embeddedSubmit = onSubmit;
+		this.#configureEmbeddedEditor(onSubmit);
+		this.editor.disableSubmit = false;
+		this.ui.setFocus(this.editor);
+		this.#extensionUiController.createToolUIContext();
+		this.composer.start({ playWelcomeIntro: false });
+		this.#ownsStartedUi = true;
+		this.isInitialized = true;
+		this.runStatus.initProgramStatus();
+		this.runStatus.setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
+		this.runStatus.setRunStatus({ state: this.session.isStreaming ? "working" : "idle" });
+		this.#eventBusUnsubscribers.push(
+			this.ui.addFrameWriteListener(frame => {
+				if (frame.includes("\x1b]133;A\x07")) this.runStatus.resendProgramStatus();
+			}),
+			onThemeChange(() => {
+				this.statusLine.invalidate();
+				this.ui.invalidate();
+				this.ui.requestRender(true);
+			}),
+		);
+		let assistantStreamSynced = false;
+		const restoreAssistant = async (message: AssistantMessage): Promise<void> => {
+			if (this.#dialogLifetime.signal.aborted) return;
+			if (!assistantStreamSynced) {
+				assistantStreamSynced = true;
+				await this.#eventController.handleEvent({ type: "message_start", message });
+			}
+			await this.#eventController.handleEvent({
+				type: "message_update",
+				message,
+				assistantMessageEvent: { type: "start", partial: message },
+			});
+		};
+		this.unsubscribe = this.session.subscribe(async event => {
+			if (this.#dialogLifetime.signal.aborted) return;
+			if (event.type === "message_start" && event.message.role === "assistant") assistantStreamSynced = true;
+			if (
+				(event.type === "message_update" || event.type === "message_end") &&
+				event.message.role === "assistant" &&
+				!assistantStreamSynced
+			) {
+				await restoreAssistant(event.message);
+			}
+			await this.#eventController.dispatchSessionEvent(event);
+			if (event.type === "message_end" && event.message.role === "assistant") assistantStreamSynced = false;
+		});
+		await this.session.settleInFlightMessagePersistence();
+		if (this.session.isStreaming) await this.#eventController.handleEvent({ type: "agent_start" });
+		await this.renderInitialMessages({ clearTerminalHistory: true });
+		this.#eventController.restorePendingToolResults();
+		const live = this.session.agent.state.streamMessage;
+		if (live?.role === "assistant") await restoreAssistant(live);
+		for (const event of this.session.activeToolExecutionUpdates()) await this.#eventController.handleEvent(event);
+		this.composer.releaseHeldInput();
+		this.ui.renderNow();
+	}
+
+	disposeEmbedded(): void {
+		if (!this.embedded) throw new Error("disposeEmbedded requires an embedded view");
+		this.#dialogLifetime.abort();
+		this.unsubscribe?.();
+		this.unsubscribe = undefined;
+		this.#eventController.dispose();
+		this.runStatus.disposeProgramStatus();
+		this.#extensionUiController.clearExtensionTerminalInputListeners();
+		this.#extensionUiController.clearHookWidgets();
+		for (const unsubscribe of this.#eventBusUnsubscribers.splice(0)) unsubscribe();
+		this.#observerRegistry.dispose();
+		this.statusLine.dispose();
+		if (this.#ownsStartedUi) this.ui.stop();
+		this.#ownsStartedUi = false;
+		this.clearTransientSessionUi({ viewOnly: true });
+		this.chatContainer.disposeChildren();
+		this.composer.setRuntimeChildren([]);
+		this.ui.disposeChildren();
+		this.ui.setFrameProvider(undefined);
+		this.pendingTools.clear();
+		this.transcriptMessageComponents = new WeakMap();
+		this.streamingComponent = undefined;
+		this.streamingMessage = undefined;
+		this.editor.setText("");
+		this.isInitialized = false;
+	}
+
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
+		if (this.embedded) throw new Error("Embedded views must use initEmbedded");
 		if (this.isInitialized) return;
 		this.#idleMaintenanceActivity.scheduledTurn = target =>
 			target === this.session &&
@@ -2832,14 +2970,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		initTerminalTitleState();
 		setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
 		setTerminalTitleSpinnerStyle(cfgTuiTitleSpinner.get(this.settings));
-		initProgramStatus();
-		setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
+		this.runStatus.initProgramStatus();
+		this.runStatus.setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
 		// OSC 133;A starts a shell prompt and invalidates working/blocked records.
 		// Only a frame that actually writes the mark needs a replacement; diff
 		// paints that keep the user bubble must not resend on every update.
 		this.#eventBusUnsubscribers.push(
 			this.ui.addFrameWriteListener(frame => {
-				if (frame.includes("\x1b]133;A\x07")) resendProgramStatus();
+				if (frame.includes("\x1b]133;A\x07")) this.runStatus.resendProgramStatus();
 			}),
 		);
 		setTerminalSessionSource({
@@ -4497,7 +4635,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (any("tui.titleState")) setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
 		if (any("tui.titleSpinner")) setTerminalTitleSpinnerStyle(cfgTuiTitleSpinner.get(this.settings));
-		if (any("terminal.programStatus")) setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
+		if (any("terminal.programStatus"))
+			this.runStatus.setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
 
 		if (
 			any(
@@ -4557,6 +4696,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * changed. A focused subagent's runner draws with what the main runner leaves active.
 	 */
 	#applyExtensionLinks(): boolean {
+		if (this.embedded) return false;
 		const before = extensionLinksVersion();
 		const viewed = this.viewSession.extensionRunner;
 		viewed?.followSuspension(this.session.extensionRunner);
@@ -4646,6 +4786,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Coalesce status-cache writes; `stop()` flushes a pending one synchronously. */
 	#scheduleComposerStatusPersist(): void {
+		if (this.embedded) return;
 		if (this.#composerStatusPersistTimer) return;
 		this.#composerStatusPersistTimer = setTimeout(() => {
 			this.#composerStatusPersistTimer = undefined;
@@ -8063,6 +8204,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		if (this.embedded) {
+			this.disposeEmbedded();
+			return;
+		}
 		this.syncIdleMaintenanceView(null);
 		this.#hidePlanReview();
 		this.#appearanceRefreshRequest = undefined;
@@ -8154,6 +8299,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async shutdown(): Promise<void> {
+		if (this.embedded) {
+			this.showStatus("use /stop <reason> or /abort <reason>");
+			return;
+		}
 		if (this.#isShuttingDown) return;
 		// The previous graceful teardown failed AT the memoized session.dispose()
 		// (the session is already disposing), so it re-rejects identically forever
@@ -8366,12 +8515,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
 		// terminal back (which would leave the parent shell with a `π ⠋ …` tab).
 		disposeTerminalTitleState();
-		disposeProgramStatus();
+		this.runStatus.disposeProgramStatus();
 		popTerminalTitle();
 		this.stop();
 	}
 
 	requestShutdown(): void {
+		if (this.embedded) {
+			this.showStatus("use /stop <reason> or /abort <reason>");
+			return;
+		}
 		this.shutdownRequested = true;
 		// Background extensions do not submit terminal input. Start the same
 		// settled-boundary check without waiting for another user keystroke.
@@ -8475,14 +8628,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editorContainer.addChild(nextEditor);
 		this.ui.setFocus(nextEditor);
 
-		this.#inputController.setupKeyHandlers();
-		this.#inputController.setupEditorSubmitHandler();
-
-		void this.refreshSlashCommandState().catch(error => {
-			logger.warn("Failed to refresh slash command state for custom editor", {
-				error: String(error),
+		if (this.embedded) {
+			if (!this.#embeddedSubmit) throw new Error("Pane submit handler is not initialized");
+			this.#configureEmbeddedEditor(this.#embeddedSubmit);
+		} else {
+			this.#inputController.setupKeyHandlers();
+			this.#inputController.setupEditorSubmitHandler();
+			void this.refreshSlashCommandState().catch(error => {
+				logger.warn("Failed to refresh slash command state for custom editor", {
+					error: String(error),
+				});
 			});
-		});
+		}
 
 		this.#syncVimStatus(nextEditor);
 		this.ui.requestRender();
@@ -8946,7 +9103,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		clearTerminalHistory?: boolean;
 	}): Promise<void> {
 		// A focus switch replays another session's transcript: claim that session's link schemes first.
-		this.#applyExtensionLinks();
+		if (!this.embedded) this.#applyExtensionLinks();
 		await this.#uiHelpers.renderInitialMessages(options);
 		this.syncRetryHintRow();
 		// A switch or tree move that replays the transcript strands a `/compact` queued for the old position.
@@ -8961,7 +9118,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * dispatched by the editor to `InputController.handleRetry`.
 	 */
 	syncRetryHintRow(): void {
-		const show = !this.collabGuest && !this.viewSession.isStreaming && this.viewSession.hasAbortedToolCallTail;
+		const show =
+			!this.embedded &&
+			!this.collabGuest &&
+			!this.viewSession.isStreaming &&
+			this.viewSession.hasAbortedToolCallTail;
 		if (this.#retryHintRow) {
 			const mounted = this.statusContainer.children.includes(this.#retryHintRow);
 			if (mounted && show) return;

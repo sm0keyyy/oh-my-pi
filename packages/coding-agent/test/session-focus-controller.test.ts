@@ -10,6 +10,7 @@ import { AgentRegistry, MAIN_AGENT_ID, type AgentRef } from "@oh-my-pi/pi-coding
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { RunStatusReporter } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 
 interface SessionStub {
 	session: AgentSession;
@@ -84,6 +85,7 @@ function makeHarness(options: { renderInitialMessages?: () => void | Promise<voi
 	let mainUnsubscribe = 0;
 
 	const ctx = {
+		runStatus: new RunStatusReporter(),
 		session: main.session,
 		get viewSession() {
 			return controller.target ?? main.session;

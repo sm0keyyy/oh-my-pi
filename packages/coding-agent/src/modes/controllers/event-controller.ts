@@ -64,7 +64,7 @@ import { writeDeviceDispatch } from "../../tools/resolve";
 import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "@oh-my-pi/pi-tui/chat/thinking-display";
-import { type RunStatus, setRunStatus } from "../../utils/run-status";
+import type { RunStatus } from "../../utils/run-status";
 import { setTerminalTitleState } from "../../utils/title-generator";
 import {
 	assistantMessageLinkTargets,
@@ -348,6 +348,8 @@ export class EventController {
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
 	#dispatchInFlight = false;
+	#disposed = false;
+	readonly #disposal: PromiseWithResolvers<void> | undefined;
 	// Deltas already fed to speech at arrival by the coalescer. `#handleMessageUpdate`
 	// also vocalizes so the direct `handleEvent` path (tests, session focus replay)
 	// keeps working — the WeakSet makes the coalesced path speak each delta exactly
@@ -356,24 +358,27 @@ export class EventController {
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
 	constructor(private ctx: InteractiveModeContext) {
+		this.#disposal = ctx.embedded ? Promise.withResolvers<void>() : undefined;
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
 		// tiny/smol role with this session's registry and credentials; the
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
 		// partial contexts (tests, minimal embeddings) by wiring null.
 		const session = ctx.session;
-		this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
-			this.#waitForToolApprovalPreview(toolCallId),
-		);
-		vocalizer.setEnhancer(
-			session?.modelRegistry && session.agent && session.settings
-				? new SpeechEnhancer({
-						settings: session.settings,
-						registry: session.modelRegistry,
-						sessionId: session.sessionId,
-						metadataResolver: provider => session.agent.metadataForProvider(provider),
-					})
-				: null,
-		);
+		if (!ctx.embedded) {
+			this.#detachToolApprovalPreviewWaiter = session?.extensionRunner?.setToolApprovalPreviewWaiter(toolCallId =>
+				this.#waitForToolApprovalPreview(toolCallId),
+			);
+			vocalizer.setEnhancer(
+				session?.modelRegistry && session.agent && session.settings
+					? new SpeechEnhancer({
+							settings: session.settings,
+							registry: session.modelRegistry,
+							sessionId: session.sessionId,
+							metadataResolver: provider => session.agent.metadataForProvider(provider),
+						})
+					: null,
+			);
+		}
 		this.#streamingReveal = new StreamingRevealController({
 			// Extension text renderers get the full text so far on each drawn update (deltas within one
 			// frame are coalesced), never a partly revealed prefix from the typing reveal.
@@ -484,6 +489,8 @@ export class EventController {
 	}
 
 	dispose(): void {
+		this.#disposed = true;
+		this.#disposal?.resolve();
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
 		this.#clearApprovalPreviewGates();
@@ -501,6 +508,15 @@ export class EventController {
 		}
 		this.#ircExpiryTimers.clear();
 		this.#liveIrcCards.clear();
+	}
+	/** Retired pane history must not stay reachable through settled tool indexes. */
+	releaseSettledTranscriptReferences(): void {
+		for (const id of this.#toolTimelineComponents.keys()) {
+			if (!this.ctx.pendingTools.has(id)) this.#toolTimelineComponents.delete(id);
+		}
+		this.#priorTurnToolComponents.clear();
+		this.#retrySupersededAssistantComponents.clear();
+		this.#retrySupersededAssistantQueue = [];
 	}
 
 	#resetReadGroup(): void {
@@ -1083,6 +1099,7 @@ export class EventController {
 	}
 
 	async handleEvent(event: AgentSessionEvent): Promise<void> {
+		if (this.#disposed) return;
 		if (!this.ctx.isInitialized) {
 			await this.ctx.init();
 		}
@@ -1215,7 +1232,7 @@ export class EventController {
 		this.ctx.ensureLoadingAnimation();
 		this.#runActive = true;
 		this.#syncComposerActivity();
-		setRunStatus({ state: "working" });
+		this.ctx.runStatus.setRunStatus({ state: "working" });
 		this.ctx.ui.requestRender();
 	}
 
@@ -1271,7 +1288,7 @@ export class EventController {
 			}
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
-			vocalizer.clear();
+			if (!this.ctx.embedded) vocalizer.clear();
 			// Only genuinely user-attributed prompts anchor the delta; a mid-run
 			// agent-attributed `user` message (advisor tool-loop redirect) must not.
 			if (event.message.attribution !== "agent") {
@@ -1541,6 +1558,7 @@ export class EventController {
 	 * live (the final message is spoken at turn end).
 	 */
 	#vocalizeDelta(event: Extract<AgentSessionEvent, { type: "message_update" }>): void {
+		if (this.ctx.embedded) return;
 		if (!cfgSpeechEnabled.get(settings)) return;
 		const mode = cfgSpeechMode.get(settings);
 		const delta = event.assistantMessageEvent;
@@ -1557,6 +1575,7 @@ export class EventController {
 	 * sure the live buffer's trailing partial gets flushed.
 	 */
 	#handleTurnEnd(event: Extract<AgentSessionEvent, { type: "turn_end" }>): void {
+		if (this.ctx.embedded) return;
 		if (!cfgSpeechEnabled.get(settings)) return;
 		if (cfgSpeechMode.get(settings) !== "yield") {
 			vocalizer.flush();
@@ -1788,7 +1807,7 @@ export class EventController {
 			this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 			this.#streamingReveal.resyncVisibility();
 		}
-		if (event.message.role === "assistant" && cfgSpeechEnabled.get(settings)) {
+		if (!this.ctx.embedded && event.message.role === "assistant" && cfgSpeechEnabled.get(settings)) {
 			if (event.message.stopReason === "aborted") {
 				// Esc / Ctrl+C / interrupt: stop speaking now and drop the trailing partial.
 				vocalizer.clear();
@@ -1976,7 +1995,7 @@ export class EventController {
 		const blocked = this.#blockingPrompt(renderToolName, event.args);
 		if (blocked) {
 			this.#blockingPrompts.set(event.toolCallId, blocked);
-			setRunStatus(blocked);
+			this.ctx.runStatus.setRunStatus(blocked);
 		}
 		this.#resolveDisplaceablePoll(renderToolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
@@ -2220,7 +2239,7 @@ export class EventController {
 		// (added at tool_execution_start), so the delete also covers them without
 		// leaking ids until turn end.
 		if (this.#blockingPrompts.delete(event.toolCallId)) {
-			setRunStatus(this.#blockingPrompts.values().next().value ?? { state: "working" });
+			this.ctx.runStatus.setRunStatus(this.#blockingPrompts.values().next().value ?? { state: "working" });
 		}
 		if (event.toolName === "read") {
 			if (this.#inlineReadToolImages(event.toolCallId, event.result)) {
@@ -2398,7 +2417,7 @@ export class EventController {
 			// `working` its `agent_start` sets. The OSC 7501 record stays `working`:
 			// the run is not over, it resumes or settles without the user.
 			if (event.awaitingAsyncWork === true) {
-				setTerminalTitleState("idle");
+				if (!this.ctx.embedded) setTerminalTitleState("idle");
 				this.#showAsyncWait(event);
 			}
 			void this.#finishWhenRunSettles(event);
@@ -2411,7 +2430,7 @@ export class EventController {
 			this.ctx.flushPendingCommandOutput();
 			return;
 		}
-		setRunStatus(this.#settledRunStatus(event));
+		this.ctx.runStatus.setRunStatus(this.#settledRunStatus(event));
 
 		await this.#finishAgentEnd(event);
 		// This settle may belong to an extension-started turn while the main
@@ -2440,15 +2459,20 @@ export class EventController {
 		// prompt that produced it is still admitted, and a new submission starts a
 		// run whose `agent_start` bumps the epoch anyway.
 		const superseded = () =>
+			this.#disposed ||
 			this.#runEpoch !== epoch ||
 			this.#settleWatchEpoch !== epoch ||
 			this.ctx.session !== session ||
 			session.isStreaming;
 		try {
 			while (!superseded()) {
-				await session.waitForIdle();
+				await (this.#disposal
+					? Promise.race([session.waitForIdle(), this.#disposal.promise])
+					: session.waitForIdle());
 				if (superseded() || !session.hasPendingAsyncWork()) break;
-				await session.settleAsyncWork();
+				await (this.#disposal
+					? Promise.race([session.settleAsyncWork(), this.#disposal.promise])
+					: session.settleAsyncWork());
 			}
 			await this.#runSerialized(async () => {
 				if (
@@ -2459,7 +2483,7 @@ export class EventController {
 				) {
 					return;
 				}
-				setRunStatus(this.#settledRunStatus(event));
+				this.ctx.runStatus.setRunStatus(this.#settledRunStatus(event));
 				await this.#finishAgentEnd(event);
 				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
 			});
@@ -2515,7 +2539,7 @@ export class EventController {
 			await session.abort({ reason: USER_INTERRUPT_LABEL });
 			await this.#runSerialized(async () => {
 				if (this.ctx.session !== session || session.isStreaming) return;
-				setRunStatus({ state: "idle" });
+				this.ctx.runStatus.setRunStatus({ state: "idle" });
 				await this.#finishAgentEnd(event, { interrupted: true });
 				const running = session.getAsyncJobSnapshot()?.running.length ?? 0;
 				if (running > 0) {
@@ -2599,7 +2623,7 @@ export class EventController {
 			else this.ctx.runYieldCompaction();
 		}
 		// The user stopped the run themselves: no prediction or toast for it.
-		if (options?.interrupted) return;
+		if (options?.interrupted || this.ctx.embedded) return;
 		if (this.#settledRunStatus(event).state === "done") this.composerPrediction.request();
 		this.sendErrorNotification(event);
 		this.sendCompletionNotification(event);

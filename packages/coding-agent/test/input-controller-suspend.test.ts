@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, type Mock, vi } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { RunStatusReporter } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 
 interface SuspendCtx {
@@ -27,6 +28,7 @@ function createCtx(): SuspendCtx {
 		showStatus,
 		showError,
 		keybindings: KeybindingsManager.inMemory(),
+		runStatus: new RunStatusReporter(),
 	} as unknown as InteractiveModeContext;
 	return { ctx, ui, showStatus, showError };
 }
@@ -79,6 +81,7 @@ describe("InputController.handleCtrlZ", () => {
 		const intervalSpy = vi.spyOn(globalThis, "setInterval");
 		const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 		const { ctx, ui, showError } = createCtx();
+		const resendProgramStatus = vi.spyOn(ctx.runStatus, "resendProgramStatus");
 
 		const controller = new InputController(ctx);
 		controller.handleCtrlZ();
@@ -108,6 +111,7 @@ describe("InputController.handleCtrlZ", () => {
 		expect(clearIntervalSpy).toHaveBeenCalledWith(suspendKeepalive);
 		expect(ui.start).toHaveBeenCalledTimes(1);
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
+		expect(resendProgramStatus).toHaveBeenCalledTimes(1);
 	});
 
 	it("restores the TUI and drops the SIGCONT listener when process.kill rejects the signal", () => {

@@ -64,6 +64,7 @@ import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { ConversationPosition } from "./utils/conversation-position";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { RunStatusReporter } from "../utils/run-status";
 
 export type CompactionQueuedMessage = {
 	text: string;
@@ -159,6 +160,9 @@ export interface AgentHubOpenOptions {
 }
 
 export interface InteractiveModeContext {
+	readonly embedded?: boolean;
+	readonly runStatus: RunStatusReporter;
+	readonly dialogLifetimeSignal: AbortSignal;
 	// UI access
 	ui: TUI;
 	readonly composer: Pick<Composer, "setRunActive">;

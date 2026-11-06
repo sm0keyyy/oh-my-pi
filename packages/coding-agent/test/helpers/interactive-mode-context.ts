@@ -31,6 +31,13 @@
  * that also import the module-level `settings` need the global initialized.
  */
 import { vi } from "bun:test";
+import { Database } from "bun:sqlite";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { isSettingsInitialized, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
@@ -39,9 +46,10 @@ import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { OAuthManualInputManager } from "@oh-my-pi/pi-coding-agent/modes/oauth-manual-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TokenRateMeter } from "@oh-my-pi/pi-coding-agent/utils/token-rate";
+import { RunStatusReporter } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import { type Component, Container } from "@oh-my-pi/pi-tui";
 
 import { cfgTerminalShowImages } from "@oh-my-pi/pi-coding-agent/modes/settings";
@@ -219,6 +227,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		ui.requestRender();
 	};
 	const ctx = {
+		runStatus: new RunStatusReporter(),
+		dialogLifetimeSignal: new AbortController().signal,
 		ui,
 		composer: { setRunActive: vi.fn() },
 		chatContainer,
@@ -312,4 +322,58 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 	} satisfies ContextOverrides;
 	layer(ctx, overrides, RESOLVED_AHEAD);
 	return ctx as unknown as InteractiveModeContext;
+}
+
+export function createPaneSessionFixture() {
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+	const stream = new AssistantMessageEventStream();
+	const auth = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+	auth.keys.setRuntime("anthropic", "test-key");
+	const partial: AssistantMessage = {
+		role: "assistant",
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		content: [],
+		stopReason: "stop",
+		timestamp: Date.now(),
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+	const session = new AgentSession({
+		agent: new Agent({
+			initialState: { model, systemPrompt: [], tools: [], messages: [] },
+			streamFn: () => stream,
+			getApiKey: () => "test-key",
+		}),
+		sessionManager: SessionManager.inMemory(),
+		settings: Settings.isolated({
+			"startup.quiet": true,
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			"advisor.enabled": false,
+			"display.smoothStreaming": false,
+		}),
+		modelRegistry: new ModelRegistry(auth),
+	});
+	return {
+		session,
+		stream,
+		partial,
+		finish() {
+			stream.push({ type: "error", reason: "aborted", error: { ...partial, stopReason: "aborted" } });
+		},
+		async close() {
+			stream.push({ type: "error", reason: "aborted", error: { ...partial, stopReason: "aborted" } });
+			await session.dispose();
+			auth.close();
+		},
+	};
 }

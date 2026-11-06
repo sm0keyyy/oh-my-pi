@@ -760,7 +760,7 @@ export class AskDialogComponent implements Component {
 		// moves, and later answers never resize the box; content that
 		// outgrows it scrolls. Expanding a truncated question uses the space
 		// available within the existing height cap.
-		const totalRows = this.#dialogHeight(innerWidth, process.stdout.rows || 40);
+		const totalRows = this.#dialogHeight(innerWidth, this.options.tui?.terminal.rows ?? (process.stdout.rows || 40));
 		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
 		const maxTitleRows = Math.max(1, totalRows - 5 - MIN_BODY_ROWS - tabBarRows);
 		const headerLines = this.#renderHeader(innerWidth, maxTitleRows);

@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
-import { RpcExtensionUIContext } from "../modes/rpc/rpc-mode";
 import { indexEnabled, loadConfig, log, resolveRepo, STATUS_POLL_MS, WATCH_POLL_MS } from "./config";
 import { ensure } from "./ensure";
 import { useMarker } from "./jobs";
@@ -76,9 +75,10 @@ export function startCodegraphMain(main: CodegraphMain): { dispose(): void } {
 				const model = await widgetModel(label, repo, gate, runs);
 				if (!widgetStopped && !controller.signal.aborted) {
 					if (!model) main.ui.setWidget("codegraph", undefined);
-					else if (main.ui instanceof RpcExtensionUIContext)
-						main.ui.setWidget("codegraph", renderWidgetText(model));
-					else main.ui.setWidget("codegraph", (_tui, theme) => new CodegraphWidget(model, theme));
+					else
+						main.ui.setWidget("codegraph", (_tui, theme) => new CodegraphWidget(model, theme), {
+							rpcLines: renderWidgetText(model),
+						});
 				}
 			} catch {
 				if (!controller.signal.aborted) stopWidget("widget refresh failed");

@@ -1473,18 +1473,19 @@ export class RpcExtensionUIContext implements ExtensionUIContext {
 	}
 
 	setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-		// Only support string arrays in RPC mode - factory functions are ignored
-		if (content === undefined || Array.isArray(content)) {
+		// Component factories may supply a plain-text projection without requiring TUI access.
+		const lines =
+			content === undefined ? undefined : (options?.rpcLines ?? (Array.isArray(content) ? content : undefined));
+		if (content === undefined || lines !== undefined) {
 			this.output({
 				type: "extension_ui_request",
 				id: Snowflake.next() as string,
 				method: "setWidget",
 				widgetKey: key,
-				widgetLines: content as string[] | undefined,
+				widgetLines: lines as string[] | undefined,
 				widgetPlacement: options?.placement,
 			} as RpcExtensionUIRequest);
 		}
-		// Component factories are not supported in RPC mode - would need TUI access
 	}
 
 	setFooter(_factory: unknown): void {

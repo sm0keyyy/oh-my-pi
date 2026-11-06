@@ -189,10 +189,12 @@ test("a submodule path cannot prevent another path in its batch from syncing", a
 	expect(warnings.mock.calls).toHaveLength(1);
 	expect(String(warnings.mock.calls[0][0])).toContain("submodule/file.md");
 	notify("change", "submodule/file.md");
+	notify("change", "normal.md");
 	await until(() => ignoreRuns.length === 4);
 	await ignoreRuns[3];
+	expect(ignoreInputs[3].split("\0").filter(Boolean)).toEqual([path.join(root, "normal.md")]);
 	expect(warnings.mock.calls).toHaveLength(1);
-	expect(count(runs)).toBe(1);
+	await until(() => count(runs) === 2 && fs.existsSync(`${base}.exit`));
 });
 
 test("ignore input over 8 MiB is split into bounded chunks without losing changes", async () => {

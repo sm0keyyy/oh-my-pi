@@ -220,6 +220,7 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 				let bytes = 0;
 				for (const name of batch) {
 					if (closed) return;
+					if (rejected.has(name)) continue;
 					const size = Buffer.byteLength(nodePath.join(repo.root, name)) + 1;
 					if (size > MAX_IGNORE_BYTES) {
 						reject(name, new Error("path exceeds the 8 MiB ignore input limit"));

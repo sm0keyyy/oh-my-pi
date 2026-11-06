@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { TUI } from "@oh-my-pi/pi-tui";
+import { Container, Text, type TUI } from "@oh-my-pi/pi-tui";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as config from "../../src/codegraph-index/config";
@@ -12,6 +12,9 @@ import type {
 	ExtensionUiComponentFactory,
 	ExtensionWidgetContent,
 } from "../../src/extensibility/extensions/types";
+import { ExtensionUiController } from "../../src/modes/controllers/extension-ui-controller";
+import type { InteractiveModeContext } from "../../src/modes/types";
+import type { RpcSocketServer } from "../../src/modes/rpc/rpc-socket";
 import { RpcExtensionUIContext } from "../../src/modes/rpc/rpc-mode";
 import { jobId } from "../../src/codegraph-index/jobs";
 import { widgetModel, renderWidgetText, type RunMemory } from "../../src/codegraph-index/widget";
@@ -229,4 +232,53 @@ test("the main TUI keeps a themed widget component instead of RPC string lines",
 	} finally {
 		service.dispose();
 	}
+});
+
+test("interactive component widgets broadcast plain RPC lines and retain them in socket snapshots", () => {
+	const above = new Container();
+	const below = new Container();
+	const context = {
+		ui: { requestRender() {} } as TUI,
+		hookWidgetContainerAbove: above,
+		hookWidgetContainerBelow: below,
+		statusRowOccupied: false,
+	} as InteractiveModeContext;
+	const controller = new ExtensionUiController(context);
+	const frames: object[] = [];
+	controller.setRpcSocketServer({
+		broadcast(frame: object) {
+			frames.push(frame);
+		},
+	} as RpcSocketServer);
+	const local = () => new Text("\u001b[31mlocal codegraph\u001b[0m", 0, 0);
+	const rpcLines = ["Codegraph fixture", "normal building"];
+	controller.setHookWidget("codegraph", local, { placement: "belowEditor", rpcLines });
+	expect(below.render(120).join("\n")).toContain("\u001b[31mlocal codegraph");
+	expect(frames.at(-1)).toMatchObject({
+		type: "extension_ui_request",
+		method: "setWidget",
+		widgetKey: "codegraph",
+		widgetLines: ["Codegraph fixture", "normal building"],
+		widgetPlacement: "belowEditor",
+	});
+	rpcLines.push("caller mutation");
+	expect(controller.getRpcUiSnapshot()).toMatchObject({
+		method: "snapshot",
+		widgets: { codegraph: { lines: ["Codegraph fixture", "normal building"], placement: "belowEditor" } },
+	});
+	controller.setHookWidget("codegraph", local, { placement: "belowEditor" });
+	const withoutProjection = controller.getRpcUiSnapshot();
+	if (withoutProjection.method !== "snapshot") throw new Error("Expected RPC UI snapshot");
+	expect(withoutProjection.widgets).not.toHaveProperty("codegraph");
+	expect(frames.at(-1)).toMatchObject({ widgetKey: "codegraph", widgetLines: undefined });
+	expect(below.render(120).join("\n")).toContain("local codegraph");
+	controller.setHookWidget("codegraph", ["legacy status"]);
+	expect(controller.getRpcUiSnapshot()).toMatchObject({
+		widgets: { codegraph: { lines: ["legacy status"], placement: "aboveEditor" } },
+	});
+	controller.setHookWidget("codegraph", undefined, { rpcLines: ["stale"] });
+	const cleared = controller.getRpcUiSnapshot();
+	if (cleared.method !== "snapshot") throw new Error("Expected RPC UI snapshot");
+	expect(cleared.widgets).not.toHaveProperty("codegraph");
+	expect(frames.at(-1)).toMatchObject({ widgetKey: "codegraph", widgetLines: undefined });
 });

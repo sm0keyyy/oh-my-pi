@@ -429,8 +429,10 @@ export class ExtensionUiController {
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
-		if (Array.isArray(content)) {
-			this.#rpcWidgets.set(key, { lines: [...content], placement: options?.placement ?? "aboveEditor" });
+		const rpcLines =
+			content === undefined ? undefined : (options?.rpcLines ?? (Array.isArray(content) ? content : undefined));
+		if (rpcLines !== undefined) {
+			this.#rpcWidgets.set(key, { lines: [...rpcLines], placement: options?.placement ?? "aboveEditor" });
 		} else {
 			this.#rpcWidgets.delete(key);
 		}
@@ -439,7 +441,7 @@ export class ExtensionUiController {
 			id: Snowflake.next() as string,
 			method: "setWidget",
 			widgetKey: key,
-			widgetLines: Array.isArray(content) ? content : undefined,
+			widgetLines: rpcLines,
 			widgetPlacement: options?.placement,
 		});
 		const placement = options?.placement ?? "aboveEditor";

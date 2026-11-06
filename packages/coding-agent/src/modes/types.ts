@@ -159,6 +159,7 @@ export interface AgentHubOpenOptions {
 }
 
 export interface InteractiveModeContext {
+	readonly embedded?: boolean;
 	// UI access
 	ui: TUI;
 	readonly composer: Pick<Composer, "setRunActive">;

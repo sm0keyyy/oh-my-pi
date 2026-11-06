@@ -205,11 +205,7 @@ export class ExtensionUiController {
 		}
 	}
 
-	/**
-	 * Initialize the hook system with TUI-based UI context.
-	 */
-	async initHooksAndCustomTools(): Promise<void> {
-		// Create and set hook & tool UI context
+	createToolUIContext(): ExtensionUIContext {
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
 			supportsEditor: true,
@@ -225,7 +221,9 @@ export class ExtensionUiController {
 			setStatus: (key, text) => this.setHookStatus(key, text),
 			setWorkingMessage: message => this.ctx.setWorkingMessage(message),
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
-			setTitle: title => setExtensionTerminalTitle(title),
+			setTitle: title => {
+				if (!this.ctx.embedded) setExtensionTerminalTitle(title);
+			},
 			custom: (factory, options) => this.showHookCustom(factory, options),
 			setEditorText: text => {
 				this.ctx.editor.setText(text);
@@ -246,6 +244,7 @@ export class ExtensionUiController {
 			getAllThemes: async () => (await getAvailableThemesWithPaths()).map(t => ({ name: t.name, path: t.path })),
 			getTheme: name => getThemeByName(name),
 			setTheme: async themeArg => {
+				if (this.ctx.embedded) return { success: false, error: "Panes use the main theme" };
 				if (typeof themeArg === "string") {
 					return await setTheme(themeArg, true);
 				}
@@ -258,9 +257,13 @@ export class ExtensionUiController {
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
 			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
 		};
-		const enrichedUiContext = withTerminalLauncher(uiContext, true);
+		this.#toolUIContext = this.ctx.embedded ? uiContext : withTerminalLauncher(uiContext, true);
+		return this.#toolUIContext;
+	}
+
+	async initHooksAndCustomTools(): Promise<void> {
+		const enrichedUiContext = this.createToolUIContext();
 		this.ctx.setToolUIContext(enrichedUiContext, true);
-		this.#toolUIContext = enrichedUiContext;
 		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
 			const reserve =
 				confirmation.remainingPercent === undefined

@@ -78,6 +78,7 @@ describe("native edit format pipeline", () => {
 		const edit = new EditTool(current, "hashline");
 		const header = text(write).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
 		expect(header).toBeDefined();
+		await new ReadTool(current).execute("reread-write", { path: "value.ts" });
 		const result = await edit.execute("edit", {
 			input: `${header}\nPUT 1.=1:\n+const value=2;\n`,
 		});
@@ -102,6 +103,7 @@ describe("native edit format pipeline", () => {
 			path: "value.ts",
 			content: "const a=1;\nconst b=2;\n",
 		});
+		await new ReadTool(current).execute("reread-initial", { path: "value.ts" });
 		const baselineSession = session({ "edit.mode": "hashline", "edit.formatPipeline": false });
 		const baselineRead = await new ReadTool(baselineSession).execute("baseline-read", { path: "value.ts" });
 		const baselineHeader = text(baselineRead).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
@@ -143,6 +145,79 @@ if (!content.startsWith("// moved\\n")) await Bun.write(file, "// moved\\n" + co
 		const corrected = await edit.execute("correct-line-number", { input: `${nextHeader}\nPUT 2.=2:\n+const a=4;\n` });
 		expect(corrected.isError).not.toBe(true);
 		expect(await Bun.file(path.join(root, "value.ts")).text()).toBe("// moved\nconst a=4;\nconst b = 2;\n");
+	});
+
+	it("prettier edit blank-line collapse clears carried provenance and preserves literal dollar paths", async () => {
+		await prettier();
+		const current = session({ "edit.mode": "hashline" });
+		const fileName = "value$&.ts";
+		await new WriteTool(current).execute("initial", {
+			path: fileName,
+			content: "const first = 1;\n\nconst middle = 2;\nconst last = 3;\n",
+		});
+		const read = await new ReadTool(current).execute("initial-read", { path: fileName });
+		await executable(
+			"prettier",
+			`
+const file = process.argv.at(-1);
+await Bun.write(file, (await Bun.file(file).text()).replace(/\\n{2,}/g, "\\n"));
+`,
+		);
+		const header = text(read).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
+		const edit = new EditTool(current, "hashline");
+		const result = await edit.execute("collapse", { input: `${header}\nPUT 1.=1:\n+const first = 10;\n` });
+		expect(result.isError).not.toBe(true);
+		expect(text(result)).toContain("[value$&.ts#");
+		expect(text(result)).not.toMatch(/^[ +*-]?\d+(?:-\d+)?[:|]/m);
+		const formatted = "const first = 10;\nconst middle = 2;\nconst last = 3;\n";
+		expect(await Bun.file(path.join(root, fileName)).text()).toBe(formatted);
+		const nextHeader = text(result).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
+		const blocked = await edit.execute("old-number", { input: `${nextHeader}\nPUT 3.=3:\n+const middle = 20;\n` });
+		expect(blocked.isError).toBe(true);
+		expect(await Bun.file(path.join(root, fileName)).text()).toBe(formatted);
+		await new ReadTool(current).execute("reread", { path: fileName });
+		const corrected = await edit.execute("correct-number", {
+			input: `${nextHeader}\nPUT 2.=2:\n+const middle = 20;\n`,
+		});
+		expect(corrected.isError).not.toBe(true);
+		expect(await Bun.file(path.join(root, fileName)).text()).toBe(
+			"const first = 10;\nconst middle = 20;\nconst last = 3;\n",
+		);
+	});
+
+	it("prettier write blank-line collapse requires rereading and returns a separate formatter notice", async () => {
+		await prettier();
+		await executable(
+			"prettier",
+			`
+const file = process.argv.at(-1);
+await Bun.write(file, (await Bun.file(file).text()).replace(/\\n{2,}/g, "\\n"));
+`,
+		);
+		const current = session({ "edit.mode": "hashline" });
+		const result = await new WriteTool(current).execute("write", {
+			path: "value.ts",
+			content: "const first = 1;\n\nconst middle = 2;\nconst last = 3;\n",
+		});
+		expect(result.isError).not.toBe(true);
+		expect(result.content[0]).not.toMatchObject({ text: expect.stringContaining("Formatted by") });
+		expect(result.content[1]).toEqual({
+			type: "text",
+			text: "Formatted by prettier.\nline numbers changed by prettier; re-read before anchored edits",
+		});
+		const formatted = "const first = 1;\nconst middle = 2;\nconst last = 3;\n";
+		expect(await Bun.file(path.join(root, "value.ts")).text()).toBe(formatted);
+		const header = text(result).match(/\[[^\n]+#[0-9A-F]{4}\]/)?.[0];
+		const edit = new EditTool(current, "hashline");
+		const blocked = await edit.execute("old-number", { input: `${header}\nPUT 3.=3:\n+const middle = 20;\n` });
+		expect(blocked.isError).toBe(true);
+		expect(await Bun.file(path.join(root, "value.ts")).text()).toBe(formatted);
+		await new ReadTool(current).execute("reread", { path: "value.ts" });
+		const corrected = await edit.execute("correct-number", { input: `${header}\nPUT 2.=2:\n+const middle = 20;\n` });
+		expect(corrected.isError).not.toBe(true);
+		expect(await Bun.file(path.join(root, "value.ts")).text()).toBe(
+			"const first = 1;\nconst middle = 20;\nconst last = 3;\n",
+		);
 	});
 
 	it("gate finds formatter and test binaries installed after an initial miss", async () => {

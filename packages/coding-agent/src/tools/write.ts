@@ -1205,10 +1205,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent, displayPath);
+			if (formatted.changed) {
+				getEditStore(this.session).recordSnapshot(absolutePath, normalizeToLF(finalContent), [0]);
+			}
 			const finalBytes = finalContent === writeContent ? writeBytes : Buffer.byteLength(finalContent, "utf8");
 			const writeLine = `Successfully wrote ${finalBytes} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
-			for (const tool of formatted.formatters) resultText += `\nFormatted by ${tool}.`;
 			if (stripped) {
 				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
 			}
@@ -1221,15 +1223,22 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (madeExecutable) {
 				resultText += `\n${EXECUTABLE_NOTICE}`;
 			}
+			const resultContent: AgentToolResult<WriteToolDetails>["content"] = [{ type: "text", text: resultText }];
+			for (const tool of formatted.formatters) {
+				resultContent.push({
+					type: "text",
+					text: `Formatted by ${tool}.\nline numbers changed by ${tool}; re-read before anchored edits`,
+				});
+			}
 			if (!diagnostics.diagnostics) {
 				return {
-					content: [{ type: "text", text: resultText }],
+					content: resultContent,
 					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
 				};
 			}
 
 			return {
-				content: [{ type: "text", text: resultText }],
+				content: resultContent,
 				details: {
 					resolvedPath: absolutePath,
 					diagnostics: diagnostics.diagnostics,

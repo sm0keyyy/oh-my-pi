@@ -570,7 +570,9 @@ export class EditTool implements AgentTool<TInput> {
 			this.#streamedArgs.delete(toolCallId);
 		}
 		for (const [filePath, value] of formatted) {
-			getEditStore(this.session).recordSnapshot(filePath, value.text, [0]);
+			const store = getEditStore(this.session);
+			store.invalidate(filePath);
+			store.recordSnapshot(filePath, value.text, [0]);
 		}
 		for (const filePath of writtenPaths) scheduleAffectedTest(filePath, this.session.settings, this.session.cwd);
 		for (const file of outcome.files) {
@@ -584,7 +586,7 @@ export class EditTool implements AgentTool<TInput> {
 			const lines = body.split("\n").filter(line => !/^[ +*-]?\d+(?:-\d+)?[:|]/.test(line));
 			if (file.warnings.length > 0) lines.push("", "Warnings:", ...file.warnings);
 			file.text = lines.join("\n");
-			outcome.text = outcome.text.replace(original, file.text);
+			outcome.text = outcome.text.replace(original, () => file.text);
 		}
 
 		if (outcome.isError) {

@@ -48,7 +48,10 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		await Promise.resolve();
 		inFlight--;
 		const command = args[1];
-		if (command === options.failCommand) return { exitCode: 1, stdout: "", stderr: "failure" };
+		if (command === options.failCommand) {
+			notify();
+			return { exitCode: 1, stdout: "", stderr: "failure" };
+		}
 		let result: unknown = {};
 		if (command === "new") {
 			const sessionId = `s${++nextSession}`;
@@ -211,10 +214,13 @@ describe("pane manager", () => {
 		h.start("other", "task2");
 		await h.until(() => h.opened.length === 8);
 		expect(h.sessions.size).toBe(2);
+		const exiting = h.calls.length;
 		await h.manager.dispose();
 		await h.manager.dispose();
 		expect(h.sessions.size).toBe(0);
 		expect(new Set(h.calls.filter(call => call[1] === "kill").map(call => call[2]))).toEqual(new Set(["s1", "s2"]));
+		expect(h.calls.slice(exiting)).toHaveLength(2);
+		expect(h.calls.slice(exiting).every(call => call[1] === "kill")).toBe(true);
 		const after = h.calls.length;
 		h.start("ignored");
 		h.bus.emit("task:subagent:event", { id: "a" });
@@ -233,6 +239,20 @@ describe("pane manager", () => {
 		h.bus.emit("task:subagent:event", { id: "a" });
 		await h.until(() => h.opened.length === 2);
 		expect(h.sessions).toEqual(new Set(["s2"]));
+	});
+
+	it("reopen recreates the group after killing an externally closed session fails", async () => {
+		const h = harness({ failCommand: "kill" });
+		h.start("a");
+		await h.until(() => h.opened.length === 1);
+		h.sessions.delete("s1");
+		h.panes.get("a")![0]!.close();
+		await h.until(() => h.calls.some(call => call[1] === "kill"));
+		h.bus.emit("task:subagent:event", { id: "a" });
+		await h.until(() => h.opened.length === 2);
+		expect(h.calls.filter(call => call[1] === "new")).toHaveLength(2);
+		expect(h.sessions).toEqual(new Set(["s2"]));
+		expect(h.manager.paneUi("a")).toBe(h.panes.get("a")![1]!.ui);
 	});
 
 	it("lifecycle releases an in-flight pane without publishing it after park or exit", async () => {
@@ -266,6 +286,7 @@ describe("pane manager", () => {
 			expect(h.calls.filter(call => call[1] === "split")).toHaveLength(2);
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(warn.mock.calls[0]?.[0]).toStartWith("rex-panes:");
+			expect(warn.mock.calls[0]?.[1]).toEqual({ error: expect.stringContaining("exit 1") });
 		} finally {
 			warn.mockRestore();
 		}

@@ -108,14 +108,16 @@ class Manager implements PaneManager {
 		return this.#members.get(agentId)?.active?.pane.ui;
 	}
 
-	#warn(): void {
+	#warn(cause: unknown): void {
 		if (this.#warned) return;
 		this.#warned = true;
-		logger.warn("rex-panes: pane operation failed; main TUI remains available");
+		logger.warn("rex-panes: pane operation failed; main TUI remains available", {
+			error: cause instanceof Error ? cause.message : String(cause),
+		});
 	}
 
 	#queue(group: Group, work: () => Promise<void>): void {
-		group.tail = group.tail.then(work).catch(() => this.#warn());
+		group.tail = group.tail.then(work).catch(error => this.#warn(error));
 	}
 
 	#live(ref: AgentRef | undefined): AgentSession | null {
@@ -197,13 +199,14 @@ class Manager implements PaneManager {
 	async #killEmpty(group: Group): Promise<void> {
 		if (!group.sessionId) return;
 		for (const member of group.members) if (member.active) return;
-		await this.deps.rex.killSession(group.sessionId);
+		const sessionId = group.sessionId;
 		group.sessionId = undefined;
 		group.label = undefined;
+		await this.deps.rex.killSession(sessionId);
 	}
 
 	async #label(group: Group): Promise<void> {
-		if (!group.sessionId) return;
+		if (this.#disposed || !group.sessionId) return;
 		let count = 0;
 		for (const member of group.members) if (member.active) count++;
 		const label = `omp: ${group.first}${count > 1 ? ` +${count - 1}` : ""}`;
@@ -214,14 +217,14 @@ class Manager implements PaneManager {
 
 	async #close(member: Member): Promise<void> {
 		const active = member.active;
-		if (!active) return;
+		if (this.#disposed || !active) return;
 		member.active = undefined;
 		if (member.group.sessionId) {
-			await this.deps.rex.closeBlock(member.group.sessionId, active.blockId).catch(() => this.#warn());
+			await this.deps.rex.closeBlock(member.group.sessionId, active.blockId).catch(error => this.#warn(error));
 		}
-		await active.pane.dispose().catch(() => this.#warn());
-		await this.#killEmpty(member.group).catch(() => this.#warn());
-		await this.#label(member.group).catch(() => this.#warn());
+		await active.pane.dispose().catch(error => this.#warn(error));
+		await this.#killEmpty(member.group).catch(error => this.#warn(error));
+		await this.#label(member.group).catch(error => this.#warn(error));
 	}
 
 	async #open(member: Member, session: AgentSession): Promise<void> {
@@ -263,32 +266,32 @@ class Manager implements PaneManager {
 			member.everOpened = true;
 			void result.pane.closed
 				.then(() => {
-					if (member.active !== active) return;
+					if (this.#disposed || member.active !== active) return;
 					member.active = undefined;
 					member.requested = false;
 					this.#queue(group, async () => {
-						await active.pane.dispose().catch(() => this.#warn());
+						await active.pane.dispose().catch(error => this.#warn(error));
 						await this.#killEmpty(group);
 					});
 				})
-				.catch(() => this.#warn());
+				.catch(error => this.#warn(error));
 			if (this.#disposed || member.session !== session) {
 				await this.#close(member);
 				return;
 			}
-			await this.#label(group).catch(() => this.#warn());
+			await this.#label(group).catch(error => this.#warn(error));
 			if (member.active === active) this.deps.onPaneOpened(member.id);
-		} catch {
+		} catch (error) {
 			member.failed = member.session === session;
-			this.#warn();
+			this.#warn(error);
 			if (member.active) {
 				await this.#close(member);
 			} else {
-				if (block && group.sessionId)
-					await this.deps.rex.closeBlock(group.sessionId, block).catch(() => this.#warn());
+				if (!this.#disposed && block && group.sessionId)
+					await this.deps.rex.closeBlock(group.sessionId, block).catch(error => this.#warn(error));
 				const result = await opened;
-				if (result && "pane" in result) await result.pane.dispose().catch(() => this.#warn());
-				await this.#killEmpty(group).catch(() => this.#warn());
+				if (result && "pane" in result) await result.pane.dispose().catch(error => this.#warn(error));
+				await this.#killEmpty(group).catch(error => this.#warn(error));
 			}
 		}
 	}
@@ -300,11 +303,16 @@ class Manager implements PaneManager {
 		this.#unsubscribers.length = 0;
 		for (const group of this.#groups.values()) {
 			this.#queue(group, async () => {
+				const sessionId = group.sessionId;
+				group.sessionId = undefined;
+				group.label = undefined;
+				if (sessionId) await this.deps.rex.killSession(sessionId).catch(error => this.#warn(error));
 				for (const member of group.members) {
 					member.session = null;
-					await this.#close(member);
+					const active = member.active;
+					member.active = undefined;
+					if (active) await active.pane.dispose().catch(error => this.#warn(error));
 				}
-				await this.#killEmpty(group);
 			});
 		}
 		this.#disposePromise = Promise.all([...this.#groups.values()].map(group => group.tail)).then(() => {

@@ -1,4 +1,5 @@
 {{#if budgetStop}}
+These restrictions apply only to this forced wrap-up turn. A later parent message starts a new assignment with the agent's normal tools.
 {{#if structured}}
 <system-reminder>
 {{#if operatorStopReason}}

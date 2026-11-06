@@ -79,7 +79,7 @@ import { type ArtifactManager, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import type { CostGate } from "../session/cost-gate";
-import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
+import { SKILL_PROMPT_MESSAGE_TYPE, SUBAGENT_WRAP_UP_MESSAGE_TYPE } from "../session/messages";
 import type { SubagentThinkingLevelSource } from "../session/session-entries";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
@@ -2525,12 +2525,27 @@ async function driveSessionToResult(
 		text: string,
 		promptOptions: PromptOptions,
 		label: string,
-		{ forceFinalYield = false }: { forceFinalYield?: boolean } = {},
+		{ forceFinalYield = false, wrapUp = false }: { forceFinalYield?: boolean; wrapUp?: boolean } = {},
 	): Promise<void> => {
 		for (let attempt = 1; attempt <= MAX_PROMPT_DISPATCH_ATTEMPTS; attempt++) {
 			if (forceFinalYield) monitor.markFinalYieldForced(true);
 			try {
-				await awaitAbortable(session.prompt(text, { ...promptOptions, runCommands: false, throwOnDrop: true }));
+				if (wrapUp) {
+					const dispatched = await awaitAbortable(
+						session.promptCustomMessage(
+							{
+								customType: SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+								content: text,
+								display: false,
+								attribution: "agent",
+							},
+							{ toolChoice: promptOptions.toolChoice },
+						),
+					);
+					if (!dispatched) throw new PromptDroppedError();
+				} else {
+					await awaitAbortable(session.prompt(text, { ...promptOptions, runCommands: false, throwOnDrop: true }));
+				}
 				return;
 			} catch (err) {
 				if (!(err instanceof PromptDroppedError)) throw err;
@@ -2633,7 +2648,7 @@ async function driveSessionToResult(
 							...(isFinalRetry && reminderToolChoice ? { toolChoice: reminderToolChoice } : {}),
 						},
 						"yield reminder",
-						{ forceFinalYield: isFinalRetry },
+						{ forceFinalYield: isFinalRetry, wrapUp: budgetStop },
 					);
 					await awaitAbortable(session.waitForIdle());
 				} catch (err) {

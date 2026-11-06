@@ -416,6 +416,7 @@ import {
 	REWIND_REPORT_MESSAGE_TYPE,
 	SILENT_ABORT_MARKER,
 	SKILL_PROMPT_MESSAGE_TYPE,
+	SUBAGENT_WRAP_UP_MESSAGE_TYPE,
 	sanitizeAssistantForReparentedHistory,
 	USER_INTERRUPT_LABEL,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
@@ -4298,9 +4299,12 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		if (message.role === "hookMessage" || message.role === "custom") {
-			// One-run instructions must not return from persisted history: prewalk
-			// nudges are consumed once, and Vibe context is rebuilt only while active.
-			if (!isPrewalkPlanNudge(message) && message.customType !== VIBE_MODE_CONTEXT_MESSAGE_TYPE) {
+			// One-run instructions must not return from persisted history.
+			if (
+				!isPrewalkPlanNudge(message) &&
+				message.customType !== VIBE_MODE_CONTEXT_MESSAGE_TYPE &&
+				message.customType !== SUBAGENT_WRAP_UP_MESSAGE_TYPE
+			) {
 				this.sessionManager.appendCustomMessageEntry(
 					message.customType,
 					message.content,
@@ -9095,6 +9099,10 @@ export class AgentSession implements SettingsScope {
 			}
 			return true;
 		} finally {
+			if (message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE) {
+				// Expire before releasing the turn: an IRC wake must not inherit the stop restriction.
+				this.agent.replaceMessages(this.agent.state.messages.filter(candidate => candidate !== message));
+			}
 			// The per-turn before_agent_start override lives only for this turn.
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;

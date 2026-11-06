@@ -450,6 +450,9 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 /** Custom message type for hidden interrupted-thinking continuity context. */
 export const INTERRUPTED_THINKING_MESSAGE_TYPE = "interrupted-thinking";
 
+/** Forced subagent wrap-up directive; valid only for its dispatched turn. */
+export const SUBAGENT_WRAP_UP_MESSAGE_TYPE = "subagent-wrap-up";
+
 /** Custom message type for the transient checkpoint-active reminder. */
 export const CHECKPOINT_ACTIVE_REMINDER_TYPE = "checkpoint-active-reminder";
 

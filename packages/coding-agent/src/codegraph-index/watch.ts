@@ -161,6 +161,7 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 	}
 	const pending: Record<Kind, Set<string>> = { normal: new Set(), agentic: new Set() };
 	let unfiltered = new Set<string>();
+	const rejected = new Set<string>();
 	const quietCheck = options.quietCheck ?? quietCheckPath();
 	const debounceMs = options.debounceMs ?? WATCH_DEBOUNCE_MS;
 	const pollMs = options.pollMs ?? WATCH_POLL_MS;
@@ -177,6 +178,36 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 			void flush();
 		}, delay);
 	};
+	const reject = (name: string, error: unknown): void => {
+		if (rejected.has(name)) return;
+		rejected.add(name);
+		log(`${repo.root}: watcher rejected ${name}: ${error instanceof Error ? error.message : "ignore check failed"}`);
+	};
+	const inspect = async (names: string[]): Promise<void> => {
+		if (closed) return;
+		try {
+			const input = names.map(name => nodePath.join(repo.root, name)).join("\0") + "\0";
+			const inputBytes = Buffer.byteLength(input);
+			// Native VCS has no ignore query. Git emits a subset of this bounded NUL-separated input.
+			const ignored = await ptree.exec(
+				["git", "-c", `core.excludesFile=${excludes}`, "check-ignore", "--stdin", "-z"],
+				{ cwd: repo.root, input, timeout: 5_000, allowNonZero: true, stderr: "buffer" },
+			);
+			if ((ignored.exitCode !== 0 && ignored.exitCode !== 1) || Buffer.byteLength(ignored.stdout) > inputBytes)
+				throw new Error("git check-ignore failed");
+			if (closed) return;
+			const ignoredPaths = new Set(ignored.stdout.split("\0"));
+			for (const relative of names) {
+				if (ignoredPaths.has(nodePath.join(repo.root, relative))) continue;
+				pending.normal.add(relative);
+				if (AGENTIC_EXTENSIONS[nodePath.extname(relative)] === true) pending.agentic.add(relative);
+			}
+		} catch (error) {
+			if (closed) return;
+			if (names.length === 1) reject(names[0], error);
+			else for (const name of names) await inspect([name]);
+		}
+	};
 	const flush = async (): Promise<void> => {
 		if (closed || busy) return;
 		busy = true;
@@ -185,29 +216,24 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 			if (unfiltered.size) {
 				const batch = unfiltered;
 				unfiltered = new Set();
-				try {
-					const input = [...batch].map(name => nodePath.join(repo.root, name)).join("\0") + "\0";
-					const inputBytes = Buffer.byteLength(input);
-					if (inputBytes > MAX_IGNORE_BYTES) throw new Error("ignore batch exceeds 8 MiB");
-					// Native VCS has no ignore query. Git emits a subset of this bounded NUL-separated input.
-					const ignored = await ptree.exec(
-						["git", "-c", `core.excludesFile=${excludes}`, "check-ignore", "--stdin", "-z"],
-						{ cwd: repo.root, input, timeout: 5_000, allowNonZero: true, stderr: "buffer" },
-					);
-					if ((ignored.exitCode !== 0 && ignored.exitCode !== 1) || Buffer.byteLength(ignored.stdout) > inputBytes)
-						throw new Error("git check-ignore failed");
+				let chunk: string[] = [];
+				let bytes = 0;
+				for (const name of batch) {
 					if (closed) return;
-					const ignoredPaths = new Set(ignored.stdout.split("\0"));
-					for (const relative of batch) {
-						if (ignoredPaths.has(nodePath.join(repo.root, relative))) continue;
-						pending.normal.add(relative);
-						if (AGENTIC_EXTENSIONS[nodePath.extname(relative)] === true) pending.agentic.add(relative);
+					const size = Buffer.byteLength(nodePath.join(repo.root, name)) + 1;
+					if (size > MAX_IGNORE_BYTES) {
+						reject(name, new Error("path exceeds the 8 MiB ignore input limit"));
+						continue;
 					}
-				} catch (error) {
-					for (const name of batch) unfiltered.add(name);
-					log(`${repo.root}: watcher ignore check failed: ${String(error)}`);
-					return;
+					if (chunk.length && bytes + size > MAX_IGNORE_BYTES) {
+						await inspect(chunk);
+						chunk = [];
+						bytes = 0;
+					}
+					chunk.push(name);
+					bytes += size;
 				}
+				if (chunk.length) await inspect(chunk);
 			}
 			if (closed || unfiltered.size || Date.now() < dueAt) return;
 			for (const kind of ["normal", "agentic"] as const) {

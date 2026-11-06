@@ -193,8 +193,8 @@ export async function ensure(
 		quiet = await quietReason(quietCheck);
 	} catch (error) {
 		throwIfAborted(opts.signal);
-		if (!indexedNormal) throw error;
-		log("normal index update skipped: quiet check unavailable");
+		if (!indexedNormal && !indexedAgentic) throw error;
+		log(`${kind} index update skipped: quiet check unavailable`);
 		return { ready: true };
 	}
 	throwIfAborted(opts.signal);

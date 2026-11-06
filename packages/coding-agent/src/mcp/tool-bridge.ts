@@ -15,7 +15,7 @@ import { normalizeSchemaForMCP } from "@oh-my-pi/pi-ai/utils/schema";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { SourceMeta } from "../capability/types";
-import { gateCodegraphMcp } from "../codegraph-index";
+import { gateCodegraphMcp } from "../codegraph-index/gate";
 import type {
 	CustomTool,
 	CustomToolContext,

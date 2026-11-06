@@ -2,9 +2,16 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { TUI } from "@oh-my-pi/pi-tui";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as config from "../../src/codegraph-index/config";
 import { startCodegraphMain } from "../../src/codegraph-index";
+import type {
+	ExtensionUIContext,
+	ExtensionUiComponentFactory,
+	ExtensionWidgetContent,
+} from "../../src/extensibility/extensions/types";
 import { RpcExtensionUIContext } from "../../src/modes/rpc/rpc-mode";
 import { jobId } from "../../src/codegraph-index/jobs";
 import { widgetModel, renderWidgetText, type RunMemory } from "../../src/codegraph-index/widget";
@@ -90,6 +97,17 @@ function mainFixture(): void {
 	spyOn(config, "quietCheckPath").mockReturnValue("/usr/bin/true");
 }
 
+function pollingStarted(): Promise<void> {
+	const polling = Promise.withResolvers<void>();
+	const interval = globalThis.setInterval;
+	spyOn(globalThis, "setInterval").mockImplementation(((...args: Parameters<typeof globalThis.setInterval>) => {
+		const timer = interval(...args);
+		if (args[1] === config.STATUS_POLL_MS) polling.resolve();
+		return timer;
+	}) as typeof globalThis.setInterval);
+	return polling.promise;
+}
+
 test("the main index widget reaches RPC clients as string lines", async () => {
 	mainFixture();
 	fs.appendFileSync(`${base}.log`, "Chunks to embed: 3\nOpenAI API call successful: 2 embeddings\n");
@@ -116,13 +134,7 @@ test("a widget poll error clears only the widget and its timer, leaving its watc
 	mainFixture();
 	vi.useFakeTimers();
 	const warnings = spyOn(logger, "warn").mockImplementation(() => {});
-	const polling = Promise.withResolvers<void>();
-	const interval = globalThis.setInterval;
-	spyOn(globalThis, "setInterval").mockImplementation(((...args: Parameters<typeof globalThis.setInterval>) => {
-		const timer = interval(...args);
-		if (args[1] === config.STATUS_POLL_MS) polling.resolve();
-		return timer;
-	}) as typeof globalThis.setInterval);
+	const polling = pollingStarted();
 	const shown = Promise.withResolvers<void>();
 	const cleared = Promise.withResolvers<void>();
 	let fail = false;
@@ -139,7 +151,7 @@ test("a widget poll error clears only the widget and its timer, leaving its watc
 	mainService = service;
 	try {
 		await shown.promise;
-		await polling.promise;
+		await polling;
 		fail = true;
 		vi.advanceTimersByTime(config.STATUS_POLL_MS);
 		await cleared.promise;
@@ -153,10 +165,11 @@ test("a widget poll error clears only the widget and its timer, leaving its watc
 	}
 });
 
-test("a failed takeover clears the widget once but keeps retrying watcher ownership", async () => {
+test("a failed takeover keeps the startup check and widget polling active while ownership retries", async () => {
 	mainFixture();
 	vi.useFakeTimers();
 	const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+	const polling = pollingStarted();
 	const lock = path.join(temp, "codegraph-index", "locks", `${jobId("normal", root)}.lock`);
 	const open = fs.openSync;
 	let refuse = true;
@@ -164,20 +177,55 @@ test("a failed takeover clears the widget once but keeps retrying watcher owners
 		if (String(args[0]) === lock && refuse) throw Object.assign(new Error("lock unavailable"), { code: "EACCES" });
 		return open(...args);
 	});
-	const cleared = Promise.withResolvers<void>();
+	const checks = path.join(temp, "quiet-checks");
+	const check = path.join(temp, "quiet");
+	fs.writeFileSync(check, `#!/bin/sh\nprintf 'check\\n' >> '${checks}'\nexit 0\n`, { mode: 0o755 });
+	spyOn(config, "quietCheckPath").mockReturnValue(check);
+	const shown = Promise.withResolvers<void>();
+	const repolled = Promise.withResolvers<void>();
+	let renders = 0;
 	const ui = new RpcExtensionUIContext(new Map(), (request: unknown) => {
-		if (isRecord(request) && request.method === "setWidget" && request.widgetLines === undefined) cleared.resolve();
+		if (!isRecord(request) || request.method !== "setWidget" || !Array.isArray(request.widgetLines)) return;
+		if (++renders === 1) shown.resolve();
+		else repolled.resolve();
 	});
 	const service = startCodegraphMain({ cwd: root, ui });
 	mainService = service;
 	try {
-		await cleared.promise;
+		await shown.promise;
+		await polling;
+		expect(fs.readFileSync(checks, "utf8").trim()).toBe("check");
 		expect(fs.existsSync(lock)).toBe(false);
 		refuse = false;
 		vi.advanceTimersByTime(config.WATCH_POLL_MS);
 		expect(fs.existsSync(lock)).toBe(true);
-		vi.advanceTimersByTime(config.WATCH_POLL_MS);
+		vi.advanceTimersByTime(config.STATUS_POLL_MS - config.WATCH_POLL_MS);
+		await repolled.promise;
+		expect(fs.readFileSync(checks, "utf8").trim().split("\n")).toEqual(["check", "check"]);
 		expect(warnings.mock.calls).toHaveLength(1);
+	} finally {
+		service.dispose();
+	}
+});
+
+test("the main TUI keeps a themed widget component instead of RPC string lines", async () => {
+	mainFixture();
+	const shown = Promise.withResolvers<ExtensionUiComponentFactory>();
+	const ui = {
+		setWidget(_key: string, content: ExtensionWidgetContent) {
+			if (typeof content === "function") shown.resolve(content);
+		},
+	} as ExtensionUIContext;
+	const service = startCodegraphMain({ cwd: root, ui });
+	mainService = service;
+	try {
+		const factory = await shown.promise;
+		const theme = {
+			fg: (_color: string, text: string) => `\u001b[31m${text}\u001b[0m`,
+			bold: (text: string) => text,
+		} as Theme;
+		const lines = factory({} as TUI, theme).render(120);
+		expect(lines.some(line => line.includes("\u001b[31m") && line.includes("agentic"))).toBe(true);
 	} finally {
 		service.dispose();
 	}

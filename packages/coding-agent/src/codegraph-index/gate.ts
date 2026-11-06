@@ -20,7 +20,17 @@ export async function gateIndex(
 	try {
 		return await untilAborted(combined, async () => {
 			if (!(await indexEnabled())) return { ok: true };
-			const cfg = config ?? (await loadConfig());
+			let cfg = config;
+			if (!cfg) {
+				try {
+					cfg = await loadConfig();
+				} catch (error) {
+					throwIfAborted(combined);
+					if (kind !== "normal") throw error;
+					log("normal index configuration unavailable; continuing without the index gate");
+					return { ok: true };
+				}
+			}
 			if (!cfg) return { ok: true };
 			const repo = await resolveRepo(cfg, cwd);
 			throwIfAborted(combined);

@@ -185,9 +185,11 @@ test("an absent config leaves MCP calls ungated instead of applying configured-r
 test("an existing malformed or unreadable config still blocks the codegraph MCP server", async () => {
 	const file = path.join(temp, "codegraph-index.json");
 	fs.writeFileSync(file, "{");
+	expect(await gateCodegraphTool(root)).toEqual({ ok: true });
 	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
 	fs.unlinkSync(file);
 	fs.mkdirSync(file);
+	expect(await gateCodegraphTool(root)).toEqual({ ok: true });
 	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
 	expect(await gateCodegraphMcp("superlogical", root)).toEqual({ ok: true });
 });

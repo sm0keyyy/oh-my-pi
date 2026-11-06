@@ -172,3 +172,16 @@ test("quiet-check errors stop detached updates rather than running without their
 	await finished("stopped");
 	expect((await jobState("normal", root)).state).toBe("stopped");
 });
+
+for (const failure of ["missing", "exit 2"] as const) {
+	test(`a ready agentic graph remains queryable when its quiet check is ${failure}`, async () => {
+		status("ready");
+		const check = path.join(temp, "quiet-error");
+		if (failure === "exit 2") fs.writeFileSync(check, "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+		expect(await ensure(cfg, "agentic", repo, { ...options(), update: true, quietCheck: check })).toEqual({
+			ready: true,
+		});
+		expect(fs.existsSync(`${base}.json`)).toBe(false);
+		expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
+	});
+}

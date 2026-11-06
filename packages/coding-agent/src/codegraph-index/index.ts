@@ -1,10 +1,11 @@
 import * as path from "node:path";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
+import { RpcExtensionUIContext } from "../modes/rpc/rpc-mode";
 import { indexEnabled, loadConfig, log, resolveRepo, STATUS_POLL_MS, WATCH_POLL_MS } from "./config";
 import { ensure } from "./ensure";
 import { useMarker } from "./jobs";
 import { watchRepo, type WatchHandle } from "./watch";
-import { renderWidgetText, widgetModel, type IndexView, type RunMemory } from "./widget";
+import { CodegraphWidget, renderWidgetText, widgetModel, type IndexView, type RunMemory } from "./widget";
 
 export * from "./gate";
 export { cfgCodegraphIndexEnabled, cfgCodegraphIndexQuietCheck } from "./config";
@@ -45,12 +46,16 @@ export function startCodegraphMain(main: CodegraphMain): { dispose(): void } {
 		const runs: RunMemory = new Map();
 		let gate: IndexView | undefined;
 		let busy = false;
+		let claimFailureLogged = false;
 		const claim = (): void => {
 			if (controller.signal.aborted || (watcher && !watcher.closed)) return;
 			try {
 				watcher = watchRepo(repo, cfg);
 			} catch {
-				stopWidget("watcher takeover failed");
+				if (!claimFailureLogged) {
+					claimFailureLogged = true;
+					log("watcher takeover failed");
+				}
 			}
 		};
 		claim();
@@ -69,8 +74,12 @@ export function startCodegraphMain(main: CodegraphMain): { dispose(): void } {
 					gate = result.ready ? undefined : result.view;
 				}
 				const model = await widgetModel(label, repo, gate, runs);
-				if (!widgetStopped && !controller.signal.aborted)
-					main.ui.setWidget("codegraph", model ? renderWidgetText(model) : undefined);
+				if (!widgetStopped && !controller.signal.aborted) {
+					if (!model) main.ui.setWidget("codegraph", undefined);
+					else if (main.ui instanceof RpcExtensionUIContext)
+						main.ui.setWidget("codegraph", renderWidgetText(model));
+					else main.ui.setWidget("codegraph", (_tui, theme) => new CodegraphWidget(model, theme));
+				}
 			} catch {
 				if (!controller.signal.aborted) stopWidget("widget refresh failed");
 			} finally {

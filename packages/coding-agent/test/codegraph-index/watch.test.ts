@@ -1,8 +1,7 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import { ptree } from "@oh-my-pi/pi-utils";
+import { logger, ptree } from "@oh-my-pi/pi-utils";
 import { type Config, type Repo } from "../../src/codegraph-index/config";
 import { jobId } from "../../src/codegraph-index/jobs";
 import { watchRepo, updateQuiet, type WatchHandle } from "../../src/codegraph-index/watch";
@@ -19,10 +18,9 @@ let checks: string;
 let owner: WatchHandle | undefined;
 let base: string;
 let ignoreInputs: string[];
-let execSpy: { mockRestore(): void };
-let watchSpy: { mockRestore(): void };
 let notify: fs.WatchListener<string>;
 let ignoreRuns: Promise<unknown>[];
+let acceptAllPaths: boolean;
 
 // Detached jobs and process streams use the OS clock, outside Bun's fake timers.
 async function until(predicate: () => boolean) {
@@ -39,7 +37,7 @@ function start() {
 	expect(owner).toBeDefined();
 }
 beforeEach(async () => {
-	temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "native-cgi-watch-")));
+	temp = fs.realpathSync(fs.mkdtempSync(path.join("/tmp", "native-cgi-watch-")));
 	previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = temp;
 	root = path.join(temp, "repo");
@@ -62,9 +60,10 @@ beforeEach(async () => {
 	base = path.join(temp, "codegraph-index", "jobs", jobId("normal", root));
 	ignoreInputs = [];
 	ignoreRuns = [];
+	acceptAllPaths = false;
 	const watch = fs.watch;
 	// Keep a real close/error handle, but do not let platform event coalescing shrink boundary-size batches.
-	watchSpy = spyOn(fs, "watch").mockImplementation(((
+	spyOn(fs, "watch").mockImplementation(((
 		filename: fs.PathLike,
 		options: fs.WatchOptions,
 		listener: fs.WatchListener<string>,
@@ -73,8 +72,11 @@ beforeEach(async () => {
 		return watch(filename, options, () => {});
 	}) as typeof fs.watch);
 	const exec = ptree.exec;
-	execSpy = spyOn(ptree, "exec").mockImplementation((argv, options) => {
-		const result = exec(argv, options);
+	spyOn(ptree, "exec").mockImplementation((argv, options) => {
+		const result =
+			acceptAllPaths && argv.includes("check-ignore")
+				? Promise.resolve({ stdout: "", stderr: "", exitCode: 1, ok: false })
+				: exec(argv, options);
 		if (argv.includes("check-ignore")) {
 			ignoreInputs.push(String(options?.input ?? ""));
 			ignoreRuns.push(result);
@@ -88,8 +90,7 @@ afterEach(async () => {
 	if (fs.existsSync(`${base}.json`)) await until(() => fs.existsSync(`${base}.exit`));
 	if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previous;
-	execSpy.mockRestore();
-	watchSpy.mockRestore();
+	vi.restoreAllMocks();
 	fs.rmSync(temp, { recursive: true, force: true });
 });
 
@@ -168,3 +169,39 @@ test("a 2,000-path burst uses one git ignore process per debounce window", async
 	await until(() => count(runs) === 2 && fs.existsSync(`${base}.exit`));
 	expect(ignoreInputs).toHaveLength(2);
 });
+
+test("a submodule path cannot prevent another path in its batch from syncing", async () => {
+	const git = Bun.spawn(
+		["git", "-C", root, "update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},submodule`],
+		{ stdout: "ignore", stderr: "ignore" },
+	);
+	expect(await git.exited).toBe(0);
+	fs.mkdirSync(path.join(root, "submodule"));
+	fs.writeFileSync(path.join(root, "submodule", "file.md"), "submodule change");
+	fs.writeFileSync(path.join(root, "normal.md"), "normal change");
+	const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+	start();
+	notify("change", "submodule/file.md");
+	notify("change", "normal.md");
+	await until(() => count(runs) === 1 && fs.existsSync(`${base}.exit`));
+	expect(ignoreInputs.map(input => input.split("\0").filter(Boolean).length)).toEqual([2, 1, 1]);
+	expect(fs.readFileSync(runs, "utf8").trim()).toBe(`sync --quiet ${root}`);
+	expect(warnings.mock.calls).toHaveLength(1);
+	expect(String(warnings.mock.calls[0][0])).toContain("submodule/file.md");
+	notify("change", "submodule/file.md");
+	await until(() => ignoreRuns.length === 4);
+	await ignoreRuns[3];
+	expect(warnings.mock.calls).toHaveLength(1);
+	expect(count(runs)).toBe(1);
+});
+
+test("ignore input over 8 MiB is split into bounded chunks without losing changes", async () => {
+	acceptAllPaths = true;
+	owner = watchRepo(repo, cfg, { debounceMs: 80, pollMs: 40, normalCommand: command, quietCheck: check });
+	const prefix = `nested/${"x".repeat(180)}`;
+	for (let n = 0; n < 50_000; n++) notify("change", `${prefix}${n}.md`);
+	await until(() => count(runs) === 1 && fs.existsSync(`${base}.exit`));
+	expect(ignoreInputs).toHaveLength(2);
+	expect(ignoreInputs.every(input => Buffer.byteLength(input) <= 8 * 1024 * 1024)).toBe(true);
+	expect(ignoreInputs.reduce((total, input) => total + input.split("\0").filter(Boolean).length, 0)).toBe(50_000);
+}, 15_000);

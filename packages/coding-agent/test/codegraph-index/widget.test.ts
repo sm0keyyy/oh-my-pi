@@ -1,0 +1,284 @@
+import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Container, Text, type TUI } from "@oh-my-pi/pi-tui";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
+import * as config from "../../src/codegraph-index/config";
+import { startCodegraphMain } from "../../src/codegraph-index";
+import type {
+	ExtensionUIContext,
+	ExtensionUiComponentFactory,
+	ExtensionWidgetContent,
+} from "../../src/extensibility/extensions/types";
+import { ExtensionUiController } from "../../src/modes/controllers/extension-ui-controller";
+import type { InteractiveModeContext } from "../../src/modes/types";
+import type { RpcSocketServer } from "../../src/modes/rpc/rpc-socket";
+import { RpcExtensionUIContext } from "../../src/modes/rpc/rpc-mode";
+import { jobId } from "../../src/codegraph-index/jobs";
+import { widgetModel, renderWidgetText, type RunMemory } from "../../src/codegraph-index/widget";
+
+let temp: string;
+let root: string;
+let previous: string | undefined;
+let base: string;
+let child: Bun.Subprocess<"ignore", "ignore", "ignore">;
+let mainService: { dispose(): void } | undefined;
+beforeEach(() => {
+	temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "native-cgi-widget-")));
+	previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = temp;
+	root = path.join(temp, "repo");
+	fs.mkdirSync(root);
+	base = path.join(temp, "codegraph-index", "jobs", jobId("agentic", root));
+	fs.mkdirSync(path.dirname(base), { recursive: true });
+	child = Bun.spawn(["/bin/sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+	fs.writeFileSync(
+		`${base}.json`,
+		JSON.stringify({ pid: child.pid, command: "/bin/sleep", startedAt: Date.now(), update: false, failures: 0 }),
+	);
+	fs.writeFileSync(`${base}.log`, `2026-11-06T00:00:00Z start agentic job: /bin/sleep index ${root} --recursive\n`);
+});
+afterEach(async () => {
+	mainService?.dispose();
+	mainService = undefined;
+	child.kill();
+	await child.exited;
+	vi.restoreAllMocks();
+	vi.useRealTimers();
+	if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previous;
+	fs.rmSync(temp, { recursive: true, force: true });
+});
+
+test("the widget follows log progress, shows a failure once, then clears", async () => {
+	const repo = { root: path.join(temp, "linked"), mainRoot: root, worktree: true };
+	const runs: RunMemory = new Map();
+	fs.appendFileSync(`${base}.log`, "Chunks to embed: 640\nOpenAI API call successful: 192 embeddings\n");
+	const first = await widgetModel("repo", repo, undefined, runs);
+	expect(first?.views[0]).toMatchObject({
+		kind: "agentic",
+		phase: "building",
+		progress: { step: "embedding chunks", done: 192, total: 640 },
+	});
+	expect(renderWidgetText(first!).at(-1)).toContain("embedding chunks 192/640");
+	fs.appendFileSync(`${base}.log`, "OpenAI API call successful: 64 embeddings\n");
+	expect((await widgetModel("repo", repo, undefined, runs))?.views[0]?.progress?.done).toBe(256);
+	fs.writeFileSync(`${base}.exit`, "1");
+	child.kill();
+	await child.exited;
+	expect((await widgetModel("repo", repo, undefined, runs))?.views[0]?.phase).toBe("failed");
+	expect(await widgetModel("repo", repo, undefined, runs)).toBeUndefined();
+});
+
+test("a successful run clears without a failure and progress clamps resumed request counts", async () => {
+	const repo = { root, mainRoot: root, worktree: false };
+	const runs: RunMemory = new Map();
+	fs.appendFileSync(
+		`${base}.log`,
+		"Nodes to embed: 120\nChunks to embed: 3\nOpenAI API call successful: 4 embeddings\n",
+	);
+	expect((await widgetModel("repo", repo, undefined, runs))?.views[0]?.progress).toEqual({
+		step: "embedding chunks",
+		done: 3,
+		total: 3,
+	});
+	fs.writeFileSync(`${base}.exit`, "0");
+	child.kill();
+	await child.exited;
+	expect(await widgetModel("repo", repo, undefined, runs)).toBeUndefined();
+});
+
+function mainFixture(): void {
+	fs.mkdirSync(path.join(root, ".git"));
+	fs.writeFileSync(path.join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+	fs.writeFileSync(path.join(temp, "codegraph-index.json"), JSON.stringify({ roots: [root] }));
+	const command = path.join(temp, "codegraph");
+	fs.writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	spyOn(config, "normalCommand").mockReturnValue(command);
+	spyOn(config, "quietCheckPath").mockReturnValue("/usr/bin/true");
+}
+
+function pollingStarted(): Promise<void> {
+	const polling = Promise.withResolvers<void>();
+	const interval = globalThis.setInterval;
+	spyOn(globalThis, "setInterval").mockImplementation(((...args: Parameters<typeof globalThis.setInterval>) => {
+		const timer = interval(...args);
+		if (args[1] === config.STATUS_POLL_MS) polling.resolve();
+		return timer;
+	}) as typeof globalThis.setInterval);
+	return polling.promise;
+}
+
+test("the main index widget reaches RPC clients as string lines", async () => {
+	mainFixture();
+	fs.appendFileSync(`${base}.log`, "Chunks to embed: 3\nOpenAI API call successful: 2 embeddings\n");
+	const shown = Promise.withResolvers<object>();
+	const ui = new RpcExtensionUIContext(new Map(), (request: unknown) => {
+		if (isRecord(request) && request.method === "setWidget" && Array.isArray(request.widgetLines))
+			shown.resolve(request);
+	});
+	const service = startCodegraphMain({ cwd: root, ui });
+	mainService = service;
+	try {
+		expect(await shown.promise).toMatchObject({
+			type: "extension_ui_request",
+			method: "setWidget",
+			widgetKey: "codegraph",
+			widgetLines: expect.arrayContaining([expect.stringContaining("embedding chunks 2/3")]),
+		});
+	} finally {
+		service.dispose();
+	}
+});
+
+test("a widget poll error clears only the widget and its timer, leaving its watcher alive", async () => {
+	mainFixture();
+	vi.useFakeTimers();
+	const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+	const polling = pollingStarted();
+	const shown = Promise.withResolvers<void>();
+	const cleared = Promise.withResolvers<void>();
+	let fail = false;
+	let renders = 0;
+	const ui = new RpcExtensionUIContext(new Map(), (request: unknown) => {
+		if (!isRecord(request) || request.method !== "setWidget") return;
+		if (Array.isArray(request.widgetLines)) {
+			renders++;
+			if (fail) throw new Error("widget renderer unavailable");
+			shown.resolve();
+		} else cleared.resolve();
+	});
+	const service = startCodegraphMain({ cwd: root, ui });
+	mainService = service;
+	try {
+		await shown.promise;
+		await polling;
+		fail = true;
+		vi.advanceTimersByTime(config.STATUS_POLL_MS);
+		await cleared.promise;
+		const lock = path.join(temp, "codegraph-index", "locks", `${jobId("normal", root)}.lock`);
+		expect(fs.existsSync(lock)).toBe(true);
+		vi.advanceTimersByTime(config.STATUS_POLL_MS * 2);
+		expect(renders).toBe(2);
+		expect(warnings.mock.calls).toHaveLength(1);
+	} finally {
+		service.dispose();
+	}
+});
+
+test("a failed takeover keeps the startup check and widget polling active while ownership retries", async () => {
+	mainFixture();
+	vi.useFakeTimers();
+	const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+	const polling = pollingStarted();
+	const lock = path.join(temp, "codegraph-index", "locks", `${jobId("normal", root)}.lock`);
+	const open = fs.openSync;
+	let refuse = true;
+	spyOn(fs, "openSync").mockImplementation((...args) => {
+		if (String(args[0]) === lock && refuse) throw Object.assign(new Error("lock unavailable"), { code: "EACCES" });
+		return open(...args);
+	});
+	const checks = path.join(temp, "quiet-checks");
+	const check = path.join(temp, "quiet");
+	fs.writeFileSync(check, `#!/bin/sh\nprintf 'check\\n' >> '${checks}'\nexit 0\n`, { mode: 0o755 });
+	spyOn(config, "quietCheckPath").mockReturnValue(check);
+	const shown = Promise.withResolvers<void>();
+	const repolled = Promise.withResolvers<void>();
+	let renders = 0;
+	const ui = new RpcExtensionUIContext(new Map(), (request: unknown) => {
+		if (!isRecord(request) || request.method !== "setWidget" || !Array.isArray(request.widgetLines)) return;
+		if (++renders === 1) shown.resolve();
+		else repolled.resolve();
+	});
+	const service = startCodegraphMain({ cwd: root, ui });
+	mainService = service;
+	try {
+		await shown.promise;
+		await polling;
+		expect(fs.readFileSync(checks, "utf8").trim()).toBe("check");
+		expect(fs.existsSync(lock)).toBe(false);
+		refuse = false;
+		vi.advanceTimersByTime(config.WATCH_POLL_MS);
+		expect(fs.existsSync(lock)).toBe(true);
+		vi.advanceTimersByTime(config.STATUS_POLL_MS - config.WATCH_POLL_MS);
+		await repolled.promise;
+		expect(fs.readFileSync(checks, "utf8").trim().split("\n")).toEqual(["check", "check"]);
+		expect(warnings.mock.calls).toHaveLength(1);
+	} finally {
+		service.dispose();
+	}
+});
+
+test("the main TUI keeps a themed widget component instead of RPC string lines", async () => {
+	mainFixture();
+	const shown = Promise.withResolvers<ExtensionUiComponentFactory>();
+	const ui = {
+		setWidget(_key: string, content: ExtensionWidgetContent) {
+			if (typeof content === "function") shown.resolve(content);
+		},
+	} as ExtensionUIContext;
+	const service = startCodegraphMain({ cwd: root, ui });
+	mainService = service;
+	try {
+		const factory = await shown.promise;
+		const theme = {
+			fg: (_color: string, text: string) => `\u001b[31m${text}\u001b[0m`,
+			bold: (text: string) => text,
+		} as Theme;
+		const lines = factory({} as TUI, theme).render(120);
+		expect(lines.some(line => line.includes("\u001b[31m") && line.includes("agentic"))).toBe(true);
+	} finally {
+		service.dispose();
+	}
+});
+
+test("interactive component widgets broadcast plain RPC lines and retain them in socket snapshots", () => {
+	const above = new Container();
+	const below = new Container();
+	const context = {
+		ui: { requestRender() {} } as TUI,
+		hookWidgetContainerAbove: above,
+		hookWidgetContainerBelow: below,
+		statusRowOccupied: false,
+	} as InteractiveModeContext;
+	const controller = new ExtensionUiController(context);
+	const frames: object[] = [];
+	controller.setRpcSocketServer({
+		broadcast(frame: object) {
+			frames.push(frame);
+		},
+	} as RpcSocketServer);
+	const local = () => new Text("\u001b[31mlocal codegraph\u001b[0m", 0, 0);
+	const rpcLines = ["Codegraph fixture", "normal building"];
+	controller.setHookWidget("codegraph", local, { placement: "belowEditor", rpcLines });
+	expect(below.render(120).join("\n")).toContain("\u001b[31mlocal codegraph");
+	expect(frames.at(-1)).toMatchObject({
+		type: "extension_ui_request",
+		method: "setWidget",
+		widgetKey: "codegraph",
+		widgetLines: ["Codegraph fixture", "normal building"],
+		widgetPlacement: "belowEditor",
+	});
+	rpcLines.push("caller mutation");
+	expect(controller.getRpcUiSnapshot()).toMatchObject({
+		method: "snapshot",
+		widgets: { codegraph: { lines: ["Codegraph fixture", "normal building"], placement: "belowEditor" } },
+	});
+	controller.setHookWidget("codegraph", local, { placement: "belowEditor" });
+	const withoutProjection = controller.getRpcUiSnapshot();
+	if (withoutProjection.method !== "snapshot") throw new Error("Expected RPC UI snapshot");
+	expect(withoutProjection.widgets).not.toHaveProperty("codegraph");
+	expect(frames.at(-1)).toMatchObject({ widgetKey: "codegraph", widgetLines: undefined });
+	expect(below.render(120).join("\n")).toContain("local codegraph");
+	controller.setHookWidget("codegraph", ["legacy status"]);
+	expect(controller.getRpcUiSnapshot()).toMatchObject({
+		widgets: { codegraph: { lines: ["legacy status"], placement: "aboveEditor" } },
+	});
+	controller.setHookWidget("codegraph", undefined, { rpcLines: ["stale"] });
+	const cleared = controller.getRpcUiSnapshot();
+	if (cleared.method !== "snapshot") throw new Error("Expected RPC UI snapshot");
+	expect(cleared.widgets).not.toHaveProperty("codegraph");
+	expect(frames.at(-1)).toMatchObject({ widgetKey: "codegraph", widgetLines: undefined });
+});

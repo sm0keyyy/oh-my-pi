@@ -257,6 +257,8 @@ export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
 export interface ExtensionWidgetOptions {
 	placement?: WidgetPlacement;
+	/** Plain-text projection of a component widget for remote clients. */
+	rpcLines?: string[];
 }
 
 /** Options for `ExtensionUIContext.custom()` (overlay rendering of a custom component). */

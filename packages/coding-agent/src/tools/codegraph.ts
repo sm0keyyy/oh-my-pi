@@ -7,6 +7,8 @@ import { formatOutputNotice, type OutputMeta } from "@oh-my-pi/pi-tui/tools/outp
 import { OutputSink } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { $which, logger, ptree } from "@oh-my-pi/pi-utils";
+import { cfgCodegraphIndexEnabled, loadConfig, resolveRepo } from "../codegraph-index/config";
+import { gateIndex } from "../codegraph-index/gate";
 import codegraphDescription from "../prompts/tools/codegraph.md" with { type: "text" };
 import type { ToolSession } from ".";
 import { resolveOutputMaxColumns, resolveOutputSinkArtifactMaxBytes, resolveOutputSinkHeadBytes } from "./output-meta";
@@ -42,7 +44,16 @@ export class CodegraphTool implements AgentTool<typeof codegraphSchema, { meta?:
 		if (!cfgCodegraphEnabled.get(session.settings)) return null;
 		const info = vcs.gitInfo(session.cwd);
 		const candidate = info ? path.dirname(info.commonDir) : session.cwd;
-		if (!(await Bun.file(path.join(candidate, ".codegraph", "codegraph.db")).exists())) return null;
+		let managed = false;
+		if (cfgCodegraphIndexEnabled.get(session.settings)) {
+			try {
+				const cfg = await loadConfig();
+				managed = cfg !== undefined && (await resolveRepo(cfg, session.cwd)) !== undefined;
+			} catch {
+				logger.warn("codegraph-index: cannot read index configuration");
+			}
+		}
+		if (!managed && !(await Bun.file(path.join(candidate, ".codegraph", "codegraph.db")).exists())) return null;
 		const root = await fs.realpath(candidate);
 		const executable = $which(cfgCodegraphPath.get(session.settings), { cwd: session.cwd });
 		if (!executable) {
@@ -70,6 +81,10 @@ export class CodegraphTool implements AgentTool<typeof codegraphSchema, { meta?:
 		}
 		if (params.maxFiles !== undefined && params.op !== "explore") {
 			throw new ToolError("maxFiles requires op=explore.");
+		}
+		if (cfgCodegraphIndexEnabled.get(this.session.settings)) {
+			const gate = await gateIndex(this.session.cwd, "normal", signal, this.executable);
+			if (!gate.ok) throw new ToolError(gate.reason);
 		}
 		const args = [this.executable, params.op === "search" ? "query" : params.op, "-p", this.root];
 		if (params.maxFiles !== undefined) args.push("--max-files", String(params.maxFiles));

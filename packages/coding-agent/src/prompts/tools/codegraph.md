@@ -8,5 +8,5 @@ Use before grep for code structure: where is X, what calls X, and what an edit a
 - `callers`, `callees`, `impact`: query one symbol.
 - `files`: list indexed files. No query required.
 
-Worktrees query the canonical main checkout's index. This tool only queries. The codegraph-index extension owns index updates and query gates.
+Worktrees query the canonical main checkout's index. This tool only queries. omp owns index updates and query gates.
 If the index is unavailable or a query returns nothing for a known symbol, use grep and continue.

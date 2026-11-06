@@ -47,7 +47,8 @@ export class CodegraphTool implements AgentTool<typeof codegraphSchema, { meta?:
 		let managed = false;
 		if (cfgCodegraphIndexEnabled.get(session.settings)) {
 			try {
-				managed = (await resolveRepo(await loadConfig(), session.cwd)) !== undefined;
+				const cfg = await loadConfig();
+				managed = cfg !== undefined && (await resolveRepo(cfg, session.cwd)) !== undefined;
 			} catch {
 				logger.warn("codegraph-index: cannot read index configuration");
 			}

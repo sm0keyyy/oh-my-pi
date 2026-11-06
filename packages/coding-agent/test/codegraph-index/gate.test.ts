@@ -112,6 +112,7 @@ test("native and agentic first-build gates return building within 22 seconds, th
 	expect(fs.existsSync(useMarker(root))).toBe(true);
 	fs.mkdirSync(path.join(root, ".codegraph"));
 	fs.writeFileSync(path.join(root, ".codegraph", "codegraph.db"), "fixture");
+	expect(await gateCodegraphTool(root)).toEqual({ ok: true });
 	fs.writeFileSync(
 		path.join(root, "status.json"),
 		JSON.stringify({
@@ -160,4 +161,33 @@ test("only the configured MCP server gates and neither direct nor deferred calls
 	await expect(deferred.execute("deferred", {}, undefined, context)).rejects.toThrow("waits");
 	expect(calls).toBe(0);
 	expect(fs.existsSync(useMarker(root))).toBe(true);
+});
+
+for (const failure of ["missing", "exit 2"] as const) {
+	test(`a ready normal index remains queryable when its quiet check is ${failure}`, async () => {
+		fs.mkdirSync(path.join(root, ".codegraph"));
+		fs.writeFileSync(path.join(root, ".codegraph", "codegraph.db"), "fixture");
+		const check = path.join(temp, "quiet");
+		if (failure === "exit 2") fs.writeFileSync(check, "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+		spyOn(config, "quietCheckPath").mockReturnValue(check);
+		expect(await gateCodegraphTool(root)).toEqual({ ok: true });
+		expect(fs.existsSync(path.join(temp, "codegraph-index", "jobs", `${jobId("normal", root)}.json`))).toBe(false);
+	});
+}
+
+test("an absent config leaves MCP calls ungated instead of applying configured-root defaults", async () => {
+	fs.unlinkSync(path.join(temp, "codegraph-index.json"));
+	expect(await config.loadConfig()).toBeUndefined();
+	expect(await gateCodegraphMcp("codegraph-rs", root)).toEqual({ ok: true });
+	expect(fs.existsSync(useMarker(root))).toBe(false);
+});
+
+test("an existing malformed or unreadable config still blocks the codegraph MCP server", async () => {
+	const file = path.join(temp, "codegraph-index.json");
+	fs.writeFileSync(file, "{");
+	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
+	fs.unlinkSync(file);
+	fs.mkdirSync(file);
+	expect(await gateCodegraphMcp("codegraph-rs", root)).toMatchObject({ ok: false });
+	expect(await gateCodegraphMcp("superlogical", root)).toEqual({ ok: true });
 });

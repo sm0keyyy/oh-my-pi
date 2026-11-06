@@ -149,3 +149,26 @@ test("malformed status and a missing quiet check fail closed without starting a 
 	).rejects.toThrow();
 	expect(fs.existsSync(`${base}.json`)).toBe(false);
 });
+
+test("a failed normal update serves its retained index during backoff and retries with sync", async () => {
+	base = path.join(temp, "codegraph-index", "jobs", jobId("normal", root));
+	fs.mkdirSync(path.join(root, ".codegraph"));
+	fs.writeFileSync(path.join(root, ".codegraph", "codegraph.db"), "fixture");
+	record({ update: true, failures: 1 });
+	expect(await ensure(cfg, "normal", repo, { ...options(), update: true })).toEqual({ ready: true });
+	expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
+	record({ update: true, failures: 1, startedAt: Date.now() - 11 * 60_000 });
+	expect(await ensure(cfg, "normal", repo, { ...options(), update: true })).toEqual({ ready: true });
+	await finished();
+	expect(fs.readFileSync(path.join(root, "runs"), "utf8").trim()).toBe(`sync --quiet ${root}`);
+	expect(JSON.parse(fs.readFileSync(`${base}.json`, "utf8"))).toMatchObject({ update: true, failures: 2 });
+});
+
+test("quiet-check errors stop detached updates rather than running without their resource guard", async () => {
+	base = path.join(temp, "codegraph-index", "jobs", jobId("normal", root));
+	const check = path.join(temp, "quiet-error");
+	fs.writeFileSync(check, "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+	expect(await startJob("normal", root, true, 0, "/bin/sleep", ["30"], undefined, true, check)).toBe(true);
+	await finished("stopped");
+	expect((await jobState("normal", root)).state).toBe("stopped");
+});

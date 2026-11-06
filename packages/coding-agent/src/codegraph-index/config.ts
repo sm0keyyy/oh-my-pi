@@ -66,12 +66,12 @@ export function canonical(value: string): string {
 	}
 }
 
-export async function loadConfig(): Promise<Config> {
+export async function loadConfig(): Promise<Config | undefined> {
 	let raw: unknown;
 	try {
 		raw = await Bun.file(paths().config).json();
 	} catch (error) {
-		if (isEnoent(error)) return { roots: [], exclude: {}, rustServer: "codegraph-rs", indexTier: "fast" };
+		if (isEnoent(error)) return undefined;
 		throw error;
 	}
 	if (!isRecord(raw)) throw new Error("codegraph-index.json must be an object");

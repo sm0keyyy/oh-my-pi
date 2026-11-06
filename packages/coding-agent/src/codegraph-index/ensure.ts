@@ -5,6 +5,7 @@ import { throwIfAborted } from "../tools/tool-errors";
 import {
 	capture,
 	embedStamp,
+	log,
 	normalCommand,
 	paths,
 	quietCheckPath,
@@ -142,10 +143,14 @@ export async function ensure(
 		kind === "normal" ||
 		(status?.embedder !== undefined ? status.embedder === embedStamp(env) : record?.embedding === embedStamp(env));
 	const indexedAgentic = status?.state === "ready" && current;
+	const indexedNormal =
+		kind === "normal" &&
+		(await Bun.file(nodePath.join(root, ".codegraph", "codegraph.db")).exists()) &&
+		(state === "ok" || state === "none" || record?.update === true);
 	const broken = status?.state === "broken";
 	if (state === "running") {
-		// An agentic update runs over a complete graph, so a call answers from that graph meanwhile.
-		if (indexedAgentic) return { ready: true };
+		// An update leaves the complete graph available to readers.
+		if (indexedAgentic || indexedNormal) return { ready: true };
 		const minutes = Math.max(1, Math.round((Date.now() - (record?.startedAt ?? Date.now())) / 60_000));
 		return {
 			ready: false,
@@ -164,6 +169,7 @@ export async function ensure(
 		isSameVersion &&
 		Date.now() - record.startedAt < retryDelay(record)
 	) {
+		if (indexedNormal) return { ready: true };
 		return {
 			ready: false,
 			reason: `the ${kind} codegraph index for ${label} failed (see ${paths().log})`,
@@ -182,20 +188,22 @@ export async function ensure(
 	// Codegraph must never compete with autoresearch for memory or CPU. While it is active, no job
 	// starts: an indexed repo answers from its current graph (a stale answer beats a skewed
 	// benchmark), and an unindexed repo waits. Running jobs stop themselves (see startJob).
-	const quiet = await quietReason(quietCheck);
+	let quiet: string | undefined;
+	try {
+		quiet = await quietReason(quietCheck);
+	} catch (error) {
+		throwIfAborted(opts.signal);
+		if (!indexedNormal) throw error;
+		log("normal index update skipped: quiet check unavailable");
+		return { ready: true };
+	}
 	throwIfAborted(opts.signal);
-	// A stopped update ran over a complete index, so that index stays usable and only needs a
-	// rerun. A stopped first build left a partial graph and counts as missing.
-	const stoppedUpdate = state === "stopped" && record?.update === true;
 
 	if (kind === "normal") {
 		if (!command || !(await Bun.file(command).exists()))
 			return { ready: false, reason: "normal codegraph is not installed", view: { kind, phase: "missing" } };
 		await syncNodeExcludes(cfg, { ...repo, root });
-		const indexed =
-			(await Bun.file(nodePath.join(root, ".codegraph", "codegraph.db")).exists()) &&
-			(state === "ok" || state === "none" || stoppedUpdate);
-		if (indexed) {
+		if (indexedNormal) {
 			const fresh = state === "ok" && Date.now() - (record?.startedAt ?? 0) < UPDATE_DEBOUNCE_MS;
 			if (opts.update && !fresh && quiet === undefined)
 				await startJob(

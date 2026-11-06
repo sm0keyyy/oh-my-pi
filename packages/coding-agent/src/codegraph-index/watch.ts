@@ -22,6 +22,7 @@ import {
 } from "./config";
 import { agenticArgs, graphStatus } from "./ensure";
 import { jobId, jobState, retryDelay, startJob, useMarker } from "./jobs";
+const MAX_IGNORE_BYTES = 8 * 1024 * 1024;
 /** Mirrors codegraph-rust/crates/codegraph-parser/src/language.rs LanguageRegistry::new; disabled grammars are excluded. */
 const AGENTIC_EXTENSIONS: Record<string, true> = {
 	".rs": true,
@@ -159,13 +160,13 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 		throw error;
 	}
 	const pending: Record<Kind, Set<string>> = { normal: new Set(), agentic: new Set() };
+	let unfiltered = new Set<string>();
 	const quietCheck = options.quietCheck ?? quietCheckPath();
 	const debounceMs = options.debounceMs ?? WATCH_DEBOUNCE_MS;
 	const pollMs = options.pollMs ?? WATCH_POLL_MS;
 	let dueAt = 0;
 	let timer: NodeJS.Timeout | undefined;
 	let busy = false;
-	let inspecting = 0;
 	let closed = false;
 	let watcher: fs.FSWatcher;
 	const schedule = (delay: number): void => {
@@ -180,7 +181,35 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 		if (closed || busy) return;
 		busy = true;
 		try {
-			if (inspecting || Date.now() < dueAt) return;
+			if (Date.now() < dueAt) return;
+			if (unfiltered.size) {
+				const batch = unfiltered;
+				unfiltered = new Set();
+				try {
+					const input = [...batch].map(name => nodePath.join(repo.root, name)).join("\0") + "\0";
+					const inputBytes = Buffer.byteLength(input);
+					if (inputBytes > MAX_IGNORE_BYTES) throw new Error("ignore batch exceeds 8 MiB");
+					// Native VCS has no ignore query. Git emits a subset of this bounded NUL-separated input.
+					const ignored = await ptree.exec(
+						["git", "-c", `core.excludesFile=${excludes}`, "check-ignore", "--stdin", "-z"],
+						{ cwd: repo.root, input, timeout: 5_000, allowNonZero: true, stderr: "buffer" },
+					);
+					if ((ignored.exitCode !== 0 && ignored.exitCode !== 1) || Buffer.byteLength(ignored.stdout) > inputBytes)
+						throw new Error("git check-ignore failed");
+					if (closed) return;
+					const ignoredPaths = new Set(ignored.stdout.split("\0"));
+					for (const relative of batch) {
+						if (ignoredPaths.has(nodePath.join(repo.root, relative))) continue;
+						pending.normal.add(relative);
+						if (AGENTIC_EXTENSIONS[nodePath.extname(relative)] === true) pending.agentic.add(relative);
+					}
+				} catch (error) {
+					for (const name of batch) unfiltered.add(name);
+					log(`${repo.root}: watcher ignore check failed: ${String(error)}`);
+					return;
+				}
+			}
+			if (closed || unfiltered.size || Date.now() < dueAt) return;
 			for (const kind of ["normal", "agentic"] as const) {
 				if (closed || pending[kind].size === 0) continue;
 				const root = repo.root;
@@ -210,7 +239,7 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 						for (const name of batch) pending[kind].add(name);
 						continue;
 					}
-					if (closed || inspecting || pending[kind].size) {
+					if (closed || unfiltered.size || pending[kind].size || Date.now() < dueAt) {
 						for (const name of batch) pending[kind].add(name);
 						continue;
 					}
@@ -234,7 +263,7 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 						args = agenticArgs(cfg, root, force);
 						env = { ...env, CODEGRAPH_PROJECT_ID: root };
 					}
-					if (closed || inspecting || pending[kind].size) {
+					if (closed || unfiltered.size || pending[kind].size || Date.now() < dueAt) {
 						for (const name of batch) pending[kind].add(name);
 						continue;
 					}
@@ -265,36 +294,22 @@ export function watchRepo(repo: Repo, cfg: Config, options: WatchOptions = {}): 
 			}
 		} finally {
 			busy = false;
-			if (!closed && (pending.normal.size || pending.agentic.size)) schedule(Math.max(pollMs, dueAt - Date.now()));
+			if (!closed && (unfiltered.size || pending.normal.size || pending.agentic.size))
+				schedule(Math.max(pollMs, dueAt - Date.now()));
 		}
 	};
-	const changed = async (filename: string | Buffer | null): Promise<void> => {
+	const changed = (filename: string | Buffer | null): void => {
 		if (closed || !filename) return;
 		const relative = String(filename);
 		const parts = relative.split(nodePath.sep);
 		if (parts.includes(".git") || parts.includes(".codegraph") || parts.includes("..")) return;
-		const path = nodePath.join(repo.root, relative);
-		inspecting++;
-		try {
-			// Native VCS has no ignore query. Quiet mode emits no stdout; ptree bounds stderr to 32 KiB.
-			const ignored = await ptree.exec(
-				["git", "-c", `core.excludesFile=${excludes}`, "check-ignore", "--quiet", "--", path],
-				{ cwd: repo.root, timeout: 5_000, allowNonZero: true, stderr: "buffer" },
-			);
-			if (ignored.exitCode === 0) return;
-			if (ignored.exitCode !== 1 || ignored.stdout.length > 0) throw new Error("git check-ignore failed");
-			if (closed) return;
-			pending.normal.add(relative);
-			if (AGENTIC_EXTENSIONS[nodePath.extname(relative)] === true) pending.agentic.add(relative);
-			dueAt = Date.now() + debounceMs;
-			schedule(debounceMs);
-		} finally {
-			inspecting--;
-		}
+		unfiltered.add(relative);
+		dueAt = Date.now() + debounceMs;
+		schedule(debounceMs);
 	};
 	try {
 		watcher = fs.watch(repo.root, { recursive: true }, (_event, name) => {
-			void changed(name).catch(error => log(`${repo.root}: watcher event failed: ${String(error)}`));
+			changed(name);
 		});
 	} catch (error) {
 		fs.rmSync(excludes, { force: true });

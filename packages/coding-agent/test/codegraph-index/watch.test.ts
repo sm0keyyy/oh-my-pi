@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ptree } from "@oh-my-pi/pi-utils";
 import { type Config, type Repo } from "../../src/codegraph-index/config";
 import { jobId } from "../../src/codegraph-index/jobs";
 import { watchRepo, updateQuiet, type WatchHandle } from "../../src/codegraph-index/watch";
@@ -17,8 +18,13 @@ let runs: string;
 let checks: string;
 let owner: WatchHandle | undefined;
 let base: string;
+let ignoreInputs: string[];
+let execSpy: { mockRestore(): void };
+let watchSpy: { mockRestore(): void };
+let notify: fs.WatchListener<string>;
+let ignoreRuns: Promise<unknown>[];
 
-// Recursive OS events and detached shell jobs run outside Bun's fake clock.
+// Detached jobs and process streams use the OS clock, outside Bun's fake timers.
 async function until(predicate: () => boolean) {
 	const deadline = Date.now() + 10_000;
 	while (!predicate()) {
@@ -54,6 +60,27 @@ beforeEach(async () => {
 	fs.writeFileSync(command, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${runs}'\n`, { mode: 0o755 });
 	fs.writeFileSync(check, `#!/bin/sh\nprintf '%s\\n' "probe:$*" >> '${checks}'\nexit 1\n`, { mode: 0o755 });
 	base = path.join(temp, "codegraph-index", "jobs", jobId("normal", root));
+	ignoreInputs = [];
+	ignoreRuns = [];
+	const watch = fs.watch;
+	// Keep a real close/error handle, but do not let platform event coalescing shrink boundary-size batches.
+	watchSpy = spyOn(fs, "watch").mockImplementation(((
+		filename: fs.PathLike,
+		options: fs.WatchOptions,
+		listener: fs.WatchListener<string>,
+	) => {
+		notify = listener;
+		return watch(filename, options, () => {});
+	}) as typeof fs.watch);
+	const exec = ptree.exec;
+	execSpy = spyOn(ptree, "exec").mockImplementation((argv, options) => {
+		const result = exec(argv, options);
+		if (argv.includes("check-ignore")) {
+			ignoreInputs.push(String(options?.input ?? ""));
+			ignoreRuns.push(result);
+		}
+		return result;
+	});
 });
 afterEach(async () => {
 	owner?.close();
@@ -61,6 +88,8 @@ afterEach(async () => {
 	if (fs.existsSync(`${base}.json`)) await until(() => fs.existsSync(`${base}.exit`));
 	if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previous;
+	execSpy.mockRestore();
+	watchSpy.mockRestore();
 	fs.rmSync(temp, { recursive: true, force: true });
 });
 
@@ -79,12 +108,16 @@ test("filesystem changes coalesce and ignored, configured, git, and index paths 
 	start();
 	fs.writeFileSync(path.join(root, "one.md"), "one");
 	fs.writeFileSync(path.join(root, "two.md"), "two");
+	notify("change", "one.md");
+	notify("change", "two.md");
 	await until(() => count(runs) === 1 && fs.existsSync(`${base}.exit`));
 	fs.writeFileSync(path.join(root, "ignored", "skip.md"), "skip");
 	fs.writeFileSync(path.join(root, "excluded", "skip.md"), "skip");
 	fs.writeFileSync(path.join(root, ".git", "skip"), "skip");
 	fs.writeFileSync(path.join(root, ".codegraph", "skip"), "skip");
-	await Bun.sleep(300);
+	for (const name of ["ignored/skip.md", "excluded/skip.md", ".git/skip", ".codegraph/skip"]) notify("change", name);
+	await until(() => ignoreRuns.length === 2);
+	await ignoreRuns[1];
 	expect(count(runs)).toBe(1);
 	expect(fs.readFileSync(runs, "utf8").trim()).toBe(`sync --quiet ${root}`);
 });
@@ -96,15 +129,16 @@ test("more than 200 files wait for full quiet before starting an update", async 
 		{ mode: 0o755 },
 	);
 	owner = watchRepo(repo, cfg, { debounceMs: 500, pollMs: 100, normalCommand: command, quietCheck: check });
-	for (let n = 0; n < 201; n++) fs.writeFileSync(path.join(root, `changed-${n}.md`), "changed");
+	for (let n = 0; n < 201; n++) {
+		const name = `changed-${n}.md`;
+		fs.writeFileSync(path.join(root, name), "changed");
+		notify("change", name);
+	}
 	await until(() => count(checks) > 0);
-	expect(
-		fs
-			.readFileSync(checks, "utf8")
-			.trim()
-			.split("\n")
-			.every(line => line === "probe:"),
-	).toBe(true);
+	expect({
+		modes: fs.readFileSync(checks, "utf8").trim().split("\n"),
+		batches: ignoreInputs.map(input => input.split("\0").filter(Boolean).length),
+	}).toEqual({ modes: ["probe:"], batches: [201] });
 	expect(count(runs)).toBe(0);
 	fs.writeFileSync(path.join(temp, "release"), "");
 	await until(() => count(runs) === 1 && fs.existsSync(`${base}.exit`));
@@ -117,4 +151,20 @@ test("small updates use the restricted quiet mode and a pause blocks either size
 	fs.writeFileSync(check, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 	expect(await updateQuiet(200, check)).toBe(false);
 	expect(await updateQuiet(201, check)).toBe(false);
+});
+
+test("a 2,000-path burst uses one git ignore process per debounce window", async () => {
+	owner = watchRepo(repo, cfg, { debounceMs: 200, pollMs: 40, normalCommand: command, quietCheck: check });
+	for (let n = 0; n < 2_000; n++) {
+		const name = `burst-${n}.md`;
+		fs.writeFileSync(path.join(root, name), "changed");
+		notify("change", name);
+	}
+	await until(() => count(runs) === 1 && fs.existsSync(`${base}.exit`));
+	expect(ignoreInputs).toHaveLength(1);
+	expect(ignoreInputs[0].split("\0").filter(Boolean)).toHaveLength(2_000);
+	fs.writeFileSync(path.join(root, "burst-0.md"), "another window");
+	notify("change", "burst-0.md");
+	await until(() => count(runs) === 2 && fs.existsSync(`${base}.exit`));
+	expect(ignoreInputs).toHaveLength(2);
 });

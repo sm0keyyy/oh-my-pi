@@ -21,6 +21,7 @@ export async function gateIndex(
 		return await untilAborted(combined, async () => {
 			if (!(await indexEnabled())) return { ok: true };
 			const cfg = config ?? (await loadConfig());
+			if (!cfg) return { ok: true };
 			const repo = await resolveRepo(cfg, cwd);
 			throwIfAborted(combined);
 			if (!repo)
@@ -60,7 +61,7 @@ export function gateCodegraphTool(cwd: string, signal?: AbortSignal): Promise<Ga
 
 export async function gateCodegraphMcp(serverName: string, cwd: string, signal?: AbortSignal): Promise<GateResult> {
 	if (!(await indexEnabled())) return { ok: true };
-	let cfg: Config;
+	let cfg: Config | undefined;
 	try {
 		cfg = await loadConfig();
 	} catch {
@@ -69,6 +70,6 @@ export async function gateCodegraphMcp(serverName: string, cwd: string, signal?:
 			? { ok: false, reason: "codegraph-index: index configuration unavailable. Use grep or find." }
 			: { ok: true };
 	}
-	if (serverName !== cfg.rustServer) return { ok: true };
+	if (!cfg || serverName !== cfg.rustServer) return { ok: true };
 	return gateIndex(cwd, "agentic", signal, undefined, cfg);
 }

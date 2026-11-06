@@ -251,36 +251,37 @@ export class TodoTracker {
 		const nudges: AgentMessage[] = [];
 		const todo = this.createEagerTodoPrelude(undefined);
 		if (todo) nudges.push(todo.message);
-		if (
-			cfgTodoEnabled.get(this.#host.settings) &&
-			!this.#host.planModeEnabled() &&
-			this.#host.getActiveToolNames().includes("todo")
-		) {
-			const open = this.#phases
-				.flatMap(phase => phase.tasks)
-				.filter(task => task.status !== "completed" && task.status !== "abandoned");
-			if (open.length > 0) {
-				const current = this.#currentTask()?.task;
-				const items = current
-					? [current, ...open.filter(task => task !== current)].slice(0, 10)
-					: open.slice(0, 10);
-				nudges.push({
-					role: "custom",
-					customType: "post-compaction-todo",
-					content: prompt.render(postCompactionTodoPrompt, {
-						...this.#buildEagerPreludeContext(),
-						current,
-						items,
-					}),
-					display: false,
-					attribution: "agent",
-					timestamp: Date.now(),
-				});
-			}
-		}
 		const task = this.createEagerTaskPrelude(undefined);
 		if (task) nudges.push(task);
 		return nudges;
+	}
+
+	/** Builds the open-list reminder queued by each committed compaction. */
+	createPostCompactionTodoReminder(): AgentMessage | undefined {
+		if (
+			!cfgTodoEnabled.get(this.#host.settings) ||
+			this.#host.planModeEnabled() ||
+			!this.#host.getActiveToolNames().includes("todo")
+		)
+			return undefined;
+		const open = this.#phases
+			.flatMap(phase => phase.tasks)
+			.filter(task => task.status !== "completed" && task.status !== "abandoned");
+		if (open.length === 0) return undefined;
+		const current = this.#currentTask()?.task;
+		const items = current ? [current, ...open.filter(task => task !== current)].slice(0, 10) : open.slice(0, 10);
+		return {
+			role: "custom",
+			customType: "post-compaction-todo",
+			content: prompt.render(postCompactionTodoPrompt, {
+				...this.#buildEagerPreludeContext(),
+				current,
+				items,
+			}),
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
 	}
 
 	/** Checks a terminal assistant turn and schedules continuation for incomplete todos. */

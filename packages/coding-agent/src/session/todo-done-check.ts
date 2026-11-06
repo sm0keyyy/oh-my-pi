@@ -32,9 +32,9 @@ export async function classifyTodoDone(
 			cache: sharedJudgmentCache(),
 		});
 		const state: JudgmentState = {
-			task: input.task,
+			task: input.task.slice(0, 2_000),
 			files: input.files.slice(0, 50).join("\n"),
-			...(input.details !== undefined ? { details: input.details } : {}),
+			...(input.details !== undefined ? { details: input.details.slice(0, 2_000) } : {}),
 		};
 		const { answers } = await untilAborted(signal, () =>
 			judge.judge({ state, questions: { done: QUESTIONS.done } }, { signal }),

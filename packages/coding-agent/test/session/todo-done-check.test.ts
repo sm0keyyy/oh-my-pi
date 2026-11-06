@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import { cfgModelRoles } from "../../src/config/model-settings";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
@@ -56,6 +57,7 @@ describe("todo done-check at agent_end", () => {
 	let states: Record<string, unknown>[];
 	let probability: number;
 	let failure: "error" | "timeout" | undefined;
+	let judgeStarted: PromiseWithResolvers<void>;
 	beforeEach(() => {
 		auth = createInMemoryAuthStorage();
 		auth.keys.setRuntime("typesafe", "test-key");
@@ -93,10 +95,12 @@ describe("todo done-check at agent_end", () => {
 		states = [];
 		probability = 0.9;
 		failure = undefined;
+		judgeStarted = Promise.withResolvers<void>();
 		vi.spyOn(globalThis, "fetch").mockImplementation(
 			asGlobalFetch(async (_url, init) => {
 				const body = JSON.parse(String(init?.body));
 				states.push(body.state);
+				judgeStarted.resolve();
 				expect(Object.keys(body.questions)).toEqual(["done"]);
 				expect(body.questions.done.type).toBe("noul");
 				if (failure === "error") throw new Error("judge offline");
@@ -169,6 +173,20 @@ describe("todo done-check at agent_end", () => {
 		expect(session.getTodoPhases()).toEqual(before);
 	});
 
+	it("aborts a pending done-check within the operator deadline and uses the fresh controller afterward", async () => {
+		failure = "timeout";
+		tool("write", { resolvedPath: "/tmp/pending-abort.ts" });
+		const pending = settle();
+		await untilAborted(AbortSignal.timeout(1_000), judgeStarted.promise);
+		await untilAborted(AbortSignal.timeout(1_000), session.abort());
+		await pending;
+		expect(doneNudges()).toHaveLength(0);
+		failure = undefined;
+		tool("write", { resolvedPath: "/tmp/after-abort.ts" });
+		await settle();
+		expect(doneNudges()).toHaveLength(1);
+	}, 15_000);
+
 	for (const outcome of ["no", "error", "timeout"] as const) {
 		it(`keeps the stop-time reminder and list on judge ${outcome}`, async () => {
 			probability = 0.1;
@@ -230,6 +248,37 @@ describe("todo done-check at agent_end", () => {
 		expect(files).not.toContain("/tmp/previous.ts");
 		expect(states[0]?.task).toBe("Next task");
 		expect(doneNudges()).toHaveLength(1);
+	});
+
+	it("uses relative paths inside cwd and leaves outside paths unchanged", async () => {
+		tool("write", { resolvedPath: "/tmp/todo-done-check/src/new.ts" });
+		tool("edit", {
+			perFileResults: [
+				{ path: "/tmp/todo-done-check/src/renamed.ts", sourcePath: "/tmp/todo-done-check/src/old.ts" },
+				{ path: "/tmp/outside.ts" },
+			],
+		});
+		tool("ast_edit", { applied: true, files: ["src/ast.ts", "../outside-relative.ts"] });
+		await settle();
+		expect(String(states[0]?.files).split("\n")).toEqual([
+			"src/new.ts",
+			"src/renamed.ts",
+			"src/old.ts",
+			"/tmp/outside.ts",
+			"src/ast.ts",
+			"../outside-relative.ts",
+		]);
+	});
+
+	it("caps task text and details without changing the todo item", async () => {
+		const task = "T".repeat(2_100);
+		const details = "D".repeat(2_100);
+		session.setTodoPhases([{ name: "Build", tasks: [{ content: task, details, status: "in_progress" }] }]);
+		tool("write", { resolvedPath: "/tmp/capped-input.ts" });
+		await settle();
+		expect(states[0]?.task).toBe("T".repeat(2_000));
+		expect(states[0]?.details).toBe("D".repeat(2_000));
+		expect(session.getTodoPhases()[0]?.tasks[0]).toMatchObject({ content: task, details, status: "in_progress" });
 	});
 
 	it("runs when explicitly on", async () => {

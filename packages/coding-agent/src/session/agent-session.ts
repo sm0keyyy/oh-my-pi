@@ -1054,6 +1054,7 @@ export class AgentSession implements SettingsScope {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	#postCompactionTodoPending = false;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -2109,7 +2110,7 @@ export class AgentSession implements SettingsScope {
 					metadataResolver: provider => this.agent.metadataForProvider(provider),
 					onUsage: journalJudgmentUsage(this.sessionManager),
 					telemetry: this.agent.telemetry,
-					signal,
+					signal: AbortSignal.any([signal, this.#postPromptTasksAbortController.signal]),
 				});
 			},
 		};
@@ -2814,8 +2815,17 @@ export class AgentSession implements SettingsScope {
 			syncTodoPhasesFromBranch: () => {
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
+				if (this.#postCompactionTodoPending) {
+					this.#postCompactionTodoPending = false;
+					const reminder = this.#todo.createPostCompactionTodoReminder();
+					if (reminder) this.#recordWithoutTurn([reminder]);
+				}
 			},
-			resetAdvisorRuntimes: (reason, options) => this.#advisors.resetAllRuntimes(reason, options),
+			resetAdvisorRuntimes: (reason, options) => {
+				this.#advisors.resetAllRuntimes(reason, options);
+				// Both compaction commit paths rehydrate todos immediately after this hook.
+				if (options?.compacted) this.#postCompactionTodoPending = true;
+			},
 			rebaseAdvisorPrefix: reason => this.#advisors.rebaseDeliveredPrefixes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
@@ -4531,7 +4541,17 @@ export class AgentSession implements SettingsScope {
 					for (const path of details.files) if (typeof path === "string") paths.push(path);
 				}
 			}
-			this.#todo.onToolResult(toolName, isError, paths);
+			const cwd = this.sessionManager.getCwd();
+			this.#todo.onToolResult(
+				toolName,
+				isError,
+				paths.map(file => {
+					const relative = path.relative(cwd, path.resolve(cwd, file));
+					return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+						? relative
+						: file;
+				}),
+			);
 		}
 		// Track the settled assistant turn synchronously as well: agent_end
 		// maintenance reads `#lastAssistantMessage`, and when a turn's events all

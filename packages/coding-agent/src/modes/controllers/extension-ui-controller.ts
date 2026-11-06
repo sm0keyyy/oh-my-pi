@@ -50,7 +50,7 @@ import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "@oh-my-pi/pi
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { launchTerminal } from "../../subprocess/terminal-launch";
-import { Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { RpcSocketServer } from "../rpc/rpc-socket";
 import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 import { approvalAnswerForChoice, approvalChoiceLabels, approvalOnceLabel } from "../../tools/approval";
@@ -1018,7 +1018,11 @@ export class ExtensionUiController {
 			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(askDialog);
 			this.ctx.ui.requestRender();
-			dialogOptions?.onTimeoutStart?.();
+			try {
+				dialogOptions?.onTimeoutStart?.();
+			} catch (error) {
+				logger.warn("Ask dialog presentation callback failed", { error: String(error) });
+			}
 
 			return () => {
 				closed = true;

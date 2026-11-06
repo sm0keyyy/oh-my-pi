@@ -212,7 +212,7 @@ export interface ExtensionUIDialogOptions {
 	timeout?: number;
 	/** Invoked when the UI times out while waiting for a selection/input */
 	onTimeout?: () => void;
-	/** When timeoutStartsOnPresentation is true, fires once on presentation even without a timeout. */
+	/** askDialog fires this once on presentation, with or without a timeout. */
 	onTimeoutStart?: () => void;
 	/** Invoked when user input resets a UI-managed timeout countdown */
 	onTimeoutReset?: () => void;

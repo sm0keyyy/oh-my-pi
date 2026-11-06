@@ -3,6 +3,7 @@ import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { logger } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { createPaneSessionFixture } from "../helpers/interactive-mode-context";
 
@@ -176,6 +177,39 @@ test("input presentation cancellation closes the dialog before the next prompt",
 		await terminal.waitForRender();
 		expect(terminal.getViewport().join("\n")).toContain("Next pane input");
 		expect(terminal.getViewport().join("\n")).not.toContain("Cancelled at presentation");
+		terminal.sendInput("\x1b");
+		expect(await next).toBeUndefined();
+	} finally {
+		await view.dispose();
+		await fixture.close();
+	}
+});
+
+test("input presentation callback failures leave the dialog cancellable", async () => {
+	const fixture = createPaneSessionFixture();
+	const terminal = new VirtualTerminal(100, 30);
+	const view = await createPaneView({ session: fixture.session, agentId: "callback-error", terminal, onSubmit() {} });
+	try {
+		const warning = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const presented = vi.fn(() => {
+			throw new Error("presentation callback failed");
+		});
+		const answer = view.ui.askDialog!(
+			[{ id: "q", question: "Cancellable after callback failure", options: [{ label: "one" }] }],
+			{ onTimeoutStart: presented },
+		);
+		await terminal.waitForRender();
+		expect(presented).toHaveBeenCalledTimes(1);
+		expect(terminal.getViewport().join("\n")).toContain("Cancellable after callback failure");
+		expect(warning).toHaveBeenCalledWith("Ask dialog presentation callback failed", {
+			error: "Error: presentation callback failed",
+		});
+		terminal.sendInput("\x1b");
+		expect(await answer).toBeUndefined();
+		const next = view.ui.input("Next pane input");
+		await terminal.waitForRender();
+		expect(terminal.getViewport().join("\n")).toContain("Next pane input");
+		expect(terminal.getViewport().join("\n")).not.toContain("Cancellable after callback failure");
 		terminal.sendInput("\x1b");
 		expect(await next).toBeUndefined();
 	} finally {

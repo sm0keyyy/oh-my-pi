@@ -2025,6 +2025,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async startRpcSocket(options?: RpcSocketOptions): Promise<void> {
+		if (this.embedded) return;
 		if (this.#rpcSocketStart) return this.#rpcSocketStart;
 		if (
 			this.#rpcSocketServer ||

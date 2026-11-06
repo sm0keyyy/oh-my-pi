@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import * as tui from "@oh-my-pi/pi-tui";
 import * as active from "@oh-my-pi/pi-tui/active-terminal";
 import * as keys from "@oh-my-pi/pi-tui/keys";
 import * as terminalState from "@oh-my-pi/pi-tui/terminal";
@@ -14,10 +15,12 @@ import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import * as cfg from "../../src/internal-urls/cfg-protocol";
 import * as autoQa from "../../src/tools/report-tool-issue";
 import * as title from "../../src/utils/title-generator";
-import { RunStatusReporter } from "../../src/utils/run-status";
 import { HistoryStorage } from "../../src/session/history-storage";
 import { StreamPublisher } from "../../src/stream/publisher";
 import { createPaneView } from "../../src/rex-panes/pane-view";
+import { InteractiveMode } from "../../src/modes/interactive-mode";
+import * as rpcSocket from "../../src/modes/rpc/rpc-socket";
+import { cfgRpcSocketEnabled } from "../../src/modes/rpc/settings";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { createPaneSessionFixture } from "../helpers/interactive-mode-context";
 
@@ -41,8 +44,7 @@ afterEach(() => {
 test("run status stays on the pane stream instead of the main reporter", async () => {
 	const fixture = createPaneSessionFixture();
 	const terminal = new RecordingTerminal(100, 30);
-	const main = new RunStatusReporter();
-	const mainReport = vi.spyOn(main, "setRunStatus");
+	const mainWrite = vi.spyOn(tui, "writeTerminalSequence");
 	const titleReport = vi.spyOn(title, "setTerminalTitleState");
 	const view = await createPaneView({ session: fixture.session, agentId: "status", terminal, onSubmit() {} });
 	try {
@@ -54,11 +56,36 @@ test("run status stays on the pane stream instead of the main reporter", async (
 		await started.promise;
 		await terminal.waitForRender();
 		expect(terminal.output.join("")).toContain("\x1b]7501;state=working");
-		expect(mainReport).not.toHaveBeenCalled();
+		expect(mainWrite).not.toHaveBeenCalled();
 		expect(titleReport).not.toHaveBeenCalled();
 		fixture.finish();
 		await run;
 		unsubscribe();
+	} finally {
+		await view.dispose();
+		await fixture.close();
+	}
+});
+
+test("an embedded view never starts or resumes an RPC socket", async () => {
+	const fixture = createPaneSessionFixture();
+	const terminal = new VirtualTerminal(100, 30);
+	const startSocket = vi.spyOn(rpcSocket, "startRpcSocketServer").mockImplementation(async () => {
+		throw new Error("pane attempted to publish an RPC socket");
+	});
+	let mode: InteractiveMode | undefined;
+	const initEmbedded = InteractiveMode.prototype.initEmbedded;
+	vi.spyOn(InteractiveMode.prototype, "initEmbedded").mockImplementation(function (this: InteractiveMode, onSubmit) {
+		mode = this;
+		return initEmbedded.call(this, onSubmit);
+	});
+	const view = await createPaneView({ session: fixture.session, agentId: "no-rpc", terminal, onSubmit() {} });
+	try {
+		expect(cfgRpcSocketEnabled.get(fixture.session.settings)).toBe(true);
+		if (!mode) throw new Error("pane did not initialize an embedded mode");
+		await mode.startRpcSocket();
+		await mode.resumeRpcSocket();
+		expect(startSocket).not.toHaveBeenCalled();
 	} finally {
 		await view.dispose();
 		await fixture.close();

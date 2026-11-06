@@ -161,7 +161,7 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		if (options?.acceptImages) this.#editor.atomicTokenPattern = PLACEHOLDER_REGEX;
 		// Bound the editor so long content scrolls instead of pushing the
 		// submit hint off-screen. Caller may override via options.maxHeight.
-		const termRows = this.#tui.terminal.rows;
+		const termRows = this.#tui.terminal?.rows ?? process.stdout.rows ?? 40;
 		this.#editor.setMaxHeight(options?.maxHeight ?? Math.max(3, termRows - 12));
 		this.#editor.setScrollbarVisible(true);
 		if (prefill) {

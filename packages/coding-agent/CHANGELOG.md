@@ -20,6 +20,7 @@
 ### Fixed
 
 - MCP tools outside the configured codegraph server do not require a session working directory.
+- Include codegraph index settings in the complete ordered settings list.
 - Subagents stopped by an operator or a soft request budget regain normal tool use when a parent message revives them.
 - Request non-blocking memory collection when a Rex subagent pane group closes or its manager shuts down.
 - Advertise backward message paging so web clients can safely connect to older TUIs.

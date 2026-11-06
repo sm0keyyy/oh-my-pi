@@ -19,6 +19,7 @@ import * as exportTtsrSettings from "../export/ttsr-settings";
 import * as editSettings from "../edit/settings";
 import * as editFormatSettings from "../edit/format-pipeline/settings";
 import * as toolsSettings from "../tools/settings";
+import * as codegraphIndexSettings from "../codegraph-index/config";
 import * as lspSettings from "../lsp/settings";
 import * as execSettings from "../exec/settings";
 import * as evalSettings from "../eval/settings";
@@ -62,6 +63,7 @@ const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	editSettings,
 	editFormatSettings,
 	toolsSettings,
+	codegraphIndexSettings,
 	lspSettings,
 	execSettings,
 	evalSettings,

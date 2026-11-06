@@ -21,7 +21,7 @@ import {
 import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { canUseInteractiveBashPty } from "@oh-my-pi/pi-coding-agent/tools/bash-pty-selection";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { getThemeByName, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
@@ -130,6 +130,7 @@ describe("subagent ask host", () => {
 				const turn = session.prompt("Choose the database");
 				await Promise.all([main.opened, pane.opened]);
 				expect(main.dialogs[0]!.questions[0]!.header).toContain("Database worker");
+				expect(main.dialogs[0]!.questions[0]!.question).toBe("Database worker: Which database?");
 				const context = execute.mock.calls[0]?.[4];
 				expect(context?.hasUI).toBe(false);
 				expect(canUseInteractiveBashPty(true, context)).toBe(false);
@@ -176,6 +177,59 @@ describe("subagent ask host", () => {
 		pane.dialogs[0]!.resolve(answer(pane.dialogs[0]!, "Postgres"));
 		expect(await second).toMatchObject({ kind: "submit", results: [{ selectedOptions: ["Postgres"] }] });
 		expect(main.dialogs[1]!.options?.signal?.aborted).toBe(true);
+	});
+
+	it("queue mirrors a reopened pane without accepting the closed pane's cancellation", async () => {
+		const main = fakeUi();
+		const oldPane = fakeUi();
+		const newPane = fakeUi();
+		let currentUi: ExtensionUIContext | undefined = oldPane.ui;
+		const host = registerSubagentAskHost({
+			main: main.ui,
+			subagentEventBus: new EventBus(),
+			mirror: () => currentUi,
+		});
+		hosts.push(host);
+		const pending = host.uiFor("worker", "Worker").askDialog!(questions);
+		currentUi = undefined;
+		oldPane.dialogs[0]!.resolve(undefined);
+		await Promise.resolve();
+		expect(main.dialogs[0]!.options?.signal?.aborted).toBe(false);
+		currentUi = newPane.ui;
+		host.mirrorAvailable("worker");
+		expect(oldPane.dialogs[0]!.options?.signal?.aborted).toBe(true);
+		expect(newPane.dialogs).toHaveLength(1);
+		newPane.dialogs[0]!.resolve(answer(newPane.dialogs[0]!, "Postgres"));
+		expect(await pending).toMatchObject({ kind: "submit", results: [{ selectedOptions: ["Postgres"] }] });
+		expect(main.dialogs[0]!.options?.signal?.aborted).toBe(true);
+	});
+
+	it("exposes only queued asks and a live theme without forwarding main UI mutations", async () => {
+		const main = fakeUi();
+		const mutateMain = vi.fn();
+		let currentTheme = theme;
+		Object.assign(main.ui, {
+			notify: mutateMain,
+			setTitle: mutateMain,
+			setEditorText: mutateMain,
+			setTheme: mutateMain,
+			select: mutateMain,
+		});
+		Object.defineProperty(main.ui, "theme", { get: () => currentTheme });
+		const host = registerSubagentAskHost({ main: main.ui, subagentEventBus: new EventBus() });
+		hosts.push(host);
+		const ui = host.uiFor("worker", "Worker");
+		ui.notify("notice");
+		ui.setTitle("child title");
+		ui.setEditorText("child draft");
+		expect(await ui.select("choice", ["one"])).toBeUndefined();
+		expect(await ui.setTheme("light")).toMatchObject({ success: false });
+		expect(mutateMain).not.toHaveBeenCalled();
+		expect(ui.theme).toBe(currentTheme);
+		const light = await getThemeByName("light");
+		if (!light) throw new Error("Expected light theme");
+		currentTheme = light;
+		expect(ui.theme).toBe(light);
 	});
 
 	it("queue drops aborted requests and disposal cancels active and queued dialogs", async () => {

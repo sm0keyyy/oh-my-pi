@@ -59,14 +59,44 @@ class AskHost implements SubagentAskHost {
 	}
 
 	uiFor(agentId: string, displayName: string): ExtensionUIContext {
+		const main = this.options.main;
 		return {
-			...this.options.main,
+			select: async () => undefined,
+			confirm: async () => false,
+			input: async () => undefined,
+			notify: () => {},
+			onTerminalInput: () => () => {},
+			rerenderMessage: () => {},
+			getLinkClicksAvailable: () => false,
+			setStatus: () => {},
+			setWorkingMessage: () => {},
+			setWidget: () => {},
+			setFooter: () => {},
+			setHeader: () => {},
+			setTitle: () => {},
+			custom: async () => undefined as never,
+			setEditorText: () => {},
+			pasteToEditor: () => {},
+			getEditorText: () => "",
+			editor: async () => undefined,
+			addAutocompleteProvider: () => {},
+			setEditorComponent: () => {},
+			getEditorComponent: () => undefined,
+			get theme() {
+				return main.theme;
+			},
+			getAllThemes: async () => [],
+			getTheme: async () => undefined,
+			setTheme: async () => ({ success: false, error: "UI not available" }),
+			getToolsExpanded: () => false,
+			setToolsExpanded: () => {},
 			timeoutStartsOnPresentation: true,
 			askDialog: (questions, dialogOptions) =>
 				this.#enqueue(
 					agentId,
 					questions.map(question => ({
 						...question,
+						question: `${displayName}: ${question.question}`,
 						header: question.header ? `${displayName}: ${question.header}` : displayName,
 					})),
 					dialogOptions,
@@ -103,7 +133,8 @@ class AskHost implements SubagentAskHost {
 		const controller = new AbortController();
 		let settled = false;
 		let presented = false;
-		let mirrored = false;
+		let mirrorUi: ExtensionUIContext | undefined;
+		let mirrorController: AbortController | undefined;
 		let timer: NodeJS.Timeout | undefined;
 
 		const cleanup = (): void => {
@@ -131,17 +162,32 @@ class AskHost implements SubagentAskHost {
 		};
 		const onAbort = (): void => finish(undefined);
 		const mirror = (): void => {
-			if (settled || !presented || mirrored) return;
+			if (settled || !presented) return;
 			try {
 				const ui = this.options.mirror?.(agentId);
+				if (ui === mirrorUi) return;
+				const previousController = mirrorController;
+				mirrorUi = ui;
+				mirrorController = undefined;
+				previousController?.abort();
 				if (!ui?.askDialog) return;
-				mirrored = true;
-				void ui
-					.askDialog(questions, { signal: controller.signal, acceptImages: dialogOptions?.acceptImages })
-					.then(finish, error => {
+				const abort = new AbortController();
+				mirrorController = abort;
+				const signal = AbortSignal.any([controller.signal, abort.signal]);
+				void ui.askDialog(questions, { signal, acceptImages: dialogOptions?.acceptImages }).then(
+					result => {
+						if (mirrorUi !== ui || mirrorController !== abort || signal.aborted) return;
+						// Pane teardown resolves undefined too; only a current pane's Esc is an answer.
+						if (result === undefined && this.options.mirror?.(agentId) !== ui) return;
+						finish(result);
+					},
+					error => {
 						// A pane failure must leave the main dialog available.
-						if (!settled) logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
-					});
+						if (!settled && !signal.aborted) {
+							logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
+						}
+					},
+				);
 			} catch (error) {
 				logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
 			}

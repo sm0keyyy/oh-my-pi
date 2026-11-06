@@ -183,7 +183,7 @@ it.each([false, true])(
 	30_000,
 );
 
-async function reopenInterruptedWrapUp(structured: boolean, handler: MockHandler) {
+async function reopenInterruptedWrapUp(structured: boolean, handler: MockHandler, retry = false) {
 	const cwd = path.join(root, "crashed-work");
 	await Bun.write(path.join(cwd, "notes.txt"), "revived tool access\n");
 	const authStorage = createInMemoryAuthStorage();
@@ -213,7 +213,11 @@ async function reopenInterruptedWrapUp(structured: boolean, handler: MockHandler
 			"task.softRequestBudget": 0,
 			"async.enabled": false,
 			"compaction.enabled": false,
-			"retry.enabled": false,
+			"retry.enabled": retry,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 100,
+			"retry.maxRetries": 2,
+			"retry.modelFallback": false,
 			"todo.enabled": false,
 			"todo.reminders": false,
 			"advisor.enabled": false,
@@ -300,6 +304,61 @@ it("a parent IRC assignment supersedes a crashed wrap-up without inheriting its 
 		expect(result).toMatchObject({ isError: false });
 		expect(JSON.stringify(result)).toContain("revived tool access");
 		expect(JSON.stringify(reopened.mock.calls[0]?.context.messages)).toContain("memory side context");
+	} finally {
+		await reopened.session.dispose();
+		reopened.authStorage.close();
+	}
+}, 30_000);
+
+it("keeps a live forced wrap-up restricted through two automatic retries", async () => {
+	const started = Promise.withResolvers<void>();
+	let request = 0;
+	const reopened = await reopenInterruptedWrapUp(
+		true,
+		() => {
+			request++;
+			if (request === 1) {
+				started.resolve();
+				return { content: ["exploring"], delayMs: 10_000 };
+			}
+			if (request <= 3) {
+				return { stopReason: "error", errorMessage: "503 service unavailable: overloaded_error" };
+			}
+			if (request === 4) {
+				return { content: [{ type: "toolCall", name: "yield", arguments: { data: "retry-safe partial report" } }] };
+			}
+			throw new Error("Unexpected provider request after forced report");
+		},
+		true,
+	);
+	try {
+		AgentRegistry.global().setStatus(ID, "running");
+		const running = runSubagentFollowUpTurn({
+			id: ID,
+			agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+			message: "inspect notes",
+			structured: true,
+		});
+		await started.promise;
+		expect(stopSubagent(ID, STOP_REASON)).toEqual({ ok: true });
+		const result = await running;
+		expect(result.exitCode).toBe(0);
+		expect(result.output).toContain("retry-safe partial report");
+		expect(result.output).toContain(`Stopped by operator: ${STOP_REASON}`);
+		expect(reopened.mock.calls).toHaveLength(4);
+		for (const call of reopened.mock.calls.slice(1)) {
+			expect(call.options?.toolChoice).toEqual({ type: "tool", name: "yield" });
+			expect(
+				call.context.messages.some(
+					message => message.role === "developer" && JSON.stringify(message).includes(STOP_REASON),
+				),
+			).toBe(true);
+		}
+		expect(
+			reopened.session.messages.some(
+				message => message.role === "custom" && message.customType === SUBAGENT_WRAP_UP_MESSAGE_TYPE,
+			),
+		).toBe(false);
 	} finally {
 		await reopened.session.dispose();
 		reopened.authStorage.close();

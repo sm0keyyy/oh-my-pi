@@ -5373,7 +5373,21 @@ export class AgentSession implements SettingsScope {
 					} finally {
 						if (restoringWrapUp) {
 							this.#toolChoiceQueue.removeByLabel(SUBAGENT_WRAP_UP_MESSAGE_TYPE);
-							this.agent.replaceMessages(this.agent.state.messages.filter(message => message !== wrapUp));
+							const messages = this.agent.state.messages;
+							const wrapUpIndex = messages.indexOf(wrapUp);
+							// The owning prompt spans automatic retries and expires the directive after recovery settles.
+							if (
+								request.options.source !== "automatic-retry" &&
+								wrapUpIndex >= 0 &&
+								messages.some(
+									(message, index) =>
+										index > wrapUpIndex &&
+										message.role === "assistant" &&
+										(message.stopReason === "stop" || message.stopReason === "toolUse"),
+								)
+							) {
+								this.agent.replaceMessages(messages.filter(message => message !== wrapUp));
+							}
 						}
 					}
 					return { status: "completed" };

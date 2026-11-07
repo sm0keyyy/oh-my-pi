@@ -16,6 +16,7 @@ beforeEach(() => {
 	vi.spyOn(utils, "getBaseConfigRoot").mockReturnValue(root);
 });
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	fs.rmSync(root, { recursive: true, force: true });
 });
@@ -98,6 +99,38 @@ test("write failure warns once and leaves the main session usable without later 
 		record.dispose();
 		expect(warn.mock.calls.filter(([message]) => message.startsWith("rex-panes:"))).toHaveLength(1);
 	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test("write follows moveSession paths within one second without rewriting unchanged records or polling after dispose", async () => {
+	const fixture = await createTestSession();
+	const sessionId = fixture.session.sessionId;
+	const initialSession = fixture.session.sessionFile;
+	const movedCwd = path.join(root, "moved");
+	fs.mkdirSync(movedCwd);
+	vi.useFakeTimers();
+	const record = startMainPaneRecord(fixture.session, env);
+	const file = paneRecordPath(blockId)!;
+	try {
+		const rename = vi.spyOn(fs, "renameSync");
+		vi.advanceTimersByTime(1000);
+		expect(rename).not.toHaveBeenCalled();
+		await fixture.session.moveSession(movedCwd, path.join(root, "moved-sessions"));
+		expect(fixture.session.sessionId).toBe(sessionId);
+		expect(fixture.session.sessionFile).not.toBe(initialSession);
+		vi.advanceTimersByTime(1000);
+		const movedRecord = fs.readFileSync(file, "utf8");
+		expect(movedRecord).toBe(
+			`omp-pane-record 1\nkind=omp\npid=${process.pid}\ncwd=${movedCwd}\nsession=${fixture.session.sessionFile}\n`,
+		);
+		record.dispose();
+		await fixture.session.moveSession(fixture.tempDir, path.join(root, "later-sessions"));
+		vi.advanceTimersByTime(1000);
+		expect(fs.readFileSync(file, "utf8")).toBe(movedRecord);
+	} finally {
+		record.dispose();
+		vi.useRealTimers();
 		await fixture.cleanup();
 	}
 });

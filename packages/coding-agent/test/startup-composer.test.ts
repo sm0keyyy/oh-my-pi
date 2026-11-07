@@ -789,7 +789,7 @@ describe("Composer prepaint", () => {
 			terminal.sendInput(" between");
 			expect(mode.editor.getExpandedText()).toBe("draft message between");
 			await terminal.waitForRender();
-			await mode.init({ suppressWelcomeIntro: true });
+			await mode.init({ suppressWelcomeIntro: true, mainServices: false });
 			await terminal.waitForRender();
 
 			expect(terminal.starts).toBe(1);

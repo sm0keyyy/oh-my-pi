@@ -3,6 +3,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { AnnotationOverlay } from "@oh-my-pi/pi-tui/overlays/annotation-overlay";
 import type { CustomCommandContext } from "../../../../extensibility/custom-commands/types";
+import type { ExtensionUIContext } from "../../../../extensibility/extensions/types";
 import type {
 	CodeReviewOverlayResult,
 	TextReviewOverlayResult,
@@ -14,7 +15,9 @@ import { getEditorCommand, openEditorOnPath, openInEditor } from "../../../../ut
 import { type AnnotationDraft, openAnnotationDraft } from "./draft-store";
 
 /** What the overlay host reads: the UI surface plus the live session cwd for editor paths. */
-export type AnnotationOverlayContext = Pick<CustomCommandContext, "ui" | "cwd" | "sessionManager">;
+export type AnnotationOverlayContext = Pick<CustomCommandContext, "cwd" | "sessionManager"> & {
+	ui: Pick<ExtensionUIContext, "custom" | "notify">;
+};
 
 const ANNOTATION_OVERLAY_OPTIONS = {
 	width: "100%",
@@ -118,6 +121,7 @@ export async function showCodeReviewOverlay(
 	target: ResolvedReviewTarget,
 	focus?: string,
 	resumed?: AnnotationDraft,
+	options?: { externalEditor?: boolean },
 ): Promise<CodeReviewOverlayResult | undefined> {
 	const draft = await openAnnotationDraft(ctx.sessionManager, { kind: "diff", target, focus }, resumed);
 	if (draft.restored && !resumed) ctx.ui.notify("Restored the saved annotation draft.", "info");
@@ -132,10 +136,13 @@ export async function showCodeReviewOverlay(
 				{
 					onComplete: done,
 					onWarning: message => ctx.ui.notify(message, "warning"),
-					onAnnotationExternalEditor: (draft, commit) => editAnnotationDraft(tui, draft, commit),
+					onAnnotationExternalEditor:
+						options?.externalEditor === false
+							? undefined
+							: (draft, commit) => editAnnotationDraft(tui, draft, commit),
 					// PR and caller-supplied diffs need not match the local checkout, so only local reviews open the working-tree file.
 					onExternalEditor:
-						target.kind === "pr" || target.kind === "patch"
+						options?.externalEditor === false || target.kind === "pr" || target.kind === "patch"
 							? undefined
 							: () => editReviewedFile(tui, ctx, overlay, target.repository),
 				},

@@ -5,6 +5,7 @@ import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import { startOperatorQueue } from "../operator-queue";
 import { type MainPaneRecord, startMainPaneRecord } from "../rex-panes/main-pane-record";
 import { createTabTitleRex, startTabTitle } from "../rex-panes/tab-title";
+import { startDiffReview } from "../rex-review/diff-review";
 import { startRexWatcher } from "../rex-watch/watcher";
 import type { AgentSession } from "../session/agent-session";
 
@@ -42,6 +43,7 @@ export function startMainServices(input: MainServicesInput): MainServices {
 		return record;
 	});
 	start("rex-panes", () => startTabTitle(input.session, createTabTitleRex(), process.env));
+	start("rex-review", () => startDiffReview({ ...input, ui: input.toolUi }));
 	let teardown: Promise<void> | undefined;
 	return {
 		closed() {

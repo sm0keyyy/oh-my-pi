@@ -24,7 +24,9 @@ export class RequestApprovalTool implements AgentTool<typeof schema, RequestAppr
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {}
 	static createIf(session: ToolSession): RequestApprovalTool | null {
-		return (session.canPromptUser ?? session.hasUI) ? new RequestApprovalTool(session) : null;
+		return (session.canPromptUser ?? session.hasUI) || session.advertiseHeadlessAsk
+			? new RequestApprovalTool(session)
+			: null;
 	}
 	async execute(
 		_id: string,

@@ -17,7 +17,9 @@ export class ShowMarkdownTool implements AgentTool<typeof schema> {
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {}
 	static createIf(session: ToolSession): ShowMarkdownTool | null {
-		return (session.canPromptUser ?? session.hasUI) ? new ShowMarkdownTool(session) : null;
+		return (session.canPromptUser ?? session.hasUI) || session.advertiseHeadlessAsk
+			? new ShowMarkdownTool(session)
+			: null;
 	}
 	async execute(
 		_id: string,

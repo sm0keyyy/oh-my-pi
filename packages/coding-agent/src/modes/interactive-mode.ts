@@ -240,7 +240,7 @@ import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
 import { startSubagentSurfaces } from "../rex-panes";
 import { subagentAskHostFor } from "../task/subagent-ask-host";
-import { startMainServices } from "./main-services";
+import { type MainServices, startMainServices } from "./main-services";
 import { getEditorCommand, getEditorName, openInEditor } from "../utils/external-editor";
 import { openPath } from "../utils/open";
 import { resumeCommand } from "../utils/resume-command";
@@ -1730,7 +1730,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	collabGuest?: CollabGuestLink;
 	#streamPublisher: StreamPublisher | undefined;
 	#subagentSurfaces: { dispose(): Promise<void> } | undefined;
-	#mainServices: { dispose(): Promise<void> } | undefined;
+	#mainServices: MainServices | undefined;
 	#recorder: SessionRecorder | undefined;
 	#recorderStarting = false;
 
@@ -3120,6 +3120,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#mainServices = startMainServices({
 				settings: this.settings,
 				cwd: this.sessionManager.getCwd(),
+				session: this.session,
 				toolUi,
 				sessionId: () => this.sessionManager.getSessionId(),
 				askUi: () => subagentAskHostFor(this.#subagentEventBus ?? this.#eventBus)?.externalUi(),
@@ -8365,12 +8366,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#beginClose();
 		const worktreePlan = await this.#planOwnedWorktreeExit();
+		const services = this.#mainServices;
 		try {
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("close", error);
 			return;
 		}
+		services?.closed();
 		for (const message of await removeExitWorktrees(worktreePlan)) {
 			process.stderr.write(`${chalk.yellow(message)}\n`);
 		}

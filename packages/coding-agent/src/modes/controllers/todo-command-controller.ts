@@ -12,6 +12,8 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
 
+export type TodoEditor = (markdown: string) => Promise<string | null>;
+
 const USAGE = [
 	"Usage: /todo <verb> [args]",
 	"  /todo                              Show current todos",
@@ -163,7 +165,7 @@ export class TodoCommandController {
 				if (this.ctx.todoExpanded) this.ctx.toggleTodoExpansion();
 				return;
 			case "edit":
-				await this.#editInExternalEditor();
+				await this.editTodos();
 				return;
 			case "copy":
 				this.#copyMarkdown();
@@ -406,9 +408,9 @@ export class TodoCommandController {
 
 	// ------------------------------------------------------------- editor
 
-	async #editInExternalEditor(): Promise<void> {
-		const editorCmd = getEditorCommand();
-		if (!editorCmd) {
+	async editTodos(editor?: TodoEditor): Promise<void> {
+		const editorCmd = editor ? undefined : getEditorCommand();
+		if (!editor && !editorCmd) {
 			this.ctx.showWarning("No editor configured. Set $VISUAL or $EDITOR environment variable.");
 			return;
 		}
@@ -417,9 +419,19 @@ export class TodoCommandController {
 		const initialMarkdown =
 			current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n";
 
-		this.ctx.ui.stop();
+		const edit: TodoEditor =
+			editor ??
+			(async markdown => {
+				this.ctx.ui.stop();
+				try {
+					return await openInEditor(editorCmd!, markdown, { extension: ".todo.md" });
+				} finally {
+					this.ctx.ui.start();
+					this.ctx.ui.requestRender();
+				}
+			});
 		try {
-			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".todo.md" });
+			const result = await edit(initialMarkdown);
 			if (result === null) {
 				this.ctx.showWarning("Editor exited without saving; todos unchanged.");
 				return;
@@ -436,9 +448,6 @@ export class TodoCommandController {
 			this.ctx.showWarning(
 				`Failed to open external editor: ${error instanceof Error ? error.message : String(error)}`,
 			);
-		} finally {
-			this.ctx.ui.start();
-			this.ctx.ui.requestRender();
 		}
 	}
 

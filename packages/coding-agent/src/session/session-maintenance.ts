@@ -474,7 +474,7 @@ export interface SessionMaintenanceHost {
 	closeCodexProviderSessionsForHistoryRewrite(): void;
 	resetCodexProviderAfterCompaction(compaction: CodexCompactionContext): void;
 	resetPlanReference(): void;
-	syncTodoPhasesFromBranch(): void;
+	syncTodoPhasesFromBranch(): Promise<void>;
 	/** `compacted` marks a rewrite that replaced history with a summary. */
 	resetAdvisorRuntimes(reason?: string, options?: { compacted?: boolean }): void;
 	/** Re-aligns advisors after an in-place prune their own contexts already cover (no re-prime). */
@@ -780,7 +780,7 @@ export class SessionMaintenance {
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
-		this.#host.syncTodoPhasesFromBranch();
+		await this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
 	}
@@ -830,7 +830,7 @@ export class SessionMaintenance {
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
-		this.#host.syncTodoPhasesFromBranch();
+		await this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		return result;
 	}
@@ -2646,7 +2646,7 @@ export class SessionMaintenance {
 		// the plan from disk and re-injects it on the next turn (issue #1246).
 		this.#host.resetPlanReference();
 		this.#host.resetAdvisorRuntimes(args.advisorResetReason, { compacted: true });
-		this.#host.syncTodoPhasesFromBranch();
+		await this.#host.syncTodoPhasesFromBranch();
 		if (args.codexCompaction) {
 			this.#host.resetCodexProviderAfterCompaction(args.codexCompaction);
 		} else {
@@ -4671,7 +4671,7 @@ export class SessionMaintenance {
 		// history.
 		this.#host.resetPlanReference();
 		this.#host.resetAdvisorRuntimes("compaction-rescue", { compacted: true });
-		this.#host.syncTodoPhasesFromBranch();
+		await this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		// Extensions must see the entry that is now active, not (only) the one
 		// this rebuild just superseded — mirror the regular append path's hook.

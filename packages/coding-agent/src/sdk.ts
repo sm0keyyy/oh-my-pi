@@ -2688,8 +2688,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
-			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			setTodoPhases: (phases, options) => session.setTodoPhases(phases, options),
+			getTodoStore: () => session.getTodoStore(),
+			flushTodoPhases: () => session.flushTodoPhases(),
+			refreshTodoPhases: () => session.refreshTodoPhases(),
+			persistTodoPhases: () =>
+				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: session.getTodoPhases() }),
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
@@ -4127,7 +4131,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			persistTodoPhases: phases => sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases }),
+			persistTodoPhases: () =>
+				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: session.getTodoPhases() }),
 			// `pi_grep` carries its own context width and match cap, which the
 			// shared grep instance fixed at construction cannot express. Gated on
 			// the grant: the factory builds a fresh tool and `executeTool` prefers

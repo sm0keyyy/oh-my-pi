@@ -31,17 +31,20 @@ export interface BeadBrief {
 	priority: number;
 	parentId?: string;
 }
+export interface LoadedTodoItem extends TodoItem {
+	parentId?: string;
+}
 export class BeadsUnavailableError extends Error {}
 export interface TodoStore {
 	readonly info: TodoBeadsInfo;
 	assignIds(prev: readonly TodoPhase[], next: readonly TodoPhase[]): TodoPhase[];
-	write(prev: readonly TodoPhase[], next: readonly TodoPhase[]): Promise<TodoBeadsInfo>;
+	write(prev: readonly TodoPhase[], next: TodoPhase[]): Promise<TodoBeadsInfo>;
 	refresh(
 		phases: readonly TodoPhase[],
 		base: readonly TodoPhase[] | undefined,
 	): Promise<{ phases: TodoPhase[]; info: TodoBeadsInfo; dropped: string[] }>;
 	ready(limit: number): Promise<BeadBrief[]>;
-	load(id: string): Promise<TodoPhase | TodoItem>;
+	load(id: string): Promise<TodoPhase | LoadedTodoItem>;
 	file(input: {
 		title: string;
 		priority: 0 | 1 | 2 | 3 | 4;
@@ -82,6 +85,7 @@ class BeadsStore implements TodoStore {
 	#suffixes = new Map<string, number>();
 	#minted = new Set<string>();
 	#attempted = new Set<string>();
+	#skippedEpicCloses = new Set<string>();
 	constructor(
 		readonly route: BeadsRoute,
 		readonly notice: (level: "info" | "warning", message: string) => void,
@@ -269,12 +273,14 @@ class BeadsStore implements TodoStore {
 		const all = new Map(existing.map(bead => [bead.id, bead]));
 		let reminted = false;
 		const replayConflicts: string[] = [];
+		const collisionParents = new Set<string>();
 		for (const phase of ours) {
 			const epic = phase.id ? all.get(phase.id) : undefined;
 			if (
 				epic &&
-				this.#minted.has(epic.id) &&
+				!known.has(epic.id) &&
 				!this.#attempted.has(epic.id) &&
+				(this.#minted.has(epic.id) || this.#info.state === "pending") &&
 				(epic.title !== phase.name || epic.issue_type !== "epic")
 			) {
 				const oldId = phase.id!;
@@ -290,10 +296,12 @@ class BeadsStore implements TodoStore {
 				const bead = task.id ? all.get(task.id) : undefined;
 				if (
 					bead &&
-					this.#minted.has(bead.id) &&
+					!known.has(bead.id) &&
 					!this.#attempted.has(bead.id) &&
+					(this.#minted.has(bead.id) || this.#info.state === "pending") &&
 					(bead.title !== task.content || bead.issue_type === "epic")
 				) {
+					if (phase.id) collisionParents.add(phase.id);
 					delete task.id;
 					reminted = true;
 				} else if (bead && !known.has(bead.id) && this.#info.state === "pending") {
@@ -312,6 +320,14 @@ class BeadsStore implements TodoStore {
 			}
 		}
 		if (reminted) {
+			for (const id of collisionParents) {
+				const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
+				for (const child of children) {
+					if (!child.id.startsWith(`${id}.`)) continue;
+					const suffix = Number(child.id.slice(id.length + 1));
+					if (Number.isSafeInteger(suffix)) this.#suffixes.set(id, Math.max(this.#suffixes.get(id) ?? 0, suffix));
+				}
+			}
 			const assigned = this.assignIds(base, ours);
 			for (let i = 0; i < ours.length; i++) {
 				ours[i]!.id = assigned[i]!.id;
@@ -321,6 +337,20 @@ class BeadsStore implements TodoStore {
 		}
 		const next = this.#merge(base, ours, existing, replayConflicts);
 		const changes = diffBeads(base, next, existing);
+		const touched = new Set(changes.nodes.map(node => node.id));
+		for (const line of changes.batch) touched.add(line.split(" ", 2)[1]!);
+		for (const args of changes.updates) touched.add(args[1]!);
+		for (const phases of [base, next]) {
+			for (const phase of phases) {
+				if (phase.id && phase.tasks.some(task => task.id && touched.has(task.id)))
+					this.#skippedEpicCloses.delete(phase.id);
+			}
+		}
+		for (const id of touched) {
+			const bead = all.get(id);
+			const parent = bead?.parent ?? bead?.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
+			if (parent) this.#skippedEpicCloses.delete(parent);
+		}
 		// A closed epic must reopen before an append, and reparenting must precede its old epic's close.
 		for (const id of changes.reopen) await this.#cli.call(["update", id, "--status", "open"]);
 		if (changes.nodes.length) {
@@ -338,11 +368,19 @@ class BeadsStore implements TodoStore {
 		if (changes.batch.length)
 			await this.#cli.call(["batch", "-m", "omp: todo sync"], `${changes.batch.join("\n")}\n`);
 		for (const args of changes.updates) await this.#cli.call(args);
-		if (changes.closeEpics.length)
-			await this.#cli.call(["batch", "-m", "omp: todo sync"], `${changes.closeEpics.join("\n")}\n`);
+		const closeEpics: string[] = [];
+		for (const line of changes.closeEpics) {
+			const id = line.split(" ", 2)[1]!;
+			if (this.#skippedEpicCloses.has(id)) continue;
+			// A phase can contain one adopted child, without its open siblings.
+			const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
+			if (children.every(child => child.status === "closed")) closeEpics.push(line);
+			else this.#skippedEpicCloses.add(id);
+		}
+		if (closeEpics.length) await this.#cli.call(["batch", "-m", "omp: todo sync"], `${closeEpics.join("\n")}\n`);
 		return next;
 	}
-	write(prev: readonly TodoPhase[], next: readonly TodoPhase[]): Promise<TodoBeadsInfo> {
+	write(prev: readonly TodoPhase[], next: TodoPhase[]): Promise<TodoBeadsInfo> {
 		const before = clonePhases(prev),
 			after = clonePhases(next);
 		return queued(this.route.root, async () => {
@@ -352,11 +390,12 @@ class BeadsStore implements TodoStore {
 			try {
 				await this.#ensure(true);
 				this.#base = await this.#apply(this.#base, after);
-				// Collision remints must reach the caller's snapshot as well as the durable store.
+				// Update existing identities before replacing membership, so the tracker can propagate remints.
 				for (let i = 0; i < next.length; i++) {
 					next[i]!.id = after[i]!.id;
 					for (let j = 0; j < next[i]!.tasks.length; j++) next[i]!.tasks[j]!.id = after[i]!.tasks[j]!.id;
 				}
+				next.splice(0, next.length, ...clonePhases(this.#base));
 				this.#synced();
 			} catch (error) {
 				this.#reconcilePending = true;
@@ -380,12 +419,11 @@ class BeadsStore implements TodoStore {
 			try {
 				const pending = this.#info.state === "pending" || base !== undefined;
 				if (!(await this.#ensure(false))) return { phases: ours, info: this.info, dropped: [] };
-				if (pending) this.#base = await this.#apply(this.#base ?? ours, ours);
-				const refreshed = readPhases(
-					pending ? this.#base! : ours,
-					await this.#read(phaseIds(pending ? this.#base! : ours)),
-					this.#warnStatus,
-				);
+				// No local delta means a read, even if an earlier failure left the store pending.
+				if (pending && this.#base && JSON.stringify(this.#base) !== JSON.stringify(ours))
+					this.#base = await this.#apply(this.#base, ours);
+				const source = pending ? (this.#base ?? ours) : ours;
+				const refreshed = readPhases(source, await this.#read(phaseIds(source)), this.#warnStatus);
 				this.#base = clonePhases(refreshed.phases);
 				if (refreshed.dropped.length && !this.#droppedWarned) {
 					this.#droppedWarned = true;
@@ -432,15 +470,20 @@ class BeadsStore implements TodoStore {
 			throw new BeadsUnavailableError("Invalid bead ID", { cause: error });
 		}
 	}
-	async load(id: string): Promise<TodoPhase | TodoItem> {
+	async load(id: string): Promise<TodoPhase | LoadedTodoItem> {
 		this.#checkId(id);
 		return this.#operation(async available => {
 			if (!available) throw new BeadsUnavailableError(`Bead ${id} not found`);
 			const beads = await this.#read([id]);
 			const bead = beads.find(value => value.id === id);
 			if (!bead) throw new BeadsUnavailableError(`Bead ${id} not found`);
-			if (bead.issue_type !== "epic")
-				return beadToTask(bead, new Map(beads.map(value => [value.id, value])), undefined, this.#warnStatus);
+			if (bead.issue_type !== "epic") {
+				const parentId = bead.parent ?? bead.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
+				return {
+					...beadToTask(bead, new Map(beads.map(value => [value.id, value])), undefined, this.#warnStatus),
+					...(parentId ? { parentId } : {}),
+				};
+			}
 			const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
 			const all = await this.#read(children.map(child => child.id));
 			const byId = new Map(all.map(value => [value.id, value]));

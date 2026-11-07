@@ -364,7 +364,7 @@ test("review F4 resolves a bare editor against omp PATH, not the Rex server PATH
 	expect(result).toBe("# Path editor\n- [x] Found on omp PATH\n");
 });
 
-async function abortEditor(markdown: string, saved: string): Promise<string | null> {
+async function abortEditor(markdown: string, saved: string, closeFails = false): Promise<string | null> {
 	const abort = new AbortController();
 	const waiting = Promise.withResolvers<void>();
 	const ended = Promise.withResolvers<{ exitCode: number; stdout: string; stderr: string }>();
@@ -379,7 +379,10 @@ async function abortEditor(markdown: string, saved: string): Promise<string | nu
 			waiting.resolve();
 			return ended.promise;
 		}
-		if (args[1] === "block") ended.resolve({ exitCode: 0, stdout: '{"exit_code":130}', stderr: "" });
+		if (args[1] === "block") {
+			ended.resolve({ exitCode: 0, stdout: '{"exit_code":130}', stderr: "" });
+			if (closeFails) return { exitCode: 1, stdout: "", stderr: "Editor block already closed" };
+		}
 		return { exitCode: 0, stdout: "", stderr: "" };
 	};
 	const result = editTodoInRex(
@@ -409,6 +412,21 @@ test("review F5 does not apply unchanged or malformed files after abort", async 
 	expect(await abortEditor(initial, initial)).toBeNull();
 	expect(await abortEditor(initial, "# Broken\nnot a todo\n")).toBeNull();
 });
+
+test("review followup empty saved file on abort leaves the todo list unchanged", async () => {
+	const { mode, session } = await fixture();
+	const before = session.getTodoPhases();
+	await mode.editPanelTodos(markdown => abortEditor(markdown, ""));
+	expect(session.getTodoPhases()).toEqual(before);
+}, 30000);
+
+test("review followup failed block close still recovers valid saved todos", async () => {
+	const { mode, session } = await fixture();
+	await mode.editPanelTodos(markdown => abortEditor(markdown, "# Recovered\n- [x] Saved work\n", true));
+	expect(session.getTodoPhases()).toEqual([
+		{ name: "Recovered", tasks: [{ content: "Saved work", status: "completed" }] },
+	]);
+}, 30000);
 
 test("review F6 keeps the editor hint and reports omitted todo rows in a short panel", async () => {
 	const { mode, host } = await fixture();

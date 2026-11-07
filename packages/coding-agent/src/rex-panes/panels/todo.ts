@@ -44,9 +44,13 @@ export async function editTodoInRex(
 			}
 		}
 		if (options.signal.aborted) {
-			await close();
+			await close().catch(() => {
+				// The finally block logs close failures; saved work still needs recovery.
+			});
 			const saved = await Bun.file(file).text();
-			return saved !== markdown && markdownToPhases(saved).errors.length === 0 ? saved : null;
+			if (saved === markdown) return null;
+			const parsed = markdownToPhases(saved);
+			return parsed.errors.length === 0 && parsed.phases.some(phase => phase.tasks.length > 0) ? saved : null;
 		}
 		return result?.exitCode === 0 ? await Bun.file(file).text() : null;
 	} finally {

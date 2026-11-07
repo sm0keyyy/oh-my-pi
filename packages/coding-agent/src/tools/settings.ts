@@ -386,6 +386,59 @@ export const cfgTodoEnabled = register({
 	},
 });
 
+export const cfgTodoStore = register({
+	id: "todo.store",
+	type: "enum",
+	values: ["beads", "session"] as const,
+	default: "beads",
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Todo Store",
+		description: "Store main-session tasks in beads or only in the session",
+		options: [
+			{ value: "beads", label: "Beads" },
+			{ value: "session", label: "Session" },
+		],
+	},
+});
+
+export const cfgTodoBeadsRoots = register({
+	id: "todo.beads.roots",
+	type: "array",
+	default: ["~/Developer"] as readonly string[],
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Beads Repo Roots",
+		editor: "json",
+		description: "Repositories under these folders use their own beads store",
+	},
+	validate: raw => {
+		if (raw === undefined) return;
+		if (!Array.isArray(raw) || raw.some(entry => typeof entry !== "string" || !entry.trim())) {
+			throw new Error("todo.beads.roots must be a list of folder paths");
+		}
+	},
+});
+
+export const cfgTodoBeadsGlobalDir = register({
+	id: "todo.beads.globalDir",
+	type: "string",
+	default: "~/.omp/beads",
+	ui: {
+		tab: "tools",
+		group: "Todos",
+		label: "Global Beads Directory",
+		description: "Dedicated beads checkout used outside the configured repository roots",
+	},
+	validate: raw => {
+		if (raw !== undefined && (typeof raw !== "string" || !raw.trim())) {
+			throw new Error("todo.beads.globalDir must be a folder path");
+		}
+	},
+});
+
 export const cfgTodoReminders = register({
 	id: "todo.reminders",
 	type: "boolean",

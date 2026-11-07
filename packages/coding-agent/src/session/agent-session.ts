@@ -82,6 +82,7 @@ import type {
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
 import { completeSimple, type Effort, embed, serviceTierFamily, streamSimple } from "@oh-my-pi/pi-ai";
+import type { TodoBeadsInfo, TodoStore } from "../beads";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { prewarmModelConnection } from "@oh-my-pi/pi-ai/providers/connection-prewarm";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-state";
@@ -2093,6 +2094,7 @@ export class AgentSession implements SettingsScope {
 			settings: this.settings,
 			model: () => this.model,
 			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			scheduleAgentContinue: options => this.#scheduleAgentContinue(options),
 			promptGeneration: () => this.#promptGeneration,
@@ -2605,7 +2607,8 @@ export class AgentSession implements SettingsScope {
 			},
 		};
 		this.#syncAgentSessionId();
-		this.#todo.syncFromBranch();
+		this.#todo.syncFromBranch(false);
+		void this.#todo.refresh();
 		this.#modelMentions.syncFromBranch();
 		this.#goalRuntime = new GoalRuntime({
 			getState: () => this.#goalModeState,
@@ -2818,7 +2821,8 @@ export class AgentSession implements SettingsScope {
 			resetPlanReference: () => {
 				this.#planReferenceSent = false;
 			},
-			syncTodoPhasesFromBranch: () => {
+			syncTodoPhasesFromBranch: async () => {
+				await this.#todo.flush();
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
 				if (this.#postCompactionTodoPending) {
@@ -6482,6 +6486,7 @@ export class AgentSession implements SettingsScope {
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
 		this.beginDispose();
+		await this.#todo.flush();
 		// Stop cache warming before the drain windows below: an armed tick firing
 		// mid-dispose would issue a paid warm request and persist usage into the
 		// closing session writer.
@@ -8262,6 +8267,7 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		this.#noteUserTurn();
+		await this.#todo.refresh({ maxAgeMs: 30_000 });
 		this.#todo.resetCycle();
 		this.#resetPromptMaintenanceState();
 		this.#scheduleAgentContinue({ source: "manual-continue", turnRecords: [prompt] });
@@ -8973,6 +8979,7 @@ export class AgentSession implements SettingsScope {
 			this.#ircAwaitingAssignment = false;
 			this.#irc.flushPending();
 
+			await this.#todo.refresh({ maxAgeMs: 30_000 });
 			this.#todo.resetCycle();
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
@@ -10840,8 +10847,28 @@ export class AgentSession implements SettingsScope {
 		return this.#todo.phases;
 	}
 
-	setTodoPhases(phases: TodoPhase[]): void {
+	setTodoPhases(phases: TodoPhase[], options?: { advance?: boolean }): void {
+		this.#todo.commit(phases, options);
+	}
+
+	resetTodoPhases(phases: TodoPhase[]): void {
 		this.#todo.setPhases(phases);
+	}
+
+	getTodoStore(): TodoStore {
+		return this.#todo.store;
+	}
+
+	flushTodoPhases(): Promise<TodoBeadsInfo> {
+		return this.#todo.flush();
+	}
+
+	refreshTodoPhases(): Promise<void> {
+		return this.#todo.refresh();
+	}
+
+	subscribeTodoPhases(listener: (phases: readonly TodoPhase[]) => void): () => void {
+		return this.#todo.subscribe(listener);
 	}
 
 	/** Active item labels accepted by this pooled turn's incremental yield tool. */
@@ -11547,6 +11574,7 @@ export class AgentSession implements SettingsScope {
 				this.#releaseQueuedTtsrReservations();
 				this.agent.reset();
 				this.tokenRate.reset();
+				await this.#todo.flush();
 				if (options?.drop && previousSessionFile) {
 					try {
 						await this.sessionManager.dropSession(previousSessionFile);
@@ -11572,7 +11600,7 @@ export class AgentSession implements SettingsScope {
 
 			this.#clearSessionScopedToolState();
 			this.#clearCheckpointRuntimeState();
-			this.setTodoPhases([]);
+			this.resetTodoPhases([]);
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
@@ -11651,6 +11679,7 @@ export class AgentSession implements SettingsScope {
 	/** Write pending bash output and every session entry to the session file, as {@link fork} does before copying it. */
 	async flushToDisk(): Promise<void> {
 		await this.#bash.flushPending();
+		await this.#todo.flush();
 		await this.sessionManager.flush();
 	}
 
@@ -11739,6 +11768,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -12293,6 +12323,7 @@ export class AgentSession implements SettingsScope {
 		}
 		// The rewound turn's reply is the exploration branch's newest, so this records its prompt.
 		const explorationPromptDigest = this.#tools.recordedPromptDigest();
+		await this.#todo.flush();
 		this.#bash.withBranchTransition(() => {
 			try {
 				this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
@@ -12355,7 +12386,7 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
+		this.#todo.syncFromBranch(true, { discardPending: true });
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
@@ -13267,6 +13298,7 @@ export class AgentSession implements SettingsScope {
 
 		await this.#bash.flushPending();
 		// Flush pending writes before switching so restore snapshots reflect committed state.
+		await this.#todo.flush();
 		await this.sessionManager.flush();
 		const previousSessionState = this.sessionManager.captureState();
 		const bashTransition = this.#bash.beginSessionTransition();
@@ -13424,7 +13456,8 @@ export class AgentSession implements SettingsScope {
 			this.agent.replaceMessages(sessionContext.messages);
 			this.#reseedTokenRate();
 			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#todo.syncFromBranch();
+			this.#todo.syncFromBranch(false);
+			await this.#todo.refresh();
 			this.#modelMentions.syncFromBranch();
 			if (switchingToDifferentSession) {
 				this.#closeAllProviderSessions("session switch");
@@ -13726,6 +13759,7 @@ export class AgentSession implements SettingsScope {
 
 		await this.#bash.flushPending();
 		// Flush pending writes before branching
+		await this.#todo.flush();
 		await this.sessionManager.flush();
 		// Last refusal point. Nothing below is rolled back when the transition stops, so an
 		// idle-only snapshot refuses here, after the flush awaits but before any state of the
@@ -13768,7 +13802,7 @@ export class AgentSession implements SettingsScope {
 			}
 			this.#clearSessionScopedToolState();
 			this.#rehydrateCheckpointRewindState();
-			this.#todo.syncFromBranch();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
@@ -13862,6 +13896,7 @@ export class AgentSession implements SettingsScope {
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		await this.#bash.flushPending();
+		await this.#todo.flush();
 		await this.sessionManager.flush();
 		const bashTransition = this.#bash.beginSessionTransition();
 		this.#cancelOwnAsyncJobs();
@@ -13899,7 +13934,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: Date.now(),
 			});
 			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
-			this.#todo.syncFromBranch();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
@@ -14133,6 +14168,7 @@ export class AgentSession implements SettingsScope {
 		// admitted on the abandoned branch before committing any tree changes.
 		this.#promptGeneration++;
 
+		await this.#todo.flush();
 		// Determine the new leaf position based on target type
 		let newLeafId: string | null;
 		let editorText: string | undefined;
@@ -14231,7 +14267,7 @@ export class AgentSession implements SettingsScope {
 		this.agent.replaceMessages(displayContext.messages);
 		this.#rehydrateCheckpointRewindState();
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
+		this.#todo.syncFromBranch(true, { discardPending: true });
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 

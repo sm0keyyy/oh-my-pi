@@ -26,9 +26,9 @@ test("records use private atomic versioned text outside RPC discovery and refuse
 		`omp-pane-record 1\nkind=omp\npid=${process.pid}\ncwd=/repo=a\nsession=/sessions/main.jsonl\n`,
 	);
 	for (const group of [true, false]) {
-		writePaneRecord(block, { kind: "relay", pid: process.pid, group });
+		writePaneRecord(block, { kind: "relay", pid: process.pid, group, label: "omp: Alpha=one" });
 		expect(fs.readFileSync(file, "utf8")).toBe(
-			`omp-pane-record 1\nkind=relay\npid=${process.pid}\ngroup=${group ? 1 : 0}\n`,
+			`omp-pane-record 1\nkind=relay\npid=${process.pid}\ngroup=${group ? 1 : 0}\nlabel=omp: Alpha=one\n`,
 		);
 	}
 	for (const id of ["block:../rpc-sessions/0123456789abcdef.json", "not-a-block", "block:bad"]) {
@@ -37,6 +37,9 @@ test("records use private atomic versioned text outside RPC discovery and refuse
 	}
 	expect(() =>
 		writePaneRecord(block, { kind: "omp", pid: process.pid, cwd: "/repo\nkind=relay", session: "/s" }),
+	).toThrow();
+	expect(() =>
+		writePaneRecord(block, { kind: "relay", pid: process.pid, group: false, label: "omp: bad\npid=2" }),
 	).toThrow();
 	expect(fs.readdirSync(path.dirname(file))).toHaveLength(1);
 	expect(fs.existsSync(path.join(root, "run/rpc-sessions"))).toBe(false);
@@ -50,7 +53,12 @@ test("sweep removes only old dead-owner records, never live, recent, malformed o
 	const old = new Date(now - 31 * 86400000);
 	const ids = Array.from({ length: 5 }, (_, n) => `block:00000000-0000-0000-0000-${String(n + 1).padStart(12, "0")}`);
 	for (const [n, id] of ids.entries()) {
-		writePaneRecord(id, { kind: "relay", pid: n === 1 ? process.pid : 2147483647, group: false });
+		writePaneRecord(id, {
+			kind: "relay",
+			pid: n === 1 ? process.pid : 2147483647,
+			group: false,
+			...(n === 0 ? { label: "omp: old" } : {}),
+		});
 		if (n !== 2) fs.utimesSync(paneRecordPath(id)!, old, old);
 	}
 	fs.writeFileSync(paneRecordPath(ids[3]!)!, "invalid\n");

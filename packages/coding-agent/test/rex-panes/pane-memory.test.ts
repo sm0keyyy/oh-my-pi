@@ -10,7 +10,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
 import { InteractiveMode } from "../../src/modes/interactive-mode";
-import { createPaneView } from "../../src/rex-panes/pane-view";
+import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
 import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "../../src/session/auth-storage";
 import { SessionManager } from "../../src/session/session-manager";
@@ -41,7 +41,7 @@ class SinkTerminal implements Terminal {
 	onAppearanceChange(): void {}
 }
 
-test("pane memory stays within the per-view and five-cycle RSS bounds", async () => {
+test("finished panes stay within the per-pane and five-cycle RSS bounds without retaining trees", async () => {
 	await initTheme();
 	using temp = TempDir.createSync("omp-pane-memory-");
 	await Settings.init({ inMemory: true, cwd: temp.path() });
@@ -72,13 +72,30 @@ test("pane memory stays within the per-view and five-cycle RSS bounds", async ()
 			closedTrees.push(new WeakRef(this), new WeakRef(this.ui));
 			dispose.call(this);
 		});
-	const cycleView = async (): Promise<{ open: number; outputBytes: number }> => {
-		const terminal = new SinkTerminal();
-		const view = await createPaneView({ session, agentId: "memory", terminal, onSubmit() {} });
+	const cycleViews = async (): Promise<{ peak: number; finished: number; outputBytes: number }> => {
+		const views: PaneView[] = [];
+		let peak = process.memoryUsage.rss();
+		let outputBytes = 0;
+		for (let n = 0; n < 5; n++) {
+			const terminal = new SinkTerminal();
+			const before = process.memoryUsage.rss();
+			const view = await createPaneView({ session, agentId: `memory-${n}`, terminal, onSubmit() {} });
+			Bun.gc(true);
+			peak = Math.max(peak, process.memoryUsage.rss());
+			expect(process.memoryUsage.rss() - before).toBeLessThanOrEqual(50_000_000);
+			await view.finish();
+			views.push(view);
+			outputBytes += terminal.bytes;
+		}
+		capture.mockClear();
+		await collectGarbage();
+		for (const tree of closedTrees) expect(await becomesCollectible(tree)).toBe(true);
+		expect(views).toHaveLength(5);
+		for (const view of views) expect(view.session).toBeNull();
 		Bun.gc(true);
-		const open = process.memoryUsage.rss();
-		await view.dispose();
-		return { open, outputBytes: terminal.bytes };
+		const finished = process.memoryUsage.rss();
+		for (const view of views) await view.dispose();
+		return { peak, finished, outputBytes };
 	};
 	try {
 		Bun.gc(true);
@@ -86,15 +103,25 @@ test("pane memory stays within the per-view and five-cycle RSS bounds", async ()
 		let firstClosed = baseline;
 		let afterClose = baseline;
 		for (let cycle = 1; cycle <= 5; cycle++) {
-			const { open, outputBytes } = await cycleView();
+			const { peak, finished, outputBytes } = await cycleViews();
 			capture.mockClear();
 			await collectGarbage();
 			for (const tree of closedTrees) expect(await becomesCollectible(tree)).toBe(true);
 			afterClose = process.memoryUsage.rss();
 			if (cycle === 1) firstClosed = afterClose;
-			console.log(JSON.stringify({ cycle, baseline, open, afterClose, paneBytes: open - baseline, outputBytes }));
+			console.log(
+				JSON.stringify({
+					cycle,
+					baseline,
+					peak,
+					finished,
+					afterClose,
+					finishedBytes: finished - baseline,
+					outputBytes,
+				}),
+			);
 			expect(outputBytes).toBeGreaterThan(0);
-			expect(open - baseline).toBeLessThanOrEqual(50_000_000);
+			expect(finished - baseline).toBeLessThanOrEqual(5 * 50_000_000);
 		}
 		expect(afterClose - baseline).toBeLessThanOrEqual(25_000_000);
 		expect(afterClose - firstClosed).toBeLessThanOrEqual(5_000_000);

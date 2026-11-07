@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { setImmediate } from "node:timers/promises";
 import { logger } from "@oh-my-pi/pi-utils";
-import { Settings } from "../../src/config/settings";
+import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { type OpenPane, type PaneManager, rexPanesEligible, startPaneManager } from "../../src/rex-panes/pane-manager";
 import * as paneRecords from "../../src/rex-panes/pane-records";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
+import { markPaneCrashed, reopenCrashedPane } from "../../src/rex-panes/supervise";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
+import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
+import { createPaneSessionFixture } from "../helpers/interactive-mode-context";
 
 interface TestPane extends OpenPane {
-	session: AgentSession;
+	session: AgentSession | null;
+	finished: boolean;
+	tab: "live" | "thread";
 	disposed: boolean;
 	close(): void;
 }
@@ -21,7 +29,15 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: string } = {}) {
+function harness(
+	options: {
+		beforeOpen?: () => Promise<void>;
+		beforeRevive?: (id: string) => Promise<void>;
+		beforeCommand?: (args: string[]) => Promise<void>;
+		openView?: (id: string, session: AgentSession | null) => Promise<PaneView>;
+		failCommand?: string;
+	} = {},
+) {
 	const registry = new AgentRegistry();
 	const bus = new EventBus();
 	const calls: string[][] = [];
@@ -54,6 +70,7 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		calls.push(args);
 		inFlight++;
 		maxInFlight = Math.max(maxInFlight, inFlight);
+		await options.beforeCommand?.(args);
 		await Promise.resolve();
 		inFlight--;
 		const command = args[1];
@@ -90,14 +107,35 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		prepareToken: async token => `/private/run/${token}.credential`,
 		async openPane(id, session) {
 			await options.beforeOpen?.();
+			const view = await options.openView?.(id, session);
 			const closed = Promise.withResolvers<void>();
 			const pane: TestPane = {
 				session,
 				ui: {} as ExtensionUIContext,
 				disposed: false,
+				finished: session === null,
+				tab: "live",
+				async finish() {
+					await view?.finish();
+					pane.finished = true;
+					pane.session = null;
+					notify();
+				},
+				async revive(next) {
+					await options.beforeRevive?.(id);
+					await view?.revive(next);
+					pane.finished = false;
+					pane.session = next;
+					notify();
+				},
+				setTab(tab) {
+					pane.tab = tab;
+					view?.setTab(tab);
+				},
 				closed: closed.promise,
 				close: () => closed.resolve(),
 				async dispose() {
+					await view?.dispose();
 					pane.disposed = true;
 					closed.resolve();
 					notify();
@@ -115,8 +153,12 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		},
 	});
 	managers.push(manager);
-	function start(id: string, parentToolCallId = "task1", parentId = "main"): AgentSession {
-		const session = {} as AgentSession;
+	function start(
+		id: string,
+		parentToolCallId = "task1",
+		parentId = "main",
+		session = {} as AgentSession,
+	): AgentSession {
 		registry.register({ id, displayName: id, kind: "sub", parentId, session });
 		bus.emit("task:subagent:lifecycle", { id, status: "started", parentToolCallId });
 		return session;
@@ -138,6 +180,208 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 }
 
 describe("pane manager", () => {
+	it("round2 replay output is bounded to one history on open and one on a hidden-to-live reveal", async () => {
+		await Settings.init({ inMemory: true });
+		await initTheme();
+		const fixture = createPaneSessionFixture();
+		const terminal = new VirtualTerminal(100, 24);
+		const writes: string[] = [];
+		const write = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation(data => {
+			writes.push(data);
+			write(data);
+		});
+		fixture.session.sessionManager.appendMessage({
+			role: "user",
+			timestamp: Date.now(),
+			content: ["manager-replay-origin", ...Array.from({ length: 80 }, (_, n) => `manager row ${n}`)].join("\n"),
+		});
+		let view: PaneView | undefined;
+		const h = harness({
+			openView: async (id, session) => {
+				view = await createPaneView({ session, agentId: id, terminal, onSubmit() {} });
+				return view;
+			},
+		});
+		const measure = () => ({
+			bytes: writes.reduce((total, data) => total + Buffer.byteLength(data), 0),
+			replays: writes.join("").split("manager-replay-origin").length - 1,
+		});
+		try {
+			h.start("replay", "task1", "main", fixture.session);
+			await h.until(() => h.opened.length === 1);
+			await terminal.waitForRender();
+			const open = measure();
+			writes.length = 0;
+			await h.manager.reveal("replay");
+			await terminal.waitForRender();
+			const visibleReveal = measure();
+			view!.setTab("thread");
+			await terminal.waitForRender();
+			writes.length = 0;
+			await h.manager.reveal("replay", { tab: "live" });
+			await terminal.waitForRender();
+			const hiddenReveal = measure();
+			console.log(JSON.stringify({ managerReplayBytes: { open, visibleReveal, hiddenReveal } }));
+			expect({
+				open: open.replays,
+				visibleReveal: visibleReveal.replays,
+				hiddenReveal: hiddenReveal.replays,
+			}).toEqual({ open: 1, visibleReveal: 0, hiddenReveal: 1 });
+			expect(visibleReveal.bytes).toBe(0);
+		} finally {
+			await h.manager.dispose();
+			await fixture.close();
+			resetSettingsForTest();
+		}
+	});
+
+	it("round2 operator close during slow revival still reopens on the next event", async () => {
+		const reviving = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const warn = spyOn(logger, "warn").mockImplementation(() => {});
+		const h = harness({
+			beforeRevive: async () => {
+				reviving.resolve();
+				await resume.promise;
+			},
+		});
+		try {
+			h.start("slow");
+			await h.until(() => h.opened.length === 1);
+			h.registry.detachSession("slow");
+			h.registry.setStatus("slow", "parked");
+			await h.manager.reveal("slow");
+			const pane = h.panes.get("slow")![0]!;
+			const fresh = {} as AgentSession;
+			h.registry.attachSession("slow", fresh);
+			h.registry.setStatus("slow", "running");
+			await reviving.promise;
+			vi.useFakeTimers();
+			pane.close();
+			await setImmediate();
+			expect(h.manager.location("slow")).toBeUndefined();
+			resume.resolve();
+			await h.until(() => pane.disposed);
+			expect(warn).not.toHaveBeenCalled();
+			h.bus.emit("task:subagent:event", { id: "slow" });
+			vi.advanceTimersByTime(2000);
+			await setImmediate();
+			expect(h.opened).toHaveLength(2);
+			expect(h.panes.get("slow")!.at(-1)!.session).toBe(fresh);
+		} finally {
+			resume.resolve();
+			vi.useRealTimers();
+		}
+	});
+
+	it("review R1 keeps a reviving oldest pane when another group finishes", async () => {
+		const reviving = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const h = harness({
+			beforeRevive: async id => {
+				if (id === "oldest") {
+					reviving.resolve();
+					await resume.promise;
+				}
+			},
+		});
+		try {
+			h.start("oldest", "oldest-group");
+			for (const id of ["b", "c", "d", "e"]) h.start(id, "fillers");
+			h.start("trigger", "trigger-group");
+			await h.until(() => h.opened.length === 6);
+			for (const id of ["oldest", "b", "c", "d", "e"]) {
+				h.registry.detachSession(id);
+				h.registry.setStatus(id, "parked");
+			}
+			await h.until(() => ["oldest", "b", "c", "d", "e"].every(id => h.panes.get(id)![0]!.finished));
+			await h.manager.reveal("e");
+			const pane = h.panes.get("oldest")![0]!;
+			const location = h.manager.location("oldest");
+			const fresh = {} as AgentSession;
+			h.registry.attachSession("oldest", fresh);
+			h.registry.setStatus("oldest", "running");
+			await reviving.promise;
+			h.registry.detachSession("trigger");
+			h.registry.setStatus("trigger", "parked");
+			await h.manager.reveal("trigger");
+			expect(pane.disposed).toBe(false);
+			expect(h.manager.location("oldest")).toEqual(location);
+			resume.resolve();
+			await h.manager.reveal("oldest");
+			expect(pane.session).toBe(fresh);
+		} finally {
+			resume.resolve();
+		}
+	});
+
+	it("review R1 queues cross-group eviction behind a sibling split already in flight", async () => {
+		const splitting = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let pause = false;
+		const h = harness({
+			beforeCommand: async args => {
+				if (pause && args[1] === "split" && args[3] === "s1") {
+					splitting.resolve();
+					await resume.promise;
+				}
+			},
+		});
+		try {
+			h.start("oldest", "oldest-group");
+			await h.until(() => h.opened.length === 1);
+			for (const id of ["b", "c", "d", "e"]) h.start(id, "fillers");
+			h.start("trigger", "trigger-group");
+			await h.until(() => h.opened.length === 6);
+			for (const id of ["oldest", "b", "c", "d", "e"]) {
+				h.registry.detachSession(id);
+				h.registry.setStatus(id, "parked");
+			}
+			await h.manager.reveal("oldest");
+			await h.manager.reveal("e");
+			pause = true;
+			h.start("sibling", "oldest-group");
+			await splitting.promise;
+			h.registry.detachSession("trigger");
+			h.registry.setStatus("trigger", "parked");
+			await h.manager.reveal("trigger");
+			expect(h.panes.get("oldest")![0]!.disposed).toBe(false);
+			expect(h.sessions.has("s1")).toBe(true);
+			pause = false;
+			resume.resolve();
+			await h.manager.reveal("sibling");
+			expect(h.panes.get("oldest")![0]!.disposed).toBe(true);
+			expect(h.manager.location("sibling")?.sessionId).toBe("s1");
+			expect(h.calls.some(call => call[1] === "kill" && call[2] === "s1")).toBe(false);
+		} finally {
+			resume.resolve();
+		}
+	});
+
+	it.each(["removed", "agent-gone"] as const)(
+		"review R2 clears a last-pane EOF hold on %s and cleans its session and records",
+		async action => {
+			const h = harness();
+			h.start("last");
+			await h.until(() => h.opened.length === 1);
+			const block = h.manager.location("last")!.blockId;
+			const pane = h.panes.get("last")![0]!;
+			pane.close();
+			await h.until(() => pane.disposed);
+			expect(markPaneCrashed(block)).toBe(true);
+			if (action === "removed") h.registry.unregister("last");
+			else {
+				h.registry.detachSession("last");
+				h.registry.setStatus("last", "parked");
+				expect(await reopenCrashedPane(block)).toEqual({ ok: false, reason: "agent-gone" });
+			}
+			await setImmediate();
+			expect(h.sessions.size).toBe(0);
+			expect(h.records.size).toBe(0);
+		},
+	);
+
 	it("grid groups three agents, uses four-pane tabs, and joins nested children to the ancestor", async () => {
 		const h = harness();
 		expect(h.calls).toEqual([]);
@@ -188,31 +432,34 @@ describe("pane manager", () => {
 			expect(call).toContain("--focus=false");
 	});
 
-	it("lifecycle closes parked, aborted, and removed panes, kills the last group, and revives on the new session", async () => {
+	it("finished panes retain five read-only blocks, evict oldest, revive in place and close on removal", async () => {
 		const h = harness();
-		for (const id of ["a", "b", "c"]) h.start(id);
-		await h.until(() => h.opened.length === 3);
-		const old = h.panes.get("a")![0]!;
-		h.registry.detachSession("a");
-		h.registry.setStatus("a", "parked");
-		h.registry.setStatus("b", "aborted");
-		h.registry.unregister("c");
-		await h.until(() => h.sessions.size === 0);
+		for (const id of ["a", "b", "c", "d", "e", "f"]) h.start(id);
+		await h.until(() => h.opened.length === 6);
+		const old = h.panes.get("b")![0]!;
+		for (const id of ["a", "b", "c", "d", "e", "f"]) {
+			h.registry.detachSession(id);
+			h.registry.setStatus(id, id === "c" ? "aborted" : "parked");
+		}
+		await h.until(() => h.panes.get("f")![0]!.finished && h.panes.get("a")![0]!.disposed);
 		expect(h.calls.filter(call => call[1] === "block" && call[2] === "close").map(call => call.at(-1))).toEqual([
 			"b1",
-			"b2",
-			"b3",
 		]);
-		for (const history of h.panes.values()) expect(history[0]!.disposed).toBe(true);
-		expect(h.manager.paneUi("a")).toBeUndefined();
+		expect(h.manager.paneUi("b")).toBeUndefined();
+		expect(h.manager.location("b")).toEqual({ sessionId: "s1", blockId: "b2" });
 		const fresh = {} as AgentSession;
-		h.registry.attachSession("a", fresh);
-		h.registry.setStatus("a", "running");
-		await h.until(() => h.opened.length === 4);
-		expect(h.panes.get("a")![1]!.session).toBe(fresh);
-		expect(old.session).not.toBe(fresh);
-		expect(h.sessions).toEqual(new Set(["s2"]));
-		expect(h.manager.paneUi("a")).toBe(h.panes.get("a")![1]!.ui);
+		h.registry.attachSession("b", fresh);
+		h.registry.setStatus("b", "running");
+		await h.until(() => old.session === fresh);
+		expect(old.finished).toBe(false);
+		expect(h.manager.location("b")?.blockId).toBe("b2");
+		expect(h.panes.get("b")).toHaveLength(1);
+		expect(await h.manager.reveal("a", { tab: "thread" })).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.finished).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.tab).toBe("thread");
+		for (const id of ["a", "b", "c", "d", "e", "f"]) h.registry.unregister(id);
+		await h.until(() => h.sessions.size === 0);
+		for (const history of h.panes.values()) expect(history[0]!.disposed).toBe(true);
 	});
 
 	it("hints collection once when the last pane closes and once on idempotent disposal", async () => {
@@ -223,11 +470,11 @@ describe("pane manager", () => {
 			h.start("a");
 			h.start("b");
 			await h.until(() => h.opened.length === 2);
-			h.registry.setStatus("a", "parked");
+			h.registry.unregister("a");
 			await h.until(() => h.calls.at(-1)?.[4] === "omp: a");
 			expect(h.panes.get("a")![0]!.disposed).toBe(true);
 			expect(gc).not.toHaveBeenCalled();
-			h.registry.setStatus("b", "parked");
+			h.registry.unregister("b");
 			await collected.promise;
 			expect(h.sessions.size).toBe(0);
 			expect(gc.mock.calls).toEqual([[false]]);
@@ -346,7 +593,7 @@ describe("pane manager", () => {
 		h.start("a");
 		await h.until(() => h.opened.length === 1);
 		expect(h.manager.location("a")).toEqual({ sessionId: "s1", blockId: "b1" });
-		expect(h.records.get("b1")).toEqual({ kind: "relay", pid: process.pid, group: true });
+		expect(h.records.get("b1")).toEqual({ kind: "relay", pid: process.pid, group: true, label: "omp: a" });
 		expect(await h.manager.reveal("a")).toBe(true);
 		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", "b1"]);
 		await h.rex.split("s1", "b1", "right", "omp: panel", ["/relay"]);
@@ -368,8 +615,9 @@ describe("pane manager", () => {
 		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", location.blockId]);
 		expect(await h.manager.reveal("missing")).toBe(false);
 		h.registry.setStatus("a", "parked");
-		await h.until(() => !h.manager.location("a"));
-		expect(await h.manager.reveal("a")).toBe(false);
+		await h.until(() => h.panes.get("a")!.at(-1)!.finished);
+		expect(await h.manager.reveal("a")).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.tab).toBe("thread");
 		await h.manager.dispose();
 		expect(h.records.size).toBe(0);
 	});
@@ -381,7 +629,7 @@ describe("pane manager", () => {
 		h.start("b");
 		await h.until(() => h.opened.length === 2);
 		options.failCommand = "block";
-		h.registry.setStatus("a", "parked");
+		h.registry.unregister("a");
 		await h.until(() => h.panes.get("a")![0]!.disposed);
 		expect(h.records.has("b1")).toBe(true);
 		expect(h.records.has("b2")).toBe(true);

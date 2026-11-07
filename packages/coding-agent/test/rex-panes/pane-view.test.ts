@@ -1,4 +1,18 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import * as net from "node:net";
+import * as path from "node:path";
+import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
+import { AgentRegistry } from "../../src/registry/agent-registry";
+import { startSubagentSurfaces } from "../../src/rex-panes";
+import * as managerModule from "../../src/rex-panes/pane-manager";
+import * as relayInstall from "../../src/rex-panes/relay-install";
+import * as rexCli from "../../src/rex-panes/rex-cli";
+import * as paneViews from "../../src/rex-panes/pane-view";
+import { SocketTerminal } from "../../src/rex-panes/socket-terminal";
+import { InteractiveMode } from "../../src/modes/interactive-mode";
+import * as utils from "@oh-my-pi/pi-utils";
+import { EventBus } from "../../src/utils/event-bus";
+import { hello, until } from "./helpers/build-relay";
 import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
@@ -215,5 +229,167 @@ test("input presentation callback failures leave the dialog cancellable", async 
 	} finally {
 		await view.dispose();
 		await fixture.close();
+	}
+});
+
+test.each(["backpressure", "thread-to-live"] as const)(
+	"review R3 replays full Live history after %s",
+	async trigger => {
+		const first = createPaneSessionFixture();
+		const next = createPaneSessionFixture();
+		const terminal = new VirtualTerminal(100, 20);
+		const displayed = trigger === "backpressure" ? first : next;
+		displayed.session.sessionManager.appendMessage({
+			role: "user",
+			timestamp: Date.now(),
+			content: [
+				"history-replay-start",
+				...Array.from({ length: 80 }, (_, n) => `saved row ${n}`),
+				"history-replay-tail",
+			].join("\n"),
+		});
+		const socket = new SocketTerminal(
+			{
+				write(data) {
+					terminal.write(data);
+					return Buffer.byteLength(data);
+				},
+				close() {},
+			},
+			{ columns: 100, rows: 20, kittyEnableSequence: null, appearance: undefined },
+		);
+		const view = await createPaneView({
+			session: first.session,
+			agentId: "history",
+			terminal: socket,
+			onSubmit() {},
+		});
+		const unsubscribe = socket.onRepaintNeeded(() => view.repaint());
+		try {
+			await terminal.waitForRender();
+			if (trigger === "thread-to-live") {
+				view.setTab("thread");
+				await terminal.waitForRender();
+				await view.revive(next.session);
+			}
+			terminal.clear();
+			if (trigger === "backpressure") {
+				socket.write("x".repeat(1024 * 1024 + 1));
+				socket.drained();
+			} else view.setTab("live");
+			await terminal.waitForRender();
+			expect(terminal.getScrollBuffer().join("\n")).toContain("history-replay-start");
+			expect(terminal.getScrollBuffer().join("\n")).toContain("history-replay-tail");
+		} finally {
+			unsubscribe();
+			await view.dispose();
+			await first.close();
+			await next.close();
+		}
+	},
+);
+
+test("review R5 failed live-to-live revival leaves EOF visible to the real surfaces manager", async () => {
+	using temp = utils.TempDir.createSync("omp-pane-revive-eof-");
+	const env = {
+		TERM_PROGRAM: process.env.TERM_PROGRAM,
+		REX_SESSION: process.env.REX_SESSION,
+		REX_BLOCK: process.env.REX_BLOCK,
+	};
+	Object.assign(process.env, { TERM_PROGRAM: "rex", REX_SESSION: "test-session", REX_BLOCK: "test-block" });
+	AgentRegistry.resetGlobalForTests();
+	const first = createPaneSessionFixture();
+	const next = createPaneSessionFixture();
+	const peers: net.Socket[] = [];
+	let manager: managerModule.PaneManager | undefined;
+	let view: PaneView | undefined;
+	let surfaces: { dispose(): Promise<void> } | undefined;
+	const registry = AgentRegistry.global();
+	const bus = new EventBus();
+	const opened = Promise.withResolvers<void>();
+	const failed = Promise.withResolvers<void>();
+	const originalManager = managerModule.startPaneManager;
+	const originalView = paneViews.createPaneView;
+	const originalRex = rexCli.createRexCli;
+	try {
+		vi.spyOn(utils, "getBaseConfigRoot").mockReturnValue(temp.path());
+		vi.spyOn(utils, "$which").mockReturnValue("rex");
+		const relay = path.join(temp.path(), "relay");
+		await Bun.write(relay, "isolated relay fixture");
+		vi.spyOn(relayInstall, "installPaneRelay").mockResolvedValue({
+			ok: true,
+			path: relay,
+			sha256: new Bun.CryptoHasher("sha256").update(await Bun.file(relay).bytes()).digest("hex"),
+		});
+		vi.spyOn(managerModule, "startPaneManager").mockImplementation(deps => (manager = originalManager(deps)));
+		vi.spyOn(paneViews, "createPaneView").mockImplementation(async options => {
+			view = await originalView(options);
+			opened.resolve();
+			return view;
+		});
+		vi.spyOn(rexCli, "createRexCli").mockImplementation(() =>
+			originalRex({
+				binary: "rex",
+				run: async args => {
+					if (args[1] !== "new") return { exitCode: 0, stdout: "{}", stderr: "" };
+					const argv = args.slice(args.indexOf("--") + 1);
+					const token = await Bun.file(argv[2]!).text();
+					const connected = Promise.withResolvers<void>();
+					const peer = net.connect(argv[1]!, () => connected.resolve());
+					peer.on("error", connected.reject);
+					peer.on("data", () => {});
+					peers.push(peer);
+					await connected.promise;
+					peer.write(hello(token));
+					return {
+						exitCode: 0,
+						stderr: "",
+						stdout: JSON.stringify({
+							session_id: "test-session",
+							initial_windows: [
+								{
+									window_id: "test-window",
+									block_ids: ["block:00000000-0000-0000-0000-000000000001"],
+								},
+							],
+						}),
+					};
+				},
+			}),
+		);
+		vi.spyOn(logger, "warn").mockImplementation(message => {
+			if (String(message).startsWith("rex-panes:")) failed.resolve();
+		});
+		surfaces = startSubagentSurfaces({
+			settings: Settings.isolated(),
+			subagentEventBus: bus,
+			toolUi: {} as ExtensionUIContext,
+			mainTerminal: new VirtualTerminal(100, 24),
+		});
+		registry.register({ id: "revive", displayName: "revive", kind: "sub", session: first.session });
+		bus.emit("task:subagent:lifecycle", { id: "revive", status: "started" });
+		await opened.promise;
+		await until(() => manager?.location("revive") !== undefined);
+		vi.spyOn(InteractiveMode.prototype, "initEmbedded").mockRejectedValueOnce(
+			new Error("revive initialization failed"),
+		);
+		registry.attachSession("revive", next.session);
+		registry.setStatus("revive", "idle");
+		await failed.promise;
+		expect(view!.session).toBeNull();
+		peers[0]!.end();
+		await until(() => manager?.location("revive") === undefined);
+		expect(manager!.location("revive")).toBeUndefined();
+	} finally {
+		await view?.finish();
+		await surfaces?.dispose();
+		for (const peer of peers) peer.destroy();
+		await first.close();
+		await next.close();
+		AgentRegistry.resetGlobalForTests();
+		for (const [key, value] of Object.entries(env)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 	}
 });

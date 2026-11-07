@@ -3,17 +3,26 @@ import { startCodegraphMain } from "../codegraph-index";
 import type { Settings } from "../config/settings";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import { startOperatorQueue } from "../operator-queue";
+import { type MainPaneRecord, startMainPaneRecord } from "../rex-panes/main-pane-record";
+import { createTabTitleRex, startTabTitle } from "../rex-panes/tab-title";
 import { startRexWatcher } from "../rex-watch/watcher";
+import type { AgentSession } from "../session/agent-session";
 
 export interface MainServicesInput {
 	settings: Settings;
 	cwd: string;
+	session: AgentSession;
 	toolUi: ExtensionUIContext;
 	sessionId(): string | undefined;
 	askUi?: () => ExtensionUIContext | undefined;
 }
 
-export function startMainServices(input: MainServicesInput): { dispose(): Promise<void> } {
+export interface MainServices {
+	dispose(): Promise<void>;
+	closed(): void;
+}
+
+export function startMainServices(input: MainServicesInput): MainServices {
 	const services: Array<{ name: string; dispose(): void | Promise<void> }> = [];
 	const start = (name: string, factory: () => { dispose(): void | Promise<void> }): void => {
 		try {
@@ -27,8 +36,17 @@ export function startMainServices(input: MainServicesInput): { dispose(): Promis
 	);
 	start("codegraph-index", () => startCodegraphMain({ cwd: input.cwd, ui: input.toolUi }));
 	start("rex-watch", () => startRexWatcher({ settings: input.settings }));
+	let record: MainPaneRecord | undefined;
+	start("rex-panes", () => {
+		record = startMainPaneRecord(input.session, process.env);
+		return record;
+	});
+	start("rex-panes", () => startTabTitle(input.session, createTabTitleRex(), process.env));
 	let teardown: Promise<void> | undefined;
 	return {
+		closed() {
+			record?.closed();
+		},
 		dispose() {
 			teardown ??= (async () => {
 				for (const service of services) {

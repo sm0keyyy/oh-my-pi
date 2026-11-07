@@ -46,6 +46,8 @@ import type { EventBus } from "../utils/event-bus";
 import { WebSearchTool } from "../web/search";
 import type { WorkspaceTree } from "../workspace-tree";
 import { AskTool } from "./ask";
+import { RequestApprovalTool } from "./request-approval";
+import { ShowMarkdownTool } from "./show-markdown";
 import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
@@ -115,6 +117,8 @@ export * from "@oh-my-pi/pi-tui/tools/streaming-output";
 export * from "../task";
 export * from "../web/search";
 export * from "./ask";
+export * from "./request-approval";
+export * from "./show-markdown";
 export * from "./ast-edit";
 export * from "./ast-grep";
 export * from "./bash";
@@ -580,6 +584,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	codegraph: CodegraphTool.createIf,
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
+	request_approval: RequestApprovalTool.createIf,
+	show_markdown: ShowMarkdownTool.createIf,
 	ask_operator: s => new AskOperatorTool(s),
 	ask_operator_result: () => new AskOperatorResultTool(),
 	debug: DebugTool.createIf,

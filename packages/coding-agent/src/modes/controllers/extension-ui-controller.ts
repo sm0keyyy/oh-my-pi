@@ -16,6 +16,8 @@ import type {
 	ExtensionContextActions,
 	ExtensionCustomOptions,
 	ExtensionError,
+	ExtensionReviewRequest,
+	ExtensionReviewResult,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectItem,
@@ -54,6 +56,7 @@ import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { RpcSocketServer } from "../rpc/rpc-socket";
 import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 import { approvalAnswerForChoice, approvalChoiceLabels, approvalOnceLabel } from "../../tools/approval";
+import { createReviewOverlay } from "../../rex-review/review-pane";
 
 const MAX_WIDGET_LINES = 10;
 
@@ -213,6 +216,7 @@ export class ExtensionUiController {
 			confirm: (title, message, dialogOptions) => this.showHookConfirm(title, message, dialogOptions),
 			input: (title, placeholder, dialogOptions) => this.showHookInput(title, placeholder, dialogOptions),
 			askDialog: (questions, dialogOptions) => this.showAskDialog(questions, dialogOptions),
+			review: (request, dialogOptions) => this.showReviewDialog(request, dialogOptions),
 			approve: (prompt, dialogOptions) => this.showCollabAwareApproval(prompt, dialogOptions),
 			notify: (message, type) => this.showHookNotify(message, type),
 			onTerminalInput: handler => this.addExtensionTerminalInputListener(handler),
@@ -855,6 +859,61 @@ export class ExtensionUiController {
 		} finally {
 			unsubscribe();
 		}
+	}
+	async showReviewDialog(
+		request: ExtensionReviewRequest,
+		options?: ExtensionUIDialogOptions,
+	): Promise<ExtensionReviewResult | undefined> {
+		return this.#presentDialog<ExtensionReviewResult>(options?.signal, settle => {
+			const lifetime = new AbortController();
+			let handle: OverlayHandle | undefined;
+			const local = (signal: AbortSignal | undefined): Promise<ExtensionReviewResult | undefined> => {
+				const answer = Promise.withResolvers<ExtensionReviewResult | undefined>();
+				const onAbort = (): void => answer.resolve(undefined);
+				signal?.addEventListener("abort", onAbort, { once: true });
+				const draftEditor = this.ctx.editor;
+				const inputGuard =
+					draftEditor.getText().length > 0
+						? {
+								isBlocked: () => draftEditor.getText().length > 0,
+								handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+								component: draftEditor,
+								syncPresentation: (blocked: boolean) => {
+									draftEditor.focused = blocked;
+								},
+							}
+						: undefined;
+				const overlay = createReviewOverlay(request, this.ctx.ui, answer.resolve, inputGuard, signal);
+				handle = this.ctx.ui.showOverlay(overlay, {
+					anchor: "top-left",
+					width: "100%",
+					maxHeight: "100%",
+					margin: 0,
+				});
+				options?.onTimeoutStart?.();
+				return answer.promise.finally(() => {
+					signal?.removeEventListener("abort", onAbort);
+					handle?.hide();
+					handle = undefined;
+					this.ctx.ui.requestRender();
+				});
+			};
+			void this.#raceRpcDialog(
+				`Approve ${request.title}?`,
+				local,
+				(ui, signal) => ui.review?.(request, { ...options, signal }),
+				{ ...options, signal: lifetime.signal },
+			).then(settle, error => {
+				logger.warn("rex-review: review dialog failed", { error: String(error) });
+				settle({ kind: "cancelled" });
+			});
+			return () => {
+				lifetime.abort();
+				handle?.hide();
+				handle = undefined;
+				this.ctx.ui.requestRender();
+			};
+		});
 	}
 
 	async showAskDialog(

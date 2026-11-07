@@ -2,6 +2,8 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type {
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
+	ExtensionReviewRequest,
+	ExtensionReviewResult,
 	ExtensionUIDialogOptions,
 	ExtensionUIContext,
 } from "../extensibility/extensions/types";
@@ -93,6 +95,8 @@ class AskHost implements SubagentAskHost {
 			getToolsExpanded: () => false,
 			setToolsExpanded: () => {},
 			timeoutStartsOnPresentation: true,
+			review: (request, dialogOptions) =>
+				this.#enqueueReview(agentId, { ...request, title: `${displayName}: ${request.title}` }, dialogOptions),
 			askDialog: (questions, dialogOptions) =>
 				this.#enqueue(
 					agentId,
@@ -130,6 +134,68 @@ class AskHost implements SubagentAskHost {
 		const next = this.#queue.shift();
 		this.#active = next;
 		next?.start();
+	}
+	#enqueueReview(
+		agentId: string,
+		review: ExtensionReviewRequest,
+		options?: ExtensionUIDialogOptions,
+	): Promise<ExtensionReviewResult | undefined> {
+		if (this.#disposed || options?.signal?.aborted) return Promise.resolve(undefined);
+		const result = Promise.withResolvers<ExtensionReviewResult | undefined>();
+		const controller = new AbortController();
+		let settled = false;
+		let presented = false;
+		let timer: NodeJS.Timeout | undefined;
+		const cleanup = (): void => {
+			settled = true;
+			clearTimeout(timer);
+			options?.signal?.removeEventListener("abort", onAbort);
+			controller.abort();
+			if (this.#active === pending) this.#active = undefined;
+			else {
+				const index = this.#queue.indexOf(pending);
+				if (index >= 0) this.#queue.splice(index, 1);
+			}
+		};
+		const finish = (answer: ExtensionReviewResult | undefined): void => {
+			if (settled) return;
+			cleanup();
+			result.resolve(answer);
+			this.#advance();
+		};
+		const onAbort = (): void => finish(undefined);
+		const onPresented = (): void => {
+			if (settled || presented) return;
+			presented = true;
+			timer = setTimeout(() => {
+				finish({ kind: "cancelled", timedOut: true });
+				options?.onTimeout?.();
+			}, SUBAGENT_ASK_TIMEOUT_MS);
+			options?.onTimeoutStart?.();
+		};
+		const pending: PendingAsk = {
+			agentId,
+			mirror: () => {},
+			cancel: onAbort,
+			start: () => {
+				Promise.try(() => {
+					const main = this.options.main;
+					if (!main.review) throw new Error("Subagent ask host requires a main review dialog");
+					const answer = main.review(review, { signal: controller.signal, onTimeoutStart: onPresented });
+					if (!main.timeoutStartsOnPresentation) onPresented();
+					return answer;
+				}).then(finish, error => {
+					if (settled) return;
+					cleanup();
+					result.reject(error);
+					this.#advance();
+				});
+			},
+		};
+		options?.signal?.addEventListener("abort", onAbort, { once: true });
+		this.#queue.push(pending);
+		this.#advance();
+		return result.promise;
 	}
 
 	#enqueue(

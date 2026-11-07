@@ -61,6 +61,7 @@ import { col, item, keyed, md, node, row as rowNode, span, text } from "../nativ
 import { leafKey, type NativeChild, type NativeNode, type NativeUiEvent } from "../native/node";
 import { actionButton, actionHint, hintsRow, itemIndex, type NativeHint, selectList } from "../native/overlay";
 import { isNativeRendering } from "../native/state";
+import { getActiveTerminal } from "../active-terminal";
 import { getKeybindings } from "../keybindings";
 
 /** Title shown in the overlay's top border. */
@@ -243,6 +244,15 @@ export interface PlanReviewOverlayCallbacks {
 }
 
 export interface PlanReviewOverlayOptions {
+	mode?: "plan" | "approval" | "comment";
+	approval?: boolean;
+	terminal?: { readonly rows: number };
+	inputGuard?: {
+		isBlocked(): boolean;
+		handleInput(keyData: string): void;
+		component?: Component;
+		syncPresentation?(blocked: boolean): void;
+	};
 	/** Prompt rendered above the options (e.g. "Plan mode - next step"). */
 	promptTitle?: string;
 	options: string[];
@@ -284,6 +294,11 @@ export class PlanReviewOverlay implements Component {
 	/** Titles of sections deleted in the overlay, surfaced as Refine feedback. */
 	#deleted: string[] = [];
 
+	#mode: "plan" | "approval" | "comment";
+	#terminal: { readonly rows: number } | undefined;
+	#inputGuard: PlanReviewOverlayOptions["inputGuard"];
+	#keysArmed = false;
+	#discardConfirm = false;
 	#options: string[];
 	#disabled: Set<number>;
 	#helpSuffix: string | undefined;
@@ -351,7 +366,16 @@ export class PlanReviewOverlay implements Component {
 			ellipsis: Ellipsis.Omit,
 			theme: { track: t => theme.fg("dim", t), thumb: t => theme.fg("accent", t) },
 		});
-		this.#options = options.options;
+		this.#mode = options.mode ?? (options.approval ? "approval" : "plan");
+		this.#terminal = options.terminal;
+		this.#inputGuard = options.inputGuard;
+		this.#keysArmed = this.#mode === "plan";
+		this.#options =
+			this.#mode === "approval"
+				? ["Approve", "Request changes"]
+				: this.#mode === "comment"
+					? ["Submit comments"]
+					: options.options;
 		this.#disabled = new Set(
 			(options.disabledIndices ?? []).filter(i => Number.isInteger(i) && i >= 0 && i < this.#options.length),
 		);
@@ -372,6 +396,7 @@ export class PlanReviewOverlay implements Component {
 		this.#editor.setUseTerminalCursor(false);
 		this.#editor.onSubmit = value => this.#submitAnnotation(value);
 		this.#setSections(planContent);
+		if (this.#mode !== "plan") this.#focus = "toc";
 		this.#restoreAnnotationState(options.annotationState);
 		if (Array.isArray(options.annotationState?.annotations) && options.annotationState.annotations.length > 0) {
 			this.#recomputeFeedback();
@@ -561,7 +586,7 @@ export class PlanReviewOverlay implements Component {
 		const topLevel = headings.filter(i => this.#sections[i]!.level === minLevel);
 		const titleIndex = topLevel.length === 1 && headings[0] === topLevel[0] ? topLevel[0] : -1;
 		this.#titleIndex = titleIndex ?? -1;
-		this.#toc = headings.filter(i => i !== titleIndex);
+		this.#toc = this.#mode === "plan" ? headings.filter(i => i !== titleIndex) : headings;
 		this.#tocBaseLevel = this.#toc.length > 0 ? Math.min(...this.#toc.map(i => this.#sections[i]!.level)) : 1;
 	}
 
@@ -637,6 +662,26 @@ export class PlanReviewOverlay implements Component {
 
 	handleInput(keyData: string): void {
 		if (this.#committed) return;
+		if (this.#mode !== "plan" && !this.#keysArmed) {
+			if (matchesSelectUp(keyData) || matchesSelectDown(keyData)) {
+				this.#keysArmed = true;
+				this.#inputGuard?.syncPresentation?.(false);
+				return;
+			}
+			if (this.#inputGuard?.isBlocked()) {
+				this.#inputGuard.handleInput(keyData);
+				return;
+			}
+			if (!matchesSelectCancel(keyData) && !matchesKey(keyData, "escape")) return;
+		}
+		const cancel = matchesSelectCancel(keyData) || (this.#mode !== "plan" && matchesKey(keyData, "escape"));
+		if (this.#discardConfirm) {
+			if (keyData === "y" || matchesKey(keyData, "enter")) {
+				this.#committed = true;
+				this.callbacks.onCancel();
+			} else if (keyData === "n" || cancel) this.#discardConfirm = false;
+			return;
+		}
 		if (keyData.startsWith("\x1b[<") && this.#handleMouse(keyData)) return;
 		if (this.#annotationChooser) {
 			this.#handleAnnotationChooser(keyData);
@@ -649,16 +694,36 @@ export class PlanReviewOverlay implements Component {
 				});
 				return;
 			}
-			if (matchesSelectCancel(keyData)) {
+			if (cancel) {
 				this.#exitAnnotate();
 				return;
 			}
 			this.#editor.handleInput(keyData);
 			return;
 		}
-		if (matchesSelectCancel(keyData)) {
+		if (this.#mode === "comment" && cancel && this.#sections.some(section => section.annotations.length > 0)) {
+			this.#discardConfirm = true;
+			return;
+		}
+		if (cancel) {
 			this.#committed = true;
 			this.callbacks.onCancel();
+			return;
+		}
+		if (this.#mode !== "plan") {
+			if (keyData === "j" || keyData === "k") {
+				this.#focus = "toc";
+				this.#moveTocCursor(keyData === "j" ? 1 : -1);
+			} else if (keyData === "c") this.#startSectionAnnotate();
+			else if (this.#mode === "approval" && keyData === "a") this.selectOption("Approve");
+			else if (this.#mode === "approval" && keyData === "r") this.selectOption("Request changes");
+			else if (this.#mode === "comment" && keyData === "s") this.selectOption("Submit comments");
+			else if (keyData === "e") {
+				this.#focus = "toc";
+				this.#editCurrentAnnotation();
+			} else if (matchesKey(keyData, "enter") && this.#focus === "actions") this.#confirmSelection();
+			else if (matchesKey(keyData, "tab") || keyData === "\t") this.#cycleRegion(1);
+			else this.#handleBodyScroll(keyData);
 			return;
 		}
 		if (this.#focus !== "actions" && keyData === "u") {
@@ -1238,6 +1303,15 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#buildHelp(): string {
+		if (!this.#keysArmed)
+			return this.#inputGuard?.isBlocked()
+				? "↑/↓ review · typing edits your prompt"
+				: "↑/↓ start review · Esc cancel";
+		if (this.#discardConfirm) return "Discard all comments? Enter/y discard · Esc/n keep editing";
+		if (this.#mode !== "plan")
+			return this.#mode === "approval"
+				? "j/k section · c comment · e edit · a approve · r request changes · Esc cancel"
+				: "j/k section · c comment · e edit · s submit batch · Esc close";
 		const sep = " · ";
 		const parts: string[] = [];
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
@@ -1493,6 +1567,8 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#renderFooterLines(innerWidth: number, maxChooserRows = Number.POSITIVE_INFINITY): string[] {
+		if (!this.#keysArmed && this.#inputGuard?.isBlocked())
+			return [...(this.#inputGuard.component?.render(innerWidth) ?? []), theme.fg("dim", this.#buildHelp())];
 		if (this.#annotationChooser) return this.#renderAnnotationChooserLines(innerWidth, maxChooserRows);
 		if (this.#annotating) {
 			const target = this.#annotationTarget;
@@ -1514,7 +1590,7 @@ export class PlanReviewOverlay implements Component {
 			];
 			if (this.#editingAnnotation) hintParts.push("empty deletes");
 			if (this.#externalEditorLabel) hintParts.push(`${this.#externalEditorLabel} editor`);
-			this.#editor.setMaxHeight(Math.max(1, Math.min(MAX_ANNOTATION_EDITOR_ROWS, (process.stdout.rows || 40) - 12)));
+			this.#editor.setMaxHeight(Math.max(1, Math.min(MAX_ANNOTATION_EDITOR_ROWS, this.#terminalRows() - 12)));
 			this.#editor.focused = true;
 			return [caption, ...this.#editor.render(innerWidth), theme.fg("dim", hintParts.join(" · "))];
 		}
@@ -1535,6 +1611,7 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	describe(): NativeNode {
+		this.#inputGuard?.syncPresentation?.(!this.#keysArmed && this.#inputGuard.isBlocked());
 		// The terminal lays out the sidebar; it is shown whenever the Contents has
 		// enough entries, which is also what Tab cycling consults.
 		this.#sidebarShown = this.#toc.length >= SIDEBAR_MIN_HEADINGS;
@@ -1548,6 +1625,9 @@ export class PlanReviewOverlay implements Component {
 			this.#jump?.n ?? 0,
 			this.#selectedIndex,
 			this.#sliderIndex,
+			this.#discardConfirm,
+			this.#keysArmed,
+			!this.#keysArmed && this.#inputGuard?.isBlocked(),
 			this.#committed ? `committed:${this.#committedLabel ?? ""}` : "",
 			this.#annotating
 				? `annotating:${target?.sectionIndex}:${target?.row}:${target?.context}:${this.#editingAnnotation !== undefined}`
@@ -1664,8 +1744,10 @@ export class PlanReviewOverlay implements Component {
 			} else if (event.act === "externalEditor") {
 				this.callbacks.onExternalEditor?.();
 			} else if (event.act === "cancel") {
-				this.#committed = true;
-				this.callbacks.onCancel();
+				if (this.#mode === "plan") {
+					this.#committed = true;
+					this.callbacks.onCancel();
+				} else this.handleInput("\x1b");
 			}
 			return;
 		}
@@ -1772,6 +1854,11 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#describeFooter(): NativeChild[] {
+		if (!this.#keysArmed && this.#inputGuard?.isBlocked()) {
+			const hint = text(this.#buildHelp(), { wrap: "word" });
+			return this.#inputGuard.component ? [this.#inputGuard.component, hint] : [hint];
+		}
+		if (this.#discardConfirm) return [text(this.#buildHelp(), { wrap: "word" })];
 		const chooser = this.#annotationChooser;
 		if (chooser) {
 			const entries = chooser.entries.map((selection, i) => {
@@ -1829,6 +1916,24 @@ export class PlanReviewOverlay implements Component {
 
 	/** {@link #buildHelp} as keycap hints. */
 	#nativeHelpHints(): (NativeHint | undefined)[] {
+		if (!this.#keysArmed)
+			return [
+				{ keys: ["up", "down"], label: "start review" },
+				{ keys: ["escape"], label: "cancel" },
+			];
+		if (this.#mode !== "plan")
+			return [
+				{ keys: ["j", "k"], label: "section" },
+				{ keys: ["c"], label: "comment" },
+				{ keys: ["e"], label: "edit note" },
+				...(this.#mode === "approval"
+					? [
+							{ keys: ["a" as const], label: "approve" },
+							{ keys: ["r" as const], label: "request changes" },
+						]
+					: [{ keys: ["s" as const], label: "submit batch" }]),
+				{ keys: ["escape"], label: "close" },
+			];
 		const upDown = (label: string) => actionHint(["tui.select.up", "tui.select.down"], label);
 		const key = (keys: KeyName | readonly KeyName[], label: string): NativeHint => ({
 			keys: typeof keys === "string" ? [keys] : keys,
@@ -1868,8 +1973,13 @@ export class PlanReviewOverlay implements Component {
 		return hints;
 	}
 
+	#terminalRows(): number {
+		return this.#terminal?.rows || getActiveTerminal()?.rows || 40;
+	}
+
 	render(width: number): readonly string[] {
-		const termHeight = process.stdout.rows || 40;
+		this.#inputGuard?.syncPresentation?.(!this.#keysArmed && this.#inputGuard.isBlocked());
+		const termHeight = this.#terminalRows();
 		const sidebarShown = this.#sidebarVisible(width);
 		this.#sidebarShown = sidebarShown;
 		const sidebarWidth = sidebarShown ? this.#sidebarWidthFor(width) : 0;
@@ -1938,6 +2048,6 @@ export class PlanReviewOverlay implements Component {
 		out.push(divider(width));
 		for (const line of footerLines) out.push(row(line, width));
 		out.push(bottomBorder(width));
-		return out;
+		return this.#mode === "plan" ? out : out.slice(0, termHeight);
 	}
 }

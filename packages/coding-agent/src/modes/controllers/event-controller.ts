@@ -2086,6 +2086,16 @@ export class EventController {
 			const questions = recoverAskQuestions(args)?.map(question => question.question);
 			return { state: "blocked", kind: "question", msg: questions?.join(" ") };
 		}
+		if (toolName === "request_approval") {
+			const title = isRecord(args)
+				? typeof args.title === "string"
+					? args.title
+					: typeof args.path === "string"
+						? args.path.split("/").pop()
+						: undefined
+				: undefined;
+			return { state: "blocked", kind: "question", msg: `Approve ${title ?? "plan"}?` };
+		}
 		const session = this.ctx.viewSession;
 		const tool = session.getToolByName(toolName);
 		if (!tool) return undefined;

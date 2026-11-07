@@ -64,6 +64,7 @@ export function buildTodoHud(
 	input: TodoPhase[],
 	expanded: boolean,
 	activeDescs: readonly string[],
+	options?: { ids?: boolean },
 ): TodoHudView | undefined {
 	const phases = input.filter(phase => phase.tasks.length > 0);
 	if (phases.length === 0) return undefined;
@@ -80,6 +81,15 @@ export function buildTodoHud(
 	// its work, matched by normalized content overlap.
 	const isMatched = (todo: TodoItem): boolean =>
 		activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
+	const taskId = (todo: TodoItem, phase: TodoPhase): string => {
+		if (!options?.ids || !todo.id) return "";
+		const suffix = phase.id && todo.id.startsWith(`${phase.id}.`) ? todo.id.slice(phase.id.length) : "";
+		return /^\.\d+$/.test(suffix) ? suffix : todo.id;
+	};
+	const renderTask = (todo: TodoItem, phase: TodoPhase): string => {
+		const id = taskId(todo, phase);
+		return formatTodoLine(todo, "", isMatched(todo)) + (id ? theme.fg("dim", ` ${id}`) : "");
+	};
 
 	// Task subtree for a phase. Collapsed runs the shared walking-viewport
 	// policy (completed/abandoned omitted, active work pulled to the head,
@@ -91,7 +101,7 @@ export function buildTodoHud(
 				{
 					items: phase.tasks,
 					expanded: true,
-					renderItem: todo => formatTodoLine(todo, "", isMatched(todo)),
+					renderItem: todo => renderTask(todo, phase),
 				},
 				theme,
 			);
@@ -102,7 +112,7 @@ export function buildTodoHud(
 				items: selection.items,
 				itemType: "task",
 				trailingSummary: selection.summary,
-				renderItem: todo => formatTodoLine(todo, "", isMatched(todo)),
+				renderItem: todo => renderTask(todo, phase),
 			},
 			theme,
 		);
@@ -117,11 +127,12 @@ export function buildTodoHud(
 		// tasks too, so counting only completions leaves the phase reading stuck.
 		const done = phase.tasks.filter(isClosedTodo).length;
 		const progress = ` · ${done}/${phase.tasks.length}`;
+		const id = options?.ids && phase.id ? theme.fg("dim", ` ${phase.id}`) : "";
 		if (!isActive) {
-			const header = theme.fg("muted", label) + theme.fg("dim", progress);
+			const header = theme.fg("muted", label) + theme.fg("dim", progress) + id;
 			return expanded ? [header, ...renderTasks(phase)] : header;
 		}
-		const header = theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress);
+		const header = theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress) + id;
 		return [header, ...renderTasks(phase)];
 	};
 
@@ -179,7 +190,7 @@ export function buildTodoHud(
 	lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
 
 	// Native: the same stage window as a tree, overall progress as a bar.
-	const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
+	const describeTask = (todo: TodoItem, id: string, phase: TodoPhase): TspTreeNode => {
 		const done = todo.status === "completed";
 		const token =
 			todo.status === "completed"
@@ -194,13 +205,15 @@ export function buildTodoHud(
 		const label: TspSpan[] = [span(todo.status === "blocked" ? `${todo.content} (blocked)` : todo.content, token)];
 		const notes = todo.notes?.length ?? 0;
 		if (notes > 0) label.push(span(` +${notes}`, "dim em"));
+		const beadId = taskId(todo, phase);
+		if (beadId) label.push(span(` ${beadId}`, "dim"));
 		return { id, label, icon: done ? "check" : "circle" };
 	};
 	const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
 		const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
-		if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo)));
+		if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo), phase));
 		const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
-		const nodes = selection.items.map(todo => describeTask(todo, index(todo)));
+		const nodes = selection.items.map(todo => describeTask(todo, index(todo), phase));
 		if (selection.summary) nodes.push({ id: `${phaseIndex}.more`, label: [span(selection.summary, "muted")] });
 		return nodes;
 	};
@@ -210,9 +223,11 @@ export function buildTodoHud(
 		const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
 		const done = phase.tasks.filter(isClosedTodo).length;
 		const open = isActive || expanded;
+		const label = [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")];
+		if (options?.ids && phase.id) label.push(span(` ${phase.id}`, "dim"));
 		return {
 			id: `${phaseIndex}`,
-			label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
+			label,
 			open,
 			children: open ? describeTasks(phase, phaseIndex) : undefined,
 		};

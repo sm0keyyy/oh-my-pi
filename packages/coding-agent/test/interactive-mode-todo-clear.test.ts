@@ -213,7 +213,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(renderTodos(mode)).not.toContain("done task");
 	});
 
-	it("marks reconciled todos complete and auto-dismisses the durable plan", async () => {
+	it("keeps an unlinked completed subagent's matching todo open and visible", async () => {
 		await replaceMode();
 		setTodoClearDelay(0);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
@@ -238,11 +238,11 @@ describe("InteractiveMode todo HUD persistence", () => {
 		vi.advanceTimersByTime(0);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
-		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
-		expect(renderTodos(mode)).toBe("");
+		expect(session.getTodoPhases()[0]?.tasks[0]?.status).toBe("pending");
+		expect(renderTodos(mode)).toContain("Fix review comments");
 	});
 
-	it("reconciles focused worker todos without overwriting the main session", async () => {
+	it("follows focused worker tracker changes without overwriting the main session", async () => {
 		await replaceMode();
 		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
@@ -301,6 +301,16 @@ describe("InteractiveMode todo HUD persistence", () => {
 			});
 			vi.advanceTimersByTime(100);
 
+			expect(focusedSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("pending");
+			focusedSession.setTodoPhases([
+				{
+					name: "Worker plan",
+					tasks: [
+						{ content: "apply nested review fixes", status: "completed" },
+						{ content: "verify worker changes", status: "in_progress" },
+					],
+				},
+			]);
 			expect(focusedSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
 			expect(session.getTodoPhases()).toEqual(mainPhases);
 			expect(renderTodos(mode)).toContain("1/2");
@@ -317,11 +327,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		}
 	});
 
-	it("reconciles into the snapshot's owning session even when viewSession has moved on", async () => {
-		// Reproduces the focus-attach window deterministically: the HUD snapshot is
-		// reloaded from the worker (making it the owner) while viewSession is still
-		// the main session. A subagent completing here must land in the worker, not
-		// be written over the main session's canonical plan (#9575 review).
+	it("follows the snapshot owner's tracker even while viewSession points elsewhere", async () => {
 		await replaceMode();
 		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
@@ -362,6 +368,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 			});
 			vi.advanceTimersByTime(100);
 
+			expect(workerSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("in_progress");
+			workerSession.setTodoPhases([
+				{ name: "Worker plan", tasks: [{ content: "run the delegated fix", status: "completed" }] },
+			]);
 			expect(workerSession.getTodoPhases()[0]?.tasks[0]?.status).toBe("completed");
 			expect(session.getTodoPhases()).toEqual(mainPhases);
 			expect(renderTodos(mode)).toContain("1/1");
@@ -372,13 +382,10 @@ describe("InteractiveMode todo HUD persistence", () => {
 		}
 	});
 
-	it("completes a blocked todo when the detached subagent it waits on finishes", async () => {
+	it("keeps a blocked todo and its blocker when an unlinked detached subagent finishes", async () => {
 		await replaceMode();
 		setTodoClearDelay(-1);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
-		// A todo blocked while waiting on a detached subagent. Blocked todos are
-		// excluded from the stop reminder, so if reconciliation skipped them this
-		// would strand silently after the subagent completes.
 		session.setTodoPhases([
 			{
 				name: "Implementation",
@@ -400,9 +407,8 @@ describe("InteractiveMode todo HUD persistence", () => {
 		vi.advanceTimersByTime(100);
 
 		const task = session.getTodoPhases()[0]?.tasks[0];
-		expect(task?.status).toBe("completed");
-		// The blocker note is dropped with the blocked status — the wait is over.
-		expect(task?.blocker).toBeUndefined();
+		expect(task?.status).toBe("blocked");
+		expect(task?.blocker).toBe("waiting on ReviewFixer");
 	});
 	it("does not persist a stale reveal after the owning snapshot changes", async () => {
 		await replaceMode();

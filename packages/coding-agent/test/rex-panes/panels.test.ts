@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -35,6 +35,7 @@ import { EventBus } from "../../src/utils/event-bus";
 const cleanups: Array<() => void | Promise<void>> = [];
 beforeAll(() => initTheme());
 afterEach(async () => {
+	vi.useRealTimers();
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
@@ -204,6 +205,78 @@ test("hide main todo and subagent HUDs while open; toggle close and relay EOF re
 	await host.opened.at(-1)!.pane.close();
 	await Promise.resolve();
 	expect(mode.todoContainer.render(100).length).toBeGreaterThan(0);
+}, 30000);
+
+test("ids and refresh follow tracker commits and reloads in the HUD and expanded todo panel", async () => {
+	const { session, mode, host } = await fixture();
+	const phases: TodoPhase[] = [
+		{
+			id: "omp-epic01",
+			name: "Build",
+			tasks: [
+				{ id: "omp-epic01.1", content: "Write the adapter", status: "in_progress" },
+				{ id: "other-task02", content: "Test the adapter", status: "pending" },
+			],
+		},
+	];
+	session.setTodoPhases(phases);
+	expect(Bun.stripANSI(mode.todoContainer.render(100).join("\n"))).toContain("Write the adapter");
+	expect(Bun.stripANSI(mode.todoContainer.render(100).join("\n"))).not.toContain("omp-epic01");
+	await mode.toggleRexPanel("todo", "float");
+	const panel = host.opened[0]!.component;
+	expect(plain(panel)).toContain("omp-epic01");
+	expect(plain(panel)).toContain("Write the adapter .1");
+	expect(plain(panel)).toContain("Test the adapter other-task02");
+	session.setTodoPhases([
+		{
+			...phases[0]!,
+			tasks: [
+				{ ...phases[0]!.tasks[0]!, status: "completed" },
+				{ ...phases[0]!.tasks[1]!, status: "in_progress" },
+			],
+		},
+	]);
+	expect(plain(panel)).toContain("1/2");
+	session.resetTodoPhases([
+		{
+			id: "omp-epic01",
+			name: "Refreshed",
+			tasks: [{ id: "omp-epic01.1", content: "Changed outside the tool", status: "blocked" }],
+		},
+	]);
+	expect(plain(panel)).toContain("Changed outside the tool");
+	expect(plain(panel)).not.toContain("Write the adapter");
+	await mode.toggleRexPanel("todo");
+	expect(Bun.stripANSI(mode.todoContainer.render(100).join("\n"))).toContain("Changed outside the tool");
+	mode.stop();
+	session.resetTodoPhases([{ name: "Stopped", tasks: [{ content: "Do not repaint", status: "pending" }] }]);
+	expect(mode.todoPhases[0]?.name).toBe("Refreshed");
+}, 30000);
+
+test("refresh after an unlinked matching subagent finishes leaves durable todos open", async () => {
+	const { session, mode, bus } = await fixture();
+	const phases: TodoPhase[] = [
+		{
+			id: "omp-epic01",
+			name: "Build",
+			tasks: [{ id: "omp-epic01.1", content: "Fix review comments", status: "in_progress" }],
+		},
+	];
+	session.setTodoPhases(phases);
+	const entries = session.sessionManager.getBranch().length;
+	vi.useFakeTimers();
+	bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+		id: "UnlinkedWorker",
+		index: 0,
+		agent: "coder",
+		description: "Fix review comments",
+		status: "completed",
+		detached: true,
+	});
+	vi.advanceTimersByTime(100);
+	expect(session.getTodoPhases()).toEqual(phases);
+	expect(session.sessionManager.getBranch()).toHaveLength(entries);
+	expect(Bun.stripANSI(mode.todoContainer.render(100).join("\n"))).toContain("0/1");
 }, 30000);
 
 test("controls todo e edits Markdown in a Rex split and waits without stopping the main TUI", async () => {

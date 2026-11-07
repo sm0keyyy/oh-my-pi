@@ -165,6 +165,8 @@ export class AgentLifecycleManager {
 	readonly #revivals = new Map<string, RevivingAgent>();
 	/** In-flight reopens of killed refs, bound to the killed ref, so concurrent {@link ensureLive} calls coalesce. */
 	readonly #reopens = new Map<string, ReopeningAgent>();
+	/** Persistence barriers for detached sessions whose task drivers are still unwinding. */
+	readonly #pendingTombstones = new WeakMap<AgentSession, Promise<void>>();
 	#unsubscribe: (() => void) | undefined;
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 	/** Resolves the TTL applied when a cold-revived ref is adopted on demand (read per revive). */
@@ -515,6 +517,11 @@ export class AgentLifecycleManager {
 		}
 	}
 
+	/** Wait for the session's kill sidecar write to settle; release() reports any write error. */
+	waitForTombstone(session: AgentSession): Promise<void> | undefined {
+		return this.#pendingTombstones.get(session);
+	}
+
 	/**
 	 * Dispose if live and drop timers. When `expected` is given, only a ref
 	 * matching it is released; a stale release can never take down a newer
@@ -553,17 +560,17 @@ export class AgentLifecycleManager {
 		}
 
 		const live = this.#registry.get(id) === ref ? ref.session : null;
+		const tombstone = options?.tombstone && live && ref.sessionFile ? Promise.withResolvers<void>() : undefined;
+		if (tombstone && live) this.#pendingTombstones.set(live, tombstone.promise);
 		if (options?.tombstone) {
 			// Apply the terminal transition synchronously, before any await. The
 			// dying session's own dispose path calls unregisterUnlessParked
 			// (sdk.ts), which spares a ref only when it is already `aborted` AND
 			// already detached; awaiting persistAgentTombstone before this
 			// transition left a window in which that unregister deleted the ref
-			// (issue #10531). Persisting the sidecar afterward is safe: within the
-			// process the still-registered `aborted` row already blocks re-adoption
-			// via the `if (!registry.get(id))` discovery guard, and the sidecar
-			// only needs to exist before a later cross-restart discovery pass —
-			// release awaits the write below before returning.
+			// (issue #10531). The persistence barrier is installed before publishing
+			// the abort so the task driver cannot finish while the sidecar write is
+			// pending. release() still reports persistence errors to the kill caller.
 			// Detach before publishing `aborted`: setStatus emits synchronously, so
 			// every subscriber must observe a terminal ref with session === null.
 			if (!this.#registry.detachSession(id, ref) || !this.#registry.setStatus(id, "aborted", ref)) {
@@ -573,6 +580,8 @@ export class AgentLifecycleManager {
 		try {
 			if (options?.tombstone && ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
 		} finally {
+			tombstone?.resolve();
+			if (tombstone && live) this.#pendingTombstones.delete(live);
 			// Detaching removes the registry's only route to the live session. Always
 			// dispose the captured session, even when tombstone persistence fails.
 			if (live) {

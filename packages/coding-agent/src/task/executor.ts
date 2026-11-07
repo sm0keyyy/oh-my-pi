@@ -3676,6 +3676,7 @@ export async function finalizeSubagentLifecycle(args: {
 	onCleanupDeferred?: (completion: Promise<void>) => void;
 	onRelease?: () => Promise<void>;
 }): Promise<void> {
+	await AgentLifecycleManager.global().waitForTombstone(args.session);
 	const registry = AgentRegistry.global();
 	const ref = registry.get(args.id);
 	const ownsRef = Boolean(ref && ref.session === args.session);

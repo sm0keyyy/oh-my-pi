@@ -16,9 +16,15 @@ The first write initializes a missing store in stealth mode, without hooks or AG
 
 Only main sessions write beads. Subagent lists, including prewalk scratch lists, remain session-only. Agents use `todo`, not raw bd commands.
 
+The Bun test runtime and children marked `PI_TEST_RUNTIME=1` use a session-only store unless a runner and explicit roots are injected. `NODE_ENV=test` alone does not disable beads outside that runtime.
+
 If bd is missing, times out, fails, or returns invalid data, omp warns once per failure episode with the reason and `bd doctor`. Ordinary list operations keep working session-only. Results start with `Beads offline: changes stay in this session.` and `details.beads.state` is `pending`. A `todo_beads_sync` entry preserves the last synced base. Later writes and prompt starts probe at most once per 60 seconds. Recovery merges base/session/bd changes; bd wins a conflict, with a notice listing the IDs. Recovery writes a synced marker and an info notice.
 
-Refresh runs after load, branch synchronization, at prompt start, and through the panel refresh hook. It drains queued writes first. Rewind and fork do not replay a snapshot as a beads write. Branch synchronization suppresses refresh while pending; explicit load/prompt refresh can reconcile pending work. A bead deleted outside omp disappears at refresh, with an info notice; omp does not recreate it.
+Refresh runs after load, branch synchronization, at prompt start, and through the panel refresh hook. It drains queued writes first. A synced prompt-start refresh can reuse a successful read for 30 seconds if no local change occurred. Load and panel refreshes always read.
+
+Rewind and fork discard older pending deltas. The next refresh adopts bd state without replay, and a synced marker prevents replay after resume. Ordinary resume preserves pending work for reconciliation. A missing store initializes on the next write, not on a read.
+
+A bead deleted outside omp disappears at refresh, with an info notice. omp does not recreate it.
 
 ## Operations
 
@@ -34,7 +40,7 @@ Refresh runs after load, branch synchronization, at prompt start, and through th
 | `append` | `phase`, `items` | | Append pending tasks; create the phase if needed. Duplicate content is rejected. |
 | `view` | | | Read the list without normalization or a write. |
 | `ready` | | | Read up to 10 repo-wide ready task beads, with IDs and priorities. |
-| `adopt` | `id` | `phase` for a single task | Add an epic and its children, or one task. A single task defaults to phase `Adopted`. Re-adopting an existing ID does not duplicate it. |
+| `adopt` | `id` | `phase` for a parentless task | Add an epic and its children, or one task. A child keeps its parent epic and adds no siblings. A parentless task defaults to `Adopted`. Re-adopting an existing ID does not duplicate it. |
 | `file` | `task` | `reason`, `priority` | Create a task bead outside this list. `reason` is its description; priority is 0–4, default 2. Link `discovered-from` the in-progress bead when present. |
 
 `task` resolves by bead ID first, then exact content. `on` accepts a bead ID or exact task content. `phase` is an exact name. Keep content and phase names unique: `init` rejects duplicate names/content, and `append` checks content across the list. A missing reference is an error; use `view` to recover it.
@@ -83,6 +89,8 @@ IDs are trailing comments; keep them when renaming:
 ```
 
 The blocker comment precedes the ID. A heading rename with the same ID updates the epic. A rename without an ID follows content matching and can move tasks to a new epic.
+
+Repeated bead IDs produce a parse error that names the repeated line. The controller retains rejected Markdown for the next `/todo edit`.
 
 ## Results and persistence
 

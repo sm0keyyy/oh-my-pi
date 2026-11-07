@@ -8266,7 +8266,7 @@ export class AgentSession implements SettingsScope {
 			return;
 		}
 		this.#noteUserTurn();
-		await this.#todo.refresh();
+		await this.#todo.refresh({ maxAgeMs: 30_000 });
 		this.#todo.resetCycle();
 		this.#resetPromptMaintenanceState();
 		this.#scheduleAgentContinue({ source: "manual-continue", turnRecords: [prompt] });
@@ -8978,7 +8978,7 @@ export class AgentSession implements SettingsScope {
 			this.#ircAwaitingAssignment = false;
 			this.#irc.flushPending();
 
-			await this.#todo.refresh();
+			await this.#todo.refresh({ maxAgeMs: 30_000 });
 			this.#todo.resetCycle();
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
@@ -11767,6 +11767,7 @@ export class AgentSession implements SettingsScope {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -12321,6 +12322,7 @@ export class AgentSession implements SettingsScope {
 		}
 		// The rewound turn's reply is the exploration branch's newest, so this records its prompt.
 		const explorationPromptDigest = this.#tools.recordedPromptDigest();
+		await this.#todo.flush();
 		this.#bash.withBranchTransition(() => {
 			try {
 				this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
@@ -12383,7 +12385,7 @@ export class AgentSession implements SettingsScope {
 		}
 		this.agent.replaceMessages(activeMessages ?? sessionContext.messages);
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
+		this.#todo.syncFromBranch(true, { discardPending: true });
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 		this.#checkpointState = undefined;
@@ -13799,7 +13801,7 @@ export class AgentSession implements SettingsScope {
 			}
 			this.#clearSessionScopedToolState();
 			this.#rehydrateCheckpointRewindState();
-			this.#todo.syncFromBranch();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
@@ -13931,7 +13933,7 @@ export class AgentSession implements SettingsScope {
 				timestamp: Date.now(),
 			});
 			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
-			this.#todo.syncFromBranch();
+			this.#todo.syncFromBranch(true, { discardPending: true });
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
@@ -14165,6 +14167,7 @@ export class AgentSession implements SettingsScope {
 		// admitted on the abandoned branch before committing any tree changes.
 		this.#promptGeneration++;
 
+		await this.#todo.flush();
 		// Determine the new leaf position based on target type
 		let newLeafId: string | null;
 		let editorText: string | undefined;
@@ -14263,7 +14266,7 @@ export class AgentSession implements SettingsScope {
 		this.agent.replaceMessages(displayContext.messages);
 		this.#rehydrateCheckpointRewindState();
 		this.#advisors.resetSessionState({ preserveCost: true });
-		this.#todo.syncFromBranch();
+		this.#todo.syncFromBranch(true, { discardPending: true });
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 

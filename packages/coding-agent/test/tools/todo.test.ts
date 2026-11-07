@@ -1074,4 +1074,15 @@ describe("markdown bead identities", () => {
 		expect(renamed.errors).toEqual([]);
 		expect(renamed.phases[0]).toMatchObject({ id: "omp-k7m2qx", name: "Release", tasks: phases[0]!.tasks });
 	});
+
+	it("F6 rejects repeated task, phase and cross-kind bead IDs at the repeated line", () => {
+		for (const text of [
+			"# Build <!-- bead: omp-build1 -->\n- [ ] A <!-- bead: omp-build1.1 -->\n- [ ] B <!-- bead: omp-build1.1 -->",
+			"# Build <!-- bead: omp-build1 -->\n- [ ] A\n# Copy <!-- bead: omp-build1 -->",
+			"# Build <!-- bead: omp-build1 -->\n- [ ] A\n- [ ] B <!-- bead: omp-build1 -->",
+		]) {
+			const parsed = markdownToPhases(text);
+			expect(parsed.errors).toContainEqual(expect.stringMatching(/Line 3:.*[Dd]uplicate.*omp-build1/));
+		}
+	});
 });

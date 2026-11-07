@@ -132,6 +132,7 @@ function buildSystemReminder(action: string, phases: TodoPhase[], removed = fals
 }
 
 export class TodoCommandController {
+	#pendingEditorMarkdown: string | undefined;
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	/**
@@ -415,7 +416,8 @@ export class TodoCommandController {
 
 		const current = this.#currentPhases();
 		const initialMarkdown =
-			current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n";
+			this.#pendingEditorMarkdown ??
+			(current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n");
 
 		this.ctx.ui.stop();
 		try {
@@ -424,12 +426,14 @@ export class TodoCommandController {
 				this.ctx.showWarning("Editor exited without saving; todos unchanged.");
 				return;
 			}
+			this.#pendingEditorMarkdown = result;
 			const { phases: parsed, errors } = markdownToPhases(result);
 			if (errors.length > 0) {
 				this.ctx.showError(`Could not parse Markdown:\n  ${errors.join("\n  ")}`);
 				return;
 			}
 			this.#commit(parsed, "/todo edit");
+			this.#pendingEditorMarkdown = undefined;
 			const taskCount = parsed.reduce((sum, p) => sum + p.tasks.length, 0);
 			this.ctx.showStatus(`Todos updated from editor: ${parsed.length} phase(s), ${taskCount} task(s).`);
 		} catch (error) {
@@ -445,13 +449,14 @@ export class TodoCommandController {
 	#commit(nextPhases: TodoPhase[], action: string, opts?: { removed?: boolean }): void {
 		// Persist first so HUD visibility binds to the new canonical source.
 		this.ctx.session.setTodoPhases(nextPhases);
-		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: nextPhases });
-		this.ctx.setTodos(nextPhases);
+		const committed = this.ctx.session.getTodoPhases();
+		this.ctx.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: committed });
+		this.ctx.setTodos(committed);
 
 		// 3. Inject system reminder so the agent learns about the change next turn.
 		//    Removals carry explicit intent so the agent does not rebuild the
 		//    cleared/removed items on its next turn (issue #5258).
-		const reminderText = buildSystemReminder(action, nextPhases, opts?.removed ?? false);
+		const reminderText = buildSystemReminder(action, committed, opts?.removed ?? false);
 		const message = {
 			role: "developer" as const,
 			content: [{ type: "text" as const, text: reminderText }],

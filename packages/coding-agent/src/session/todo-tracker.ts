@@ -104,6 +104,13 @@ export interface TodoTrackerHost {
 	judgeTodoDone(input: TodoDoneInput, signal: AbortSignal): Promise<boolean | undefined>;
 }
 
+interface TodoCommit {
+	previous: TodoPhase[];
+	assigned: TodoPhase[];
+	epoch: number;
+	revision: number;
+}
+
 /** Owns canonical todo state, eager preludes, and completion reminders. */
 export class TodoTracker {
 	readonly #host: TodoTrackerHost;
@@ -125,6 +132,9 @@ export class TodoTracker {
 	#revision = 0;
 	#base: TodoPhase[] | undefined;
 	#syncState: "pending" | "synced" | undefined;
+	readonly #commits = new Set<TodoCommit>();
+	#lastRefreshAt = -Infinity;
+	#lastRefreshRevision = -1;
 	readonly #listeners = new Set<(phases: readonly TodoPhase[]) => void>();
 	constructor(host: TodoTrackerHost, store?: TodoStore) {
 		this.#host = host;
@@ -189,7 +199,7 @@ export class TodoTracker {
 	}
 
 	/** Rehydrates a branch without replaying its mutations against beads. */
-	syncFromBranch(refresh = true): void {
+	syncFromBranch(refresh = true, options?: { discardPending?: boolean }): void {
 		const branch = this.#host.sessionManager.getBranch();
 		this.setPhases(getLatestTodoPhasesFromEntries(branch));
 		this.#base = undefined;
@@ -205,8 +215,13 @@ export class TodoTracker {
 			}
 			break;
 		}
-		// Pending refresh reconciles (and can write). Only load/prompt refresh may do that.
-		if (refresh && this.#syncState !== "pending" && this.store.info.state !== "pending") void this.refresh();
+		if (options?.discardPending && this.#syncState === "pending") {
+			this.#base = undefined;
+			this.#persistSync({ state: "synced" });
+		}
+		// History changes rebase a pending store before a later writer can use its old base.
+		if (options?.discardPending || (refresh && this.#syncState !== "pending" && this.store.info.state !== "pending"))
+			void this.refresh();
 	}
 
 	/** Commits writers through identity assignment; agent tools opt into auto-advance. */
@@ -216,32 +231,63 @@ export class TodoTracker {
 		const assigned = store.assignIds(previous, next);
 		if (options?.advance) normalizeInProgressTask(assigned);
 		this.#replacePhases(assigned);
-		const epoch = this.#epoch;
-		const revision = this.#revision;
+		const commit: TodoCommit = { previous, assigned, epoch: this.#epoch, revision: this.#revision };
+		this.#commits.add(commit);
 		this.#queue = this.#queue
 			.then(async () => {
-				let info: TodoBeadsInfo;
+				if (commit.epoch !== this.#epoch) return;
+				const oldIds = assigned.flatMap(phase => [phase.id, ...phase.tasks.map(task => task.id)]);
+				let info = await store.write(this.#syncState === "pending" ? (this.#base ?? previous) : previous, assigned);
+				if (commit.epoch !== this.#epoch) return;
+				this.#applyRemintedIds(oldIds, assigned, commit.epoch);
 				let synced: TodoPhase[] | undefined;
-				if (this.#syncState === "pending" && this.#base !== undefined) {
-					const result = await store.refresh(assigned, this.#base);
+				if (info.state === "synced") {
+					const result = await store.refresh(assigned, undefined);
 					info = result.info;
 					synced = result.phases;
-				} else {
-					info = await store.write(previous, assigned);
-					if (info.state === "synced") {
-						const result = await store.refresh(assigned, undefined);
-						info = result.info;
-						synced = result.phases;
-					}
 				}
-				if (epoch !== this.#epoch) return;
+				if (commit.epoch !== this.#epoch) return;
 				if (info.state === "pending") this.#base ??= previous;
 				else if (info.state === "synced") this.#base = this.#clonePhases(synced ?? assigned);
-				if (revision === this.#revision) this.#replacePhases(synced ?? assigned);
+				if (commit.revision === this.#revision) this.#replacePhases(synced ?? assigned);
 				this.#persistSync(info);
 				if (info.state !== "off") this.#persistPhases();
 			})
-			.catch(error => logger.error("todo: commit failed", { error: String(error) }));
+			.catch(error => logger.error("todo: commit failed", { error: String(error) }))
+			.finally(() => {
+				this.#commits.delete(commit);
+			});
+	}
+
+	#applyRemintedIds(before: readonly (string | undefined)[], assigned: TodoPhase[], epoch: number): void {
+		const after = assigned.flatMap(phase => [phase.id, ...phase.tasks.map(task => task.id)]);
+		const changes = new Map<string, string>();
+		for (let i = 0; i < before.length; i++) {
+			const oldId = before[i],
+				newId = after[i];
+			if (oldId && newId && oldId !== newId) changes.set(oldId, newId);
+		}
+		if (changes.size === 0) return;
+		const remap = (phases: TodoPhase[]): void => {
+			for (const phase of phases) {
+				if (phase.id) phase.id = changes.get(phase.id) ?? phase.id;
+				for (const task of phase.tasks) {
+					if (task.id) task.id = changes.get(task.id) ?? task.id;
+				}
+			}
+		};
+		remap(this.#phases);
+		if (this.#base) remap(this.#base);
+		for (const queued of this.#commits) {
+			if (queued.epoch !== epoch) continue;
+			remap(queued.previous);
+			remap(queued.assigned);
+		}
+		const previousRevision = this.#revision;
+		this.#replacePhases(this.#phases);
+		for (const queued of this.#commits) {
+			if (queued.epoch === epoch && queued.revision === previousRevision) queued.revision = this.#revision;
+		}
 	}
 
 	async flush(): Promise<TodoBeadsInfo> {
@@ -254,19 +300,34 @@ export class TodoTracker {
 	}
 
 	/** Refreshes after queued writes; pending lists reconcile at explicit load/prompt boundaries. */
-	async refresh(): Promise<void> {
+	async refresh(options?: { maxAgeMs?: number }): Promise<void> {
 		const epoch = this.#epoch;
 		const store = this.store;
+		const revision = this.#revision;
+		const rebasePhases = this.#syncState !== "pending" && store.info.state === "pending" ? this.phases : undefined;
 		this.#queue = this.#queue
 			.then(async () => {
 				if (epoch !== this.#epoch) return;
-				const revision = this.#revision;
+				if (revision !== this.#revision && !rebasePhases) return;
+				if (
+					options?.maxAgeMs !== undefined &&
+					store.info.state === "synced" &&
+					this.#syncState !== "pending" &&
+					this.#lastRefreshRevision === this.#revision &&
+					Date.now() - this.#lastRefreshAt < options.maxAgeMs
+				)
+					return;
 				const pending = this.#syncState === "pending" || store.info.state === "pending";
-				const result = await store.refresh(this.#phases, this.#syncState === "pending" ? this.#base : undefined);
+				const phases = rebasePhases ?? this.#phases;
+				const base =
+					this.#syncState === "pending" ? this.#base : store.info.state === "pending" ? phases : undefined;
+				const result = await store.refresh(phases, base);
 				if (epoch !== this.#epoch || revision !== this.#revision) return;
 				this.#replacePhases(result.phases);
 				if (result.info.state === "synced") {
 					this.#base = this.phases;
+					this.#lastRefreshAt = Date.now();
+					this.#lastRefreshRevision = this.#revision;
 					if (pending) this.#persistPhases();
 				}
 				this.#persistSync(result.info);

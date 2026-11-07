@@ -15,7 +15,7 @@ const Graph = type({
 });
 
 /** In-memory bd transport. Production store, mapping, queue, and tracker remain real. */
-export async function createTodoBeadsFixture() {
+export async function createTodoBeadsFixture(options?: { initialized?: boolean }) {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "todo-beads-"));
 	const settings = Settings.isolated();
 	cfgTodoBeadsRoots.override(settings, []);
@@ -24,6 +24,7 @@ export async function createTodoBeadsFixture() {
 	const calls: { argv: readonly string[]; stdin?: string }[] = [];
 	let offline = false;
 	let filed = 0;
+	let initialized = options?.initialized ?? true;
 	const runner: BdRunner = async (argv, options) => {
 		calls.push({ argv: [...argv], stdin: options.stdin });
 		if (offline) throw new Error("bd missing");
@@ -35,7 +36,21 @@ export async function createTodoBeadsFixture() {
 		});
 		const value = (flag: string) => argv[argv.indexOf(flag) + 1];
 		if (argv.includes("version")) return reply({ version: "1.3.4" });
-		if (argv.includes("where")) return reply({ root });
+		if (argv.includes("where")) {
+			return initialized
+				? reply({ root })
+				: {
+						exitCode: 1,
+						stdout: JSON.stringify({ schema_version: 1, data: { error: "no_beads_directory" } }),
+						stderr: "",
+						timedOut: false,
+					};
+		}
+		if (argv.includes("init")) {
+			initialized = true;
+			await fs.mkdir(path.join(root, ".beads"));
+			return reply({});
+		}
 		if (argv.includes("--graph")) {
 			const graph = Graph.assert(await Bun.file(value("--graph")!).json());
 			for (const node of graph.nodes)

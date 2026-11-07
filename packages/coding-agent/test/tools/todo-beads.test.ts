@@ -1,4 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { ptree } from "@oh-my-pi/pi-utils";
+import { BdCli, createBdRunner, openTodoStore, parseBeads, type BdRunner } from "../../src/beads";
+import { TodoTracker } from "../../src/session/todo-tracker";
+import { cfgTodoBeadsRoots } from "../../src/tools/settings";
 import { TodoTool, getLatestTodoPhasesFromEntries, committedTodoPhases } from "../../src/tools/todo";
 import { createTodoBeadsFixture } from "../helpers/todo-beads";
 
@@ -114,4 +120,74 @@ describe("todo beads", () => {
 			await f.cleanup();
 		}
 	});
+
+	it.skipIf(!process.env.OMP_TEST_BD)(
+		"F5 real bd keeps an adopted child under its parent epic",
+		async () => {
+			const f = await createTodoBeadsFixture();
+			try {
+				const home = path.join(f.root, "home");
+				await fs.mkdir(home);
+				const env = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+				await ptree.exec(["git", "init", "--quiet", f.root], { cwd: f.root, env, timeout: 10_000 });
+				cfgTodoBeadsRoots.override(f.settings, [f.root]);
+				const run = createBdRunner(process.env.OMP_TEST_BD!);
+				const runner: BdRunner = (argv, options) =>
+					run(argv, {
+						...options,
+						env: { ...options.env, ...env, BEADS_DIR: options.env.BEADS_DIR! },
+					});
+				const store = openTodoStore({
+					cwd: f.root,
+					settings: f.settings,
+					agentKind: "main",
+					runner,
+					notice: () => {},
+				});
+				const initial = store.assignIds(
+					[],
+					[
+						{
+							name: "External epic",
+							tasks: [
+								{ content: "Adopt this child", status: "pending" },
+								{ content: "Leave this sibling", status: "pending" },
+							],
+						},
+					],
+				);
+				expect((await store.write([], initial)).state).toBe("synced");
+				const epic = initial[0]!.id!;
+				const child = initial[0]!.tasks[0]!.id!;
+				const tracker = new TodoTracker(f.host, store);
+				const tool = new TodoTool({
+					...f.session,
+					getTodoPhases: () => tracker.phases,
+					setTodoPhases: (next, options) => tracker.commit(next, options),
+					getTodoStore: () => store,
+					flushTodoPhases: () => tracker.flush(),
+					refreshTodoPhases: () => tracker.refresh(),
+				});
+				const adopted = await tool.execute("adopt-child", { op: "adopt", id: child });
+				expect(adopted.isError).toBeUndefined();
+				const cli = new BdCli(f.root, runner);
+				const bead = parseBeads(await cli.call(["list", "--all", "-n", "0", "--id", child]))[0]!;
+				expect(bead.parent ?? bead.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id).toBe(
+					epic,
+				);
+				expect(adopted.details!.phases).toMatchObject([
+					{ id: epic, name: "External epic", tasks: [{ id: child }] },
+				]);
+				expect(adopted.details!.phases[0]!.tasks).toHaveLength(1);
+				const done = await tool.execute("done-child", { op: "done", task: child });
+				expect(done.details!.beads?.state).toBe("synced");
+				const family = parseBeads(await cli.call(["list", "--all", "-n", "0", "--parent", epic]));
+				expect(family.find(bead => bead.id !== child)?.status).toBe("open");
+				expect(parseBeads(await cli.call(["list", "--all", "-n", "0", "--id", epic]))[0]!.status).toBe("open");
+			} finally {
+				await f.cleanup();
+			}
+		},
+		30_000,
+	);
 });

@@ -31,6 +31,9 @@ export interface BeadBrief {
 	priority: number;
 	parentId?: string;
 }
+export interface LoadedTodoItem extends TodoItem {
+	parentId?: string;
+}
 export class BeadsUnavailableError extends Error {}
 export interface TodoStore {
 	readonly info: TodoBeadsInfo;
@@ -41,7 +44,7 @@ export interface TodoStore {
 		base: readonly TodoPhase[] | undefined,
 	): Promise<{ phases: TodoPhase[]; info: TodoBeadsInfo; dropped: string[] }>;
 	ready(limit: number): Promise<BeadBrief[]>;
-	load(id: string): Promise<TodoPhase | TodoItem>;
+	load(id: string): Promise<TodoPhase | LoadedTodoItem>;
 	file(input: {
 		title: string;
 		priority: 0 | 1 | 2 | 3 | 4;
@@ -338,8 +341,14 @@ class BeadsStore implements TodoStore {
 		if (changes.batch.length)
 			await this.#cli.call(["batch", "-m", "omp: todo sync"], `${changes.batch.join("\n")}\n`);
 		for (const args of changes.updates) await this.#cli.call(args);
-		if (changes.closeEpics.length)
-			await this.#cli.call(["batch", "-m", "omp: todo sync"], `${changes.closeEpics.join("\n")}\n`);
+		const closeEpics: string[] = [];
+		for (const line of changes.closeEpics) {
+			const id = line.split(" ", 2)[1]!;
+			// A phase can contain one adopted child, without its open siblings.
+			const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
+			if (children.every(child => child.status === "closed")) closeEpics.push(line);
+		}
+		if (closeEpics.length) await this.#cli.call(["batch", "-m", "omp: todo sync"], `${closeEpics.join("\n")}\n`);
 		return next;
 	}
 	write(prev: readonly TodoPhase[], next: readonly TodoPhase[]): Promise<TodoBeadsInfo> {
@@ -380,12 +389,11 @@ class BeadsStore implements TodoStore {
 			try {
 				const pending = this.#info.state === "pending" || base !== undefined;
 				if (!(await this.#ensure(false))) return { phases: ours, info: this.info, dropped: [] };
-				if (pending) this.#base = await this.#apply(this.#base ?? ours, ours);
-				const refreshed = readPhases(
-					pending ? this.#base! : ours,
-					await this.#read(phaseIds(pending ? this.#base! : ours)),
-					this.#warnStatus,
-				);
+				// No local delta means a read, even if an earlier failure left the store pending.
+				if (pending && this.#base && JSON.stringify(this.#base) !== JSON.stringify(ours))
+					this.#base = await this.#apply(this.#base, ours);
+				const source = pending ? (this.#base ?? ours) : ours;
+				const refreshed = readPhases(source, await this.#read(phaseIds(source)), this.#warnStatus);
 				this.#base = clonePhases(refreshed.phases);
 				if (refreshed.dropped.length && !this.#droppedWarned) {
 					this.#droppedWarned = true;
@@ -432,15 +440,20 @@ class BeadsStore implements TodoStore {
 			throw new BeadsUnavailableError("Invalid bead ID", { cause: error });
 		}
 	}
-	async load(id: string): Promise<TodoPhase | TodoItem> {
+	async load(id: string): Promise<TodoPhase | LoadedTodoItem> {
 		this.#checkId(id);
 		return this.#operation(async available => {
 			if (!available) throw new BeadsUnavailableError(`Bead ${id} not found`);
 			const beads = await this.#read([id]);
 			const bead = beads.find(value => value.id === id);
 			if (!bead) throw new BeadsUnavailableError(`Bead ${id} not found`);
-			if (bead.issue_type !== "epic")
-				return beadToTask(bead, new Map(beads.map(value => [value.id, value])), undefined, this.#warnStatus);
+			if (bead.issue_type !== "epic") {
+				const parentId = bead.parent ?? bead.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
+				return {
+					...beadToTask(bead, new Map(beads.map(value => [value.id, value])), undefined, this.#warnStatus),
+					...(parentId ? { parentId } : {}),
+				};
+			}
 			const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
 			const all = await this.#read(children.map(child => child.id));
 			const byId = new Map(all.map(value => [value.id, value]));
@@ -496,7 +509,7 @@ export function openTodoStore(options: {
 	const config = beadsSettings(options.settings);
 	if (
 		options.agentKind === "sub" ||
-		((isBunTestRuntime() || Bun.env.NODE_ENV === "test") && (!options.runner || !config.explicitRoots)) ||
+		(isBunTestRuntime() && (!options.runner || !config.explicitRoots)) ||
 		config.store === "session"
 	) {
 		const unavailable = async (): Promise<never> => {

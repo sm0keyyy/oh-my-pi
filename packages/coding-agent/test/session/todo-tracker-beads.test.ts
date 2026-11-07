@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { isRecord, ptree } from "@oh-my-pi/pi-utils";
 import { TodoTracker } from "../../src/session/todo-tracker";
 import {
@@ -167,7 +167,7 @@ describe("todo tracker beads", () => {
 		}
 	});
 
-	it("writers keep NODE_ENV=test child stores off unless a runner and roots are injected", async () => {
+	it("F4 leaves NODE_ENV=test production stores on and only disables marked test children", async () => {
 		const f = await createTodoBeadsFixture();
 		try {
 			const code = `
@@ -179,7 +179,6 @@ describe("todo tracker beads", () => {
 				cfgTodoBeadsGlobalDir.override(settings, process.cwd());
 				const options = { cwd: process.cwd(), settings, agentKind: "main", notice() {} };
 				const plain = openTodoStore(options);
-				await plain.write([], [{ name: "Guard", tasks: [] }]);
 				const calls = [];
 				const injected = openTodoStore({ ...options, runner: async argv => {
 					calls.push([...argv]);
@@ -191,16 +190,199 @@ describe("todo tracker beads", () => {
 			`;
 			const result = await ptree.exec([process.execPath, "--eval", code], {
 				cwd: f.root,
-				env: { ...process.env, HOME: f.root, PI_CODING_AGENT_DIR: f.root, NODE_ENV: "test" },
+				env: { ...process.env, HOME: f.root, PI_CODING_AGENT_DIR: f.root, NODE_ENV: "test", PI_TEST_RUNTIME: "0" },
 				timeout: 10_000,
 			});
 			expect(JSON.parse(result.stdout)).toMatchObject({
-				plain: { state: "off" },
+				plain: { state: "synced" },
 				injected: { state: "synced" },
 				ready: [],
 				calls: expect.arrayContaining([expect.arrayContaining(["ready"])]),
 			});
+			const marked = await ptree.exec([process.execPath, "--eval", code], {
+				cwd: f.root,
+				env: { ...process.env, HOME: f.root, PI_CODING_AGENT_DIR: f.root, NODE_ENV: "test", PI_TEST_RUNTIME: "1" },
+				timeout: 10_000,
+			});
+			expect(JSON.parse(marked.stdout)).toMatchObject({ plain: { state: "off" }, injected: { state: "synced" } });
 		} finally {
+			await f.cleanup();
+		}
+	});
+
+	it("F1 initializes a missing store on the next commit after the first write fails", async () => {
+		const f = await createTodoBeadsFixture({ initialized: false });
+		const now = Date.now();
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			f.setOffline(true);
+			f.tracker.commit([{ name: "Build", tasks: [{ content: "Adapter", status: "pending" }] }]);
+			expect((await f.tracker.flush()).state).toBe("pending");
+			f.setOffline(false);
+			clock.mockReturnValue(now + 61_000);
+			const next = f.tracker.phases;
+			next[0]!.tasks.push({ content: "Tests", status: "pending" });
+			f.tracker.commit(next);
+			expect((await f.tracker.flush()).state).toBe("synced");
+			expect([...f.remote.values()].map(bead => bead.title)).toEqual(["Build", "Adapter", "Tests"]);
+			expect(f.calls.filter(call => call.argv.includes("init"))).toHaveLength(1);
+		} finally {
+			clock.mockRestore();
+			await f.cleanup();
+		}
+	});
+
+	it("F2 discards pending deltas on rewind and fork, then adopts bd without a replay", async () => {
+		const f = await createTodoBeadsFixture();
+		const now = Date.now();
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const tool = new TodoTool(f.session);
+			await tool.execute("init", { op: "init", items: ["A", "B"] });
+			const rewindPoint = f.manager.getLeafId()!;
+			await tool.execute("done-a", { op: "done", task: "A" });
+			const durable = f.tracker.phases;
+			f.setOffline(true);
+			await tool.execute("done-b", { op: "done", task: "B" });
+			const pendingPoint = f.manager.getLeafId()!;
+			const writes = f.calls.filter(call => call.argv.includes("--sandbox")).length;
+			f.manager.branch(rewindPoint);
+			f.tracker.syncFromBranch(false, { discardPending: true });
+			await f.tracker.flush();
+			expect(f.calls.filter(call => call.argv.includes("--sandbox"))).toHaveLength(writes);
+			f.setOffline(false);
+			clock.mockReturnValue(now + 61_000);
+			await f.tracker.refresh();
+			expect(f.tracker.phases).toEqual(durable);
+			expect(f.calls.filter(call => call.argv.includes("--sandbox"))).toHaveLength(writes);
+			f.manager.branch(pendingPoint);
+			const forked = new TodoTracker(f.host, f.open());
+			forked.syncFromBranch(false, { discardPending: true });
+			await forked.refresh();
+			expect(forked.phases).toEqual(durable);
+			expect(f.calls.filter(call => call.argv.includes("--sandbox"))).toHaveLength(writes);
+			const resumedFork = new TodoTracker(f.host, f.open());
+			resumedFork.syncFromBranch(false);
+			await resumedFork.refresh();
+			expect(resumedFork.phases).toEqual(durable);
+			expect(f.calls.filter(call => call.argv.includes("--sandbox"))).toHaveLength(writes);
+		} finally {
+			clock.mockRestore();
+			await f.cleanup();
+		}
+	});
+
+	it("F3 propagates a reminted ID into later queued commits and the resumed snapshot", async () => {
+		const f = await createTodoBeadsFixture();
+		try {
+			const tool = new TodoTool(f.session);
+			await tool.execute("init", { op: "init", items: ["x1", "x2", "x3"] });
+			await tool.execute("rm", { op: "rm", task: "x3" });
+			const epic = f.tracker.phases[0]!.id!;
+			const restarted = new TodoTracker(f.host, f.open());
+			restarted.syncFromBranch(false);
+			const first = restarted.phases;
+			first[0]!.tasks.push({ content: "c", status: "pending" });
+			restarted.commit(first);
+			const second = restarted.phases;
+			second[0]!.tasks[0]!.status = "completed";
+			restarted.commit(second);
+			expect((await restarted.flush()).state).toBe("synced");
+			const c = restarted.phases[0]!.tasks.find(task => task.content === "c");
+			expect(c?.id).toBe(`${epic}.4`);
+			expect(f.remote.get(c!.id!)).toMatchObject({ title: "c", status: "open" });
+			const resumed = new TodoTracker(f.host, f.open());
+			resumed.syncFromBranch(false);
+			await resumed.refresh();
+			expect(resumed.phases[0]!.tasks.find(task => task.id === `${epic}.4`)).toMatchObject({
+				content: "c",
+				status: "pending",
+			});
+			expect(f.remote.get(`${epic}.3`)).toMatchObject({ title: "x3", status: "closed" });
+		} finally {
+			await f.cleanup();
+		}
+	});
+
+	it("latency skips a recent synced prompt refresh, but not a local change or a stale read", async () => {
+		const f = await createTodoBeadsFixture();
+		const now = Date.now();
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			f.tracker.commit([{ name: "Build", tasks: [{ content: "A", status: "pending" }] }]);
+			await f.tracker.flush();
+			await f.tracker.refresh({ maxAgeMs: 30_000 });
+			const reads = f.calls.filter(call => call.argv.includes("list")).length;
+			clock.mockReturnValue(now + 29_000);
+			await f.tracker.refresh({ maxAgeMs: 30_000 });
+			expect(f.calls.filter(call => call.argv.includes("list"))).toHaveLength(reads);
+			const changed = f.tracker.phases;
+			changed[0]!.tasks[0]!.status = "completed";
+			f.tracker.commit(changed);
+			await f.tracker.flush();
+			const afterWrite = f.calls.filter(call => call.argv.includes("list")).length;
+			await f.tracker.refresh({ maxAgeMs: 30_000 });
+			expect(f.calls.filter(call => call.argv.includes("list"))).toHaveLength(afterWrite + 1);
+			clock.mockReturnValue(now + 60_000);
+			await f.tracker.refresh({ maxAgeMs: 30_000 });
+			expect(f.calls.filter(call => call.argv.includes("list"))).toHaveLength(afterWrite + 2);
+		} finally {
+			clock.mockRestore();
+			await f.cleanup();
+		}
+	});
+
+	it("F2 rebases the pending store before an immediate post-rewind commit", async () => {
+		const f = await createTodoBeadsFixture();
+		const now = Date.now();
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const tool = new TodoTool(f.session);
+			await tool.execute("init", { op: "init", items: ["A", "B"] });
+			const rewindPoint = f.manager.getLeafId()!;
+			await tool.execute("done-a", { op: "done", task: "A" });
+			f.setOffline(true);
+			await tool.execute("done-b", { op: "done", task: "B" });
+			f.manager.branch(rewindPoint);
+			f.tracker.syncFromBranch(true, { discardPending: true });
+			const next = f.tracker.phases;
+			next[0]!.tasks.push({ content: "C", status: "pending" });
+			f.setOffline(false);
+			clock.mockReturnValue(now + 61_000);
+			f.tracker.commit(next);
+			await f.tracker.flush();
+			expect(f.tracker.phases[0]!.tasks.map(task => task.status)).toEqual(["completed", "in_progress", "pending"]);
+		} finally {
+			clock.mockRestore();
+			await f.cleanup();
+		}
+	});
+
+	it("F2 does not close an open bd epic during a pending rewind refresh", async () => {
+		const f = await createTodoBeadsFixture();
+		const now = Date.now();
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const tool = new TodoTool(f.session);
+			await tool.execute("init", { op: "init", items: ["A"] });
+			const rewindPoint = f.manager.getLeafId()!;
+			const epic = f.tracker.phases[0]!.id!;
+			const task = f.tracker.phases[0]!.tasks[0]!.id!;
+			f.setOffline(true);
+			await tool.execute("done-a", { op: "done", task: "A" });
+			f.remote.get(task)!.status = "closed";
+			f.remote.get(task)!.close_reason = "done";
+			f.manager.branch(rewindPoint);
+			f.tracker.syncFromBranch(true, { discardPending: true });
+			f.setOffline(false);
+			clock.mockReturnValue(now + 61_000);
+			const writes = f.calls.filter(call => call.argv.includes("--sandbox")).length;
+			await f.tracker.refresh();
+			expect(f.remote.get(epic)!.status).toBe("open");
+			expect(f.tracker.phases[0]!.tasks[0]!.status).toBe("completed");
+			expect(f.calls.filter(call => call.argv.includes("--sandbox"))).toHaveLength(writes);
+		} finally {
+			clock.mockRestore();
 			await f.cleanup();
 		}
 	});

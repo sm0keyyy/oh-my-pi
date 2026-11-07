@@ -601,6 +601,17 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	const errors: string[] = [];
 	const phases: TodoPhase[] = [];
 	let currentPhase: TodoPhase | undefined;
+	const idLines = new Map<string, number>();
+	const acceptId = (id: string | undefined, line: number): boolean => {
+		if (!id) return true;
+		const firstLine = idLines.get(id);
+		if (firstLine !== undefined) {
+			errors.push(`Line ${line}: duplicate bead ID "${id}", first used on line ${firstLine}`);
+			return false;
+		}
+		idLines.set(id, line);
+		return true;
+	};
 
 	const lines = md.split(/\r?\n/);
 	for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -612,6 +623,7 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 		const headingMatch = /^#{1,6}\s+(.+?)\s*$/.exec(trimmed);
 		if (headingMatch) {
 			const bead = /^(.*?)\s*<!--\s*bead:\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\s*-->$/.exec(headingMatch[1]);
+			if (!acceptId(bead?.[2], lineNum + 1)) continue;
 			currentPhase = { name: (bead?.[1] ?? headingMatch[1]).trim(), tasks: [], ...(bead ? { id: bead[2] } : {}) };
 			phases.push(currentPhase);
 			continue;
@@ -635,6 +647,7 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 			// Recover a blocked task's reason from its trailing HTML comment (see
 			// phasesToMarkdown), then strip the comment from the visible content.
 			const bead = /^(.*?)\s*<!--\s*bead:\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\s*-->$/.exec(taskMatch[2].trim());
+			if (!acceptId(bead?.[2], lineNum + 1)) continue;
 			const rawContent = (bead?.[1] ?? taskMatch[2]).trim();
 			const blockerMatch = /^(.*?)\s*<!--\s*blocker:\s*(.*?)\s*-->$/.exec(rawContent);
 			currentPhase.tasks.push({
@@ -798,13 +811,25 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 						if (existing) existing.tasks.push(...tasks);
 						else updated.push({ ...bead, tasks });
 					} else if (!updated.some(phase => phase.tasks.some(task => task.id === bead.id))) {
-						const name = resolved.phase ?? "Adopted";
-						let phase = findPhaseByName(updated, name);
-						if (!phase) {
-							phase = { name, tasks: [] };
-							updated.push(phase);
+						const { parentId, ...task } = bead;
+						let phase: TodoPhase | undefined;
+						if (parentId) {
+							phase = updated.find(phase => phase.id === parentId);
+							if (!phase) {
+								const parent = await this.#requireStore(store).load(parentId);
+								if (!("tasks" in parent)) throw new BeadsUnavailableError(`Parent ${parentId} is not an epic`);
+								phase = { id: parentId, name: parent.name, tasks: [] };
+								updated.push(phase);
+							}
+						} else {
+							const name = resolved.phase ?? "Adopted";
+							phase = findPhaseByName(updated, name);
+							if (!phase) {
+								phase = { name, tasks: [] };
+								updated.push(phase);
+							}
 						}
-						phase.tasks.push(bead);
+						phase.tasks.push(task);
 					}
 				} else if ((op === "block" || op === "unblock") && resolved.on) {
 					const available = this.#requireStore(store);

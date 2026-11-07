@@ -12,14 +12,19 @@
 - Subagents of the main interactive TUI can ask questions in the main dialog, connected sessions clients, and their Rex pane; unanswered asks time out after 10 minutes.
 - Added configurable todo nudges every five mutating calls without a default cap, a turn-end done-check nudge, and open-todo reminders after compaction.
 - Added transcript-backed subagent threads and team IRC history.
+- Added native operator interviews with shared subagent ask order, /interviews, and /interview-next.
+- Added native codegraph index updates, query gates, and build progress widgets.
+- Added read-only omp worktree sweep --json with orphan candidate proofs.
+- Added one shared Rex watcher for job notices, host outages, and layout snapshots. Configure it with rex.watcher and rex.watcherScript.
 
 ### Changed
 
 - Updated the fork to upstream 18.16.0 while retaining all fork patches, including session sockets, iPhone reconnect fixes, usage tracking, Codex SSE fallback, native codegraph queries, and TUI fixes.
-- Bundled code agents share code-intelligence and operator-question guidance; reviewers and scouts report their queries. Operator questions require the ask-bridge extension. The history-only seance agent retains its isolated read-only tools.
+- Bundled code agents share code-intelligence and operator-question guidance; reviewers and scouts report their queries. The history-only seance agent retains its isolated read-only tools.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.
 - User messages now have a colored left bar, including skill invocations and collab prompts. Synthetic input uses a dim bar.
 - Sessions-web shows bead IDs and preserves them when saving todo edits.
+- Changed edit and write to format files before the tool returns, with detached advisory tests for affected files.
 
 ### Fixed
 
@@ -37,6 +42,7 @@
 - Fixed table rows and following text disappearing under an Ask dialog without stranding restored drafts.
 - Fixed subagent panes failing to open with deep configuration paths on macOS.
 - Fixed pending interviews appearing out of enqueue order when created in the same millisecond.
+- Fixed cancelled subagent tasks reporting completion before their kill tombstone write settles.
 
 ## [18.16.0] - 2026-11-02
 

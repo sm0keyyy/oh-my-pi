@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added blocking request_approval reviews across the main TUI, sessions, and Rex panes.
+- Added non-blocking show_markdown comment panes with batched delivery to the owning agent.
 - Added isolated docked and floating Rex component panes, agent-pane reveal, and restore records with owning omp pids.
 - Added newest-first RPC message paging for live web sessions without loading the full transcript.
 - Added the fork-only native `codegraph` tool for indexed projects, controlled by `codegraph.enabled`, `codegraph.path`, and `codegraph.timeout`.
@@ -19,6 +21,7 @@
 
 ### Changed
 
+- Require arrow-key handoff before review shortcuts and preserve numbered section labels.
 - Updated the fork to upstream 18.16.0 while retaining all fork patches, including session sockets, iPhone reconnect fixes, usage tracking, Codex SSE fallback, native codegraph queries, and TUI fixes.
 - Bundled code agents share code-intelligence and operator-question guidance; reviewers and scouts report their queries. The history-only seance agent retains its isolated read-only tools.
 - Explicit session resume avoids a redundant full transcript parse before the working-directory check.

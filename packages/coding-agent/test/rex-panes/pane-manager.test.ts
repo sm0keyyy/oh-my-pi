@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { setImmediate } from "node:timers/promises";
 import { logger } from "@oh-my-pi/pi-utils";
-import { Settings } from "../../src/config/settings";
+import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { type OpenPane, type PaneManager, rexPanesEligible, startPaneManager } from "../../src/rex-panes/pane-manager";
@@ -10,6 +10,10 @@ import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
 import { markPaneCrashed, reopenCrashedPane } from "../../src/rex-panes/supervise";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
+import { createPaneView, type PaneView } from "../../src/rex-panes/pane-view";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
+import { createPaneSessionFixture } from "../helpers/interactive-mode-context";
 
 interface TestPane extends OpenPane {
 	session: AgentSession | null;
@@ -30,6 +34,7 @@ function harness(
 		beforeOpen?: () => Promise<void>;
 		beforeRevive?: (id: string) => Promise<void>;
 		beforeCommand?: (args: string[]) => Promise<void>;
+		openView?: (id: string, session: AgentSession | null) => Promise<PaneView>;
 		failCommand?: string;
 	} = {},
 ) {
@@ -102,6 +107,7 @@ function harness(
 		prepareToken: async token => `/private/run/${token}.credential`,
 		async openPane(id, session) {
 			await options.beforeOpen?.();
+			const view = await options.openView?.(id, session);
 			const closed = Promise.withResolvers<void>();
 			const pane: TestPane = {
 				session,
@@ -110,22 +116,26 @@ function harness(
 				finished: session === null,
 				tab: "live",
 				async finish() {
+					await view?.finish();
 					pane.finished = true;
 					pane.session = null;
 					notify();
 				},
 				async revive(next) {
 					await options.beforeRevive?.(id);
+					await view?.revive(next);
 					pane.finished = false;
 					pane.session = next;
 					notify();
 				},
 				setTab(tab) {
 					pane.tab = tab;
+					view?.setTab(tab);
 				},
 				closed: closed.promise,
 				close: () => closed.resolve(),
 				async dispose() {
+					await view?.dispose();
 					pane.disposed = true;
 					closed.resolve();
 					notify();
@@ -143,8 +153,12 @@ function harness(
 		},
 	});
 	managers.push(manager);
-	function start(id: string, parentToolCallId = "task1", parentId = "main"): AgentSession {
-		const session = {} as AgentSession;
+	function start(
+		id: string,
+		parentToolCallId = "task1",
+		parentId = "main",
+		session = {} as AgentSession,
+	): AgentSession {
 		registry.register({ id, displayName: id, kind: "sub", parentId, session });
 		bus.emit("task:subagent:lifecycle", { id, status: "started", parentToolCallId });
 		return session;
@@ -166,6 +180,101 @@ function harness(
 }
 
 describe("pane manager", () => {
+	it("round2 replay output is bounded to one history on open and one on a hidden-to-live reveal", async () => {
+		await Settings.init({ inMemory: true });
+		await initTheme();
+		const fixture = createPaneSessionFixture();
+		const terminal = new VirtualTerminal(100, 24);
+		const writes: string[] = [];
+		const write = terminal.write.bind(terminal);
+		vi.spyOn(terminal, "write").mockImplementation(data => {
+			writes.push(data);
+			write(data);
+		});
+		fixture.session.sessionManager.appendMessage({
+			role: "user",
+			timestamp: Date.now(),
+			content: ["manager-replay-origin", ...Array.from({ length: 80 }, (_, n) => `manager row ${n}`)].join("\n"),
+		});
+		let view: PaneView | undefined;
+		const h = harness({
+			openView: async (id, session) => {
+				view = await createPaneView({ session, agentId: id, terminal, onSubmit() {} });
+				return view;
+			},
+		});
+		const measure = () => ({
+			bytes: writes.reduce((total, data) => total + Buffer.byteLength(data), 0),
+			replays: writes.join("").split("manager-replay-origin").length - 1,
+		});
+		try {
+			h.start("replay", "task1", "main", fixture.session);
+			await h.until(() => h.opened.length === 1);
+			await terminal.waitForRender();
+			const open = measure();
+			writes.length = 0;
+			await h.manager.reveal("replay");
+			await terminal.waitForRender();
+			const visibleReveal = measure();
+			view!.setTab("thread");
+			await terminal.waitForRender();
+			writes.length = 0;
+			await h.manager.reveal("replay", { tab: "live" });
+			await terminal.waitForRender();
+			const hiddenReveal = measure();
+			console.log(JSON.stringify({ managerReplayBytes: { open, visibleReveal, hiddenReveal } }));
+			expect({
+				open: open.replays,
+				visibleReveal: visibleReveal.replays,
+				hiddenReveal: hiddenReveal.replays,
+			}).toEqual({ open: 1, visibleReveal: 0, hiddenReveal: 1 });
+			expect(visibleReveal.bytes).toBe(0);
+		} finally {
+			await h.manager.dispose();
+			await fixture.close();
+			resetSettingsForTest();
+		}
+	});
+
+	it("round2 operator close during slow revival still reopens on the next event", async () => {
+		const reviving = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const warn = spyOn(logger, "warn").mockImplementation(() => {});
+		const h = harness({
+			beforeRevive: async () => {
+				reviving.resolve();
+				await resume.promise;
+			},
+		});
+		try {
+			h.start("slow");
+			await h.until(() => h.opened.length === 1);
+			h.registry.detachSession("slow");
+			h.registry.setStatus("slow", "parked");
+			await h.manager.reveal("slow");
+			const pane = h.panes.get("slow")![0]!;
+			const fresh = {} as AgentSession;
+			h.registry.attachSession("slow", fresh);
+			h.registry.setStatus("slow", "running");
+			await reviving.promise;
+			vi.useFakeTimers();
+			pane.close();
+			await setImmediate();
+			expect(h.manager.location("slow")).toBeUndefined();
+			resume.resolve();
+			await h.until(() => pane.disposed);
+			expect(warn).not.toHaveBeenCalled();
+			h.bus.emit("task:subagent:event", { id: "slow" });
+			vi.advanceTimersByTime(2000);
+			await setImmediate();
+			expect(h.opened).toHaveLength(2);
+			expect(h.panes.get("slow")!.at(-1)!.session).toBe(fresh);
+		} finally {
+			resume.resolve();
+			vi.useRealTimers();
+		}
+	});
+
 	it("review R1 keeps a reviving oldest pane when another group finishes", async () => {
 		const reviving = Promise.withResolvers<void>();
 		const resume = Promise.withResolvers<void>();

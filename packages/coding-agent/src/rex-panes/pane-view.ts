@@ -66,12 +66,15 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 		else thread.repaint();
 	};
 	const setTab = (next: PaneTab): void => {
+		const wasLive = liveTerminal.visible;
 		tab = next;
 		liveTerminal.visible = next === "live" && mode !== undefined;
 		threadTerminal.visible = !liveTerminal.visible;
 		thread.showSnapshot(next === "live" && !mode ? snapshot : undefined);
 		thread.setVisible(threadTerminal.visible);
-		repaint();
+		if (liveTerminal.visible) {
+			if (!wasLive) mode?.ui.requestRender(true, { clearScrollback: true });
+		} else thread.repaint();
 	};
 	const attach = async (next: AgentSession): Promise<void> => {
 		const replayAfterAttach = !liveTerminal.visible;

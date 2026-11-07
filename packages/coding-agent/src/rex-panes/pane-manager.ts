@@ -290,10 +290,12 @@ class Manager implements PaneManager {
 					return;
 				}
 				if (member.active) {
-					if (member.active.session !== desired) {
+					const active = member.active;
+					if (active.session !== desired) {
 						this.#forgetFinished(member);
-						await member.active.pane.revive?.(desired);
-						member.active.session = desired;
+						await active.pane.revive?.(desired);
+						if (member.active !== active) return;
+						active.session = desired;
 						this.deps.onPaneOpened(id);
 					}
 					return;

@@ -398,6 +398,23 @@ describe("settings registry", () => {
 		expect(new Set(ordered)).toEqual(new Set(all()));
 	});
 
+	it("accepts Rex review and usage overrides and exposes them in the settings panel", () => {
+		const overrides = {
+			"rex.diffReviewPane": false,
+			"usage.codexbarPath": "/opt/local/bin/codexbar",
+			"usage.pollSeconds": 120,
+			"usage.noticePercent": 85,
+		};
+		const settings = Settings.isolated(overrides);
+		const ordered = orderedSettings();
+		for (const [id, value] of Object.entries(overrides)) {
+			const handle = lookup(id);
+			if (!handle) throw new Error(`Missing registered setting ${id}`);
+			expect(handle.get(settings)).toBe(value);
+			expect(ordered).toContain(handle);
+		}
+	});
+
 	it("rejects overrides for unknown setting ids", () => {
 		expect(() => Settings.isolated({ temprature: 0.2 })).toThrow('Unknown setting "temprature"');
 		expect(() => Settings.isolated().overlay({ "nope.nope": 1 })).toThrow('Unknown setting "nope.nope"');

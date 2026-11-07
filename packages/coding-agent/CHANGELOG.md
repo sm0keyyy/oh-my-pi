@@ -4,6 +4,12 @@
 
 ### Added
 
+- Added per-pane Rex resume records that preserve conversations after disconnects.
+- Added Rex tab titles from the session title and active todo item, preserving manual renames.
+- Finished Rex subagent panes retain the last five runs with Live and Thread views; operator messages revive finished agents.
+- Crashed Rex agent panes and enabled panels reopen without racing ordinary agent events.
+- Open background diff reviews after completed main turns in Rex, with batched line notes pasted into the main editor for explicit submission.
+- Added CodexBar usage snapshots and one-time limit notices on macOS.
 - Added blocking request_approval reviews across the main TUI, sessions, and Rex panes.
 - Added non-blocking show_markdown comment panes with batched delivery to the owning agent.
 - Added isolated docked and floating Rex component panes, agent-pane reveal, and restore records with owning omp pids.

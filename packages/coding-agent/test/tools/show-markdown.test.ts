@@ -32,6 +32,7 @@ test("show_markdown returns without waiting for comments and rejects unsupported
 		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 		agentLocation: () => undefined,
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		open: async () => ({ blockId: "md", result: pending.promise, requestRender() {}, close: async () => {} }),
 	});
 	try {

@@ -43,6 +43,7 @@ for (const owner of ["main", "agent"] as const) {
 			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 			agentLocation: () => ({ sessionId: "worker", blockId: "worker" }),
 			revealAgent: async () => false,
+			reopen: async () => ({ ok: false, reason: "unknown-block" }),
 			async open(placement, label, factory) {
 				expect(placement).toMatchObject({ sessionId: owner === "main" ? "main" : "worker", direction: "right" });
 				expect(label).toBe("omp: md guide.md");
@@ -102,6 +103,7 @@ test("batch discard closes without delivering to its owner", async () => {
 		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 		agentLocation: () => undefined,
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		async open(_placement, _label, factory) {
 			overlay = (await factory(
 				{ terminal: { rows: 20 } } as TUI,

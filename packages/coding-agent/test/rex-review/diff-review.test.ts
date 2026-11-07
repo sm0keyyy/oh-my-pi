@@ -65,6 +65,7 @@ async function harness() {
 		mainLocation: () => ({ sessionId: "session:main", blockId: "block:main" }),
 		agentLocation: () => undefined,
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 	};
 	cleanup.push(registerComponentPaneHost(host));
 	const paste = vi.fn((_text: string) => {});

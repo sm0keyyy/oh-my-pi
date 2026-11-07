@@ -98,7 +98,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Extensions",
 		"Developer",
 	],
-	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills", "Rex"],
+	tasks: ["Modes", "Subagents", "Isolation", "Commands & Skills", "Rex", "Usage"],
 	providers: ["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
 };
 

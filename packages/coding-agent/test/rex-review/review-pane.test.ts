@@ -55,6 +55,7 @@ for (const winner of ["pane", "main", "cancel", "withdraw"] as const) {
 			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 			agentLocation: () => ({ sessionId: "agent", blockId: "agent" }),
 			revealAgent: async () => false,
+			reopen: async () => ({ ok: false, reason: "unknown-block" }),
 			async open(placement, label, factory) {
 				expect(placement).toMatchObject({ sessionId: "agent", anchorBlockId: "agent", direction: "right" });
 				expect(label).toBe("omp: review race.md");
@@ -391,6 +392,7 @@ test("remote review through raceDialog closes both the native overlay and the pa
 		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 		agentLocation: () => undefined,
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		open: async () => ({
 			blockId: "review",
 			result: Promise.withResolvers<never>().promise,
@@ -442,6 +444,7 @@ test("round 2: a delivered verdict clears notes through requestReview before ano
 		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 		agentLocation: () => ({ sessionId: "agent", blockId: "agent" }),
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		async open(_placement, _label, factory) {
 			const answer = Promise.withResolvers<unknown>();
 			overlay = (await factory(tui, theme, KeybindingsManager.inMemory(), answer.resolve)) as PlanReviewOverlay;
@@ -482,6 +485,7 @@ for (const lateInput of ["verdict", "annotation"] as const) {
 			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 			agentLocation: () => undefined,
 			revealAgent: async () => false,
+			reopen: async () => ({ ok: false, reason: "unknown-block" }),
 			async open(_placement, _label, factory) {
 				const answer = Promise.withResolvers<unknown>();
 				overlay = (await factory(tui, theme, KeybindingsManager.inMemory(), answer.resolve)) as PlanReviewOverlay;

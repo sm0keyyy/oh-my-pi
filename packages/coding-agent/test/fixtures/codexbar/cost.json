@@ -1,0 +1,22 @@
+[
+	{
+		"provider": "codex",
+		"source": "local",
+		"updatedAt": "2026-11-06T12:00:00Z",
+		"daily": [
+			{ "date": "2026-11-05", "totalTokens": 99999, "modelsUsed": ["redacted"] },
+			{ "date": "2026-11-06", "totalTokens": 12345, "modelsUsed": ["redacted"] }
+		],
+		"projects": [{ "name": "redacted", "path": "redacted", "totalTokens": 12345 }],
+		"totals": { "totalTokens": 112344 }
+	},
+	{
+		"provider": "claude",
+		"daily": [{ "date": "2026-11-05", "totalTokens": 450 }],
+		"totals": { "totalTokens": 450 }
+	},
+	{
+		"provider": "cursor",
+		"error": { "message": "Provider unavailable" }
+	}
+]

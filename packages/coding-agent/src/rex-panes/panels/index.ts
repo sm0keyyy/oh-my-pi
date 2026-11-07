@@ -1,14 +1,18 @@
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { Settings } from "../../config/settings";
 import type { InteractiveMode } from "../../modes/interactive-mode";
+import { IrcBus } from "../../irc/bus";
 import { componentPaneHost, type ComponentPane, type ComponentPaneHost, type RexLocation } from "../component-pane";
 import { createAgentsPanel } from "./agents";
-import { cfgRexPanelAgents, cfgRexPanelTodo } from "./settings";
+import { DashboardPanel } from "./dashboard";
+import { FeedPanel } from "./feed";
+import { cfgRexPanelAgents, cfgRexPanelFeed, cfgRexPanelTodo, cfgRexPanelUsage } from "./settings";
 import { TodoPanel } from "./todo";
+import { UsagePanel } from "./usage";
 
 export * from "./settings";
 
-export type PanelName = "todo" | "agents";
+export type PanelName = "todo" | "agents" | "usage" | "dashboard" | "feed";
 export interface RexPanels {
 	toggle(name: PanelName, shape?: "dock" | "float"): Promise<{ open: boolean }>;
 	isOpen(name: PanelName): boolean;
@@ -23,6 +27,7 @@ interface OpenPanel {
 	abort: AbortController;
 	location: RexLocation;
 	pane?: ComponentPane<void>;
+	start?: () => void;
 }
 
 export function startRexPanels(main: { settings: Settings; mode: InteractiveMode }): RexPanels {
@@ -37,6 +42,26 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 		agents: {
 			shape: () => cfgRexPanelAgents.get(main.settings),
 			create: (tui, done, host) => createAgentsPanel(main.mode, tui, done, host),
+		},
+		usage: {
+			shape: () => cfgRexPanelUsage.get(main.settings),
+			create: tui => new UsagePanel(tui),
+		},
+		dashboard: {
+			shape: () => "float",
+			create: (tui, _done, _host, entry) => {
+				const panel = new DashboardPanel(tui, {
+					sessionId: entry.location.sessionId,
+					settings: main.settings,
+					session: main.mode.session,
+				});
+				entry.start = () => panel.start(entry.location.blockId);
+				return panel;
+			},
+		},
+		feed: {
+			shape: () => cfgRexPanelFeed.get(main.settings),
+			create: tui => new FeedPanel(tui, main.mode.sessionManager.getSessionFile(), IrcBus.global()),
 		},
 	};
 	const release = (name: PanelName, entry: OpenPanel): void => {
@@ -64,7 +89,7 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 		open.set(name, entry);
 		try {
 			const placement =
-				(shape ?? definition.shape()) === "float"
+				name === "dashboard" || (shape ?? definition.shape()) === "float"
 					? { kind: "float" as const, sessionId: location.sessionId, bounds: [0.55, 0.05, 0.43, 0.6] as const }
 					: {
 							kind: "dock" as const,
@@ -84,6 +109,7 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 			}
 			entry.pane = pane;
 			entry.location = { sessionId: location.sessionId, blockId: pane.blockId };
+			entry.start?.();
 			void pane.result.then(() => release(name, entry));
 			if (disposed) {
 				await pane.close();

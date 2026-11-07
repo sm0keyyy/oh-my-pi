@@ -25,3 +25,29 @@ export const cfgRexPanelAgents = register({
 		description: "Default shape for the Rex Agents panel",
 	},
 });
+
+export const cfgRexPanelUsage = register({
+	id: "rex.panels.usage",
+	type: "enum",
+	values: ["dock", "float"] as const,
+	default: "dock",
+	ui: {
+		tab: "tasks",
+		group: "Rex",
+		label: "Usage Panel",
+		description: "Default shape for the Rex usage panel",
+	},
+});
+
+export const cfgRexPanelFeed = register({
+	id: "rex.panels.feed",
+	type: "enum",
+	values: ["dock", "float"] as const,
+	default: "dock",
+	ui: {
+		tab: "tasks",
+		group: "Rex",
+		label: "Team Feed Panel",
+		description: "Default shape for the read-only Rex team feed",
+	},
+});

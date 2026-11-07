@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -148,12 +149,46 @@ describe("codegraph", () => {
 	});
 
 	it("times out a hung CLI and cancels its process", async () => {
-		// The child has its own platform clock, which fake timers cannot control.
-		await cli('await Bun.write(process.argv[1] + ".pid", String(process.pid)); await Bun.sleep(10_000);');
+		await cli(`
+			import * as fs from "node:fs/promises";
+			const marker = process.argv[1] + ".pid";
+			await Bun.write(marker + ".tmp", String(process.pid));
+			await fs.rename(marker + ".tmp", marker);
+			// Keep this external process alive until the parent terminates it.
+			await Bun.sleep(10_000);
+		`);
 		const tool = (await CodegraphTool.createIf(session({ "codegraph.timeout": 0.1 })))!;
-		await expect(tool.execute("timeout", { op: "files" })).rejects.toThrow("timed out");
-		const pid = Number(await Bun.file(`${executable}.pid`).text());
-		expect(() => process.kill(pid, 0)).toThrow();
+		const ready = Promise.withResolvers<void>();
+		const watcher = fsSync.watch(path.dirname(executable), (_event, filename) => {
+			if (filename === "codegraph.pid") ready.resolve();
+		});
+		watcher.on("error", ready.reject);
+		// Hold only the deadline clock until the real child publishes its PID.
+		const deadline = new AbortController();
+		const realTimeout = AbortSignal.timeout;
+		const timeout = spyOn(AbortSignal, "timeout").mockImplementation(ms =>
+			ms === 100 ? deadline.signal : realTimeout(ms),
+		);
+		const result = tool.execute("timeout", { op: "files" });
+		try {
+			await Promise.race([
+				ready.promise,
+				result.then(() => {
+					throw new Error("Codegraph fixture exited before publishing its PID");
+				}),
+			]);
+			const pid = Number(await Bun.file(`${executable}.pid`).text());
+			expect(timeout).toHaveBeenCalledWith(100);
+			expect(process.kill(pid, 0)).toBe(true);
+			deadline.abort(new DOMException("The operation timed out", "TimeoutError"));
+			await expect(result).rejects.toThrow("timed out");
+			expect(() => process.kill(pid, 0)).toThrow();
+		} finally {
+			deadline.abort();
+			timeout.mockRestore();
+			watcher.close();
+			await result.catch(() => {});
+		}
 	});
 
 	it("honors a caller abort and a pre-aborted signal", async () => {

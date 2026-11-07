@@ -4,7 +4,7 @@ import { getBaseConfigRoot, isEnoent, isPidAlive } from "@oh-my-pi/pi-utils";
 
 export type PaneRecord =
 	| { kind: "omp"; pid: number; cwd: string; session: string }
-	| { kind: "relay"; pid: number; group: boolean };
+	| { kind: "relay"; pid: number; group: boolean; label?: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -36,6 +36,10 @@ export function writePaneRecord(blockId: string, record: PaneRecord): void {
 		lines.push(`cwd=${record.cwd}`, `session=${record.session}`);
 	} else {
 		lines.push(`group=${record.group ? 1 : 0}`);
+		if (record.label !== undefined) {
+			if (!record.label || /[\x00-\x1f\x7f]/.test(record.label)) throw new Error("Invalid pane record label");
+			lines.push(`label=${record.label}`);
+		}
 	}
 	privateDirectory(path.dirname(file));
 	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -65,7 +69,7 @@ export function sweepPaneRecords(now = Date.now()): void {
 				if (!entry.isFile() || now - entry.mtimeMs <= MAX_AGE_MS || entry.size > 16384) continue;
 				const text = fs.readFileSync(file, "utf8");
 				const match =
-					/^omp-pane-record 1\nkind=(omp|relay)\npid=([1-9][0-9]*)\n(?:cwd=[^\r\n\0]+\nsession=[^\r\n\0]+\n|group=[01]\n)$/.exec(
+					/^omp-pane-record 1\nkind=(omp|relay)\npid=([1-9][0-9]*)\n(?:cwd=[^\r\n\0]+\nsession=[^\r\n\0]+\n|group=[01]\n(?:label=[^\x00-\x1f\x7f]+\n)?)$/.exec(
 						text,
 					);
 				if (!match) continue;

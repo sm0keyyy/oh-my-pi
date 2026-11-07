@@ -24,6 +24,7 @@ import { SocketTerminal } from "./socket-terminal";
 
 export * from "./component-pane";
 export * from "./pane-records";
+export * from "./supervise";
 export interface RexPanesMain {
 	settings: Settings;
 	subagentEventBus: EventBus | undefined;
@@ -95,7 +96,7 @@ export function startSubagentSurfaces(main: RexPanesMain): { dispose(): Promise<
 		}));
 	}
 
-	async function openPane(agentId: string, session: AgentSession, token: string): Promise<OpenPane> {
+	async function openPane(agentId: string, session: AgentSession | null, token: string): Promise<OpenPane> {
 		if (!server || disposed) throw new Error("Pane surfaces closed");
 		const connection = await server.expect(token, 10_000);
 		const closed = Promise.withResolvers<void>();
@@ -113,20 +114,31 @@ export function startSubagentSurfaces(main: RexPanesMain): { dispose(): Promise<
 			drained: () => terminal.drained(),
 			closed: () => {
 				disconnected = true;
-				if (panes.get(agentId) === view?.ui) panes.delete(agentId);
+				if (view?.session && panes.get(agentId) === view.ui) panes.delete(agentId);
 				closed.resolve();
 				terminal.hostClosed();
 			},
 		});
 		try {
+			const registry = AgentRegistry.global();
+			const ref = registry.get(agentId);
+			let root = ref;
+			const visited = new Set<string>();
+			while (root?.parentId && !visited.has(root.id)) {
+				visited.add(root.id);
+				root = registry.get(root.parentId);
+			}
 			view = await createPaneView({
 				session,
 				agentId,
 				terminal,
+				sessionFile: ref?.sessionFile ?? undefined,
+				rootSessionFile: root?.sessionFile ?? root?.session?.sessionManager.getSessionFile(),
 				onSubmit: text => {
 					void routePaneInput(agentId, text).then(
 						outcome => {
 							if (outcome.kind === "refused") view?.notice(outcome.message);
+							else if (outcome.kind === "tab") view?.setTab(outcome.tab);
 						},
 						error => {
 							warn(error);
@@ -137,15 +149,26 @@ export function startSubagentSurfaces(main: RexPanesMain): { dispose(): Promise<
 			});
 			if (disconnected || disposed) throw new Error("Pane closed during initialization");
 			const paneView = view;
-			panes.set(agentId, paneView.ui);
+			if (paneView.session) panes.set(agentId, paneView.ui);
 			const unsubscribeRepaint = terminal.onRepaintNeeded(() => paneView.repaint());
 			let closing: Promise<void> | undefined;
 			return {
-				ui: paneView.ui,
+				get ui() {
+					return paneView.session ? paneView.ui : undefined;
+				},
 				closed: closed.promise,
+				setTab: tab => paneView.setTab(tab),
+				async finish() {
+					panes.delete(agentId);
+					await paneView.finish();
+				},
+				async revive(next) {
+					await paneView.revive(next);
+					if (!disconnected && !disposed && paneView.session) panes.set(agentId, paneView.ui);
+				},
 				dispose() {
 					if (closing) return closing;
-					if (panes.get(agentId) === paneView.ui) panes.delete(agentId);
+					if (paneView.session && panes.get(agentId) === paneView.ui) panes.delete(agentId);
 					unsubscribeRepaint();
 					closing = paneView.dispose().finally(() => {
 						terminal.stop();

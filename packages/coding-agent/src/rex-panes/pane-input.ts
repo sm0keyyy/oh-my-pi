@@ -6,8 +6,19 @@ import type { AgentSession } from "../session/agent-session";
 import { abortSubagent, stopSubagent } from "../task/run-controls";
 
 export type PaneInputOutcome =
-	| { kind: "steered" | "follow-up" | "stopped" | "aborted" }
+	| { kind: "steered" | "follow-up" | "revived" | "stopped" | "aborted" }
+	| { kind: "tab"; tab: "live" | "thread" }
 	| { kind: "refused"; message: string };
+
+export type DeliverOutcome = { ok: true; kind: "steered" | "follow-up" | "revived" } | { ok: false; message: string };
+
+export async function deliverOperatorMessage(agentId: string, text: string): Promise<DeliverOutcome> {
+	const outcome = await submitPanePrompt(agentId, text);
+	if (outcome.kind === "refused") return { ok: false, message: outcome.message };
+	if (outcome.kind === "steered" || outcome.kind === "follow-up" || outcome.kind === "revived")
+		return { ok: true, kind: outcome.kind };
+	throw new Error("Unexpected pane delivery outcome");
+}
 
 const panePrompt = new AsyncLocalStorage<{ session: AgentSession; claimed: boolean }>();
 
@@ -45,8 +56,10 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 	if (!text) return { kind: "refused", message: "Enter a message or use /stop <reason> or /abort <reason>." };
 	if (text.startsWith("/")) {
 		const [command = "", ...words] = text.split(/\s+/);
+		if ((command === "/thread" || command === "/live") && words.length === 0)
+			return { kind: "tab", tab: command === "/thread" ? "thread" : "live" };
 		if (command !== "/stop" && command !== "/abort") {
-			return { kind: "refused", message: "Pane commands: /stop <reason> or /abort <reason>." };
+			return { kind: "refused", message: "Pane commands: /thread, /live, /stop <reason> or /abort <reason>." };
 		}
 		const reason = words.join(" ");
 		if (!reason) return { kind: "refused", message: `Usage: ${command} <reason>` };
@@ -60,27 +73,32 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 					: `Cannot ${command.slice(1)} ${agentId}: ${outcome.reason}`,
 		};
 	}
-	return submitPanePrompt(agentId, text);
+	const outcome = await deliverOperatorMessage(agentId, text);
+	return outcome.ok ? { kind: outcome.kind } : { kind: "refused", message: outcome.message };
 }
 
 async function submitPanePrompt(agentId: string, text: string, followUpOnly = false): Promise<PaneInputOutcome> {
 	const registry = AgentRegistry.global();
 	const ref = registry.get(agentId);
-	if (!ref || ref.kind !== "sub" || !ref.session || (ref.status !== "running" && ref.status !== "idle")) {
+	if (!ref || ref.kind !== "sub") {
 		return { kind: "refused", message: `Subagent is not live: ${agentId}` };
 	}
+	const revived = ref.status === "parked" || ref.status === "aborted";
 	try {
 		const session = await AgentLifecycleManager.global().ensureLive(agentId);
+		const current = registry.get(agentId);
 		if (
-			registry.get(agentId) !== ref ||
-			ref.session !== session ||
-			(ref.status !== "running" && ref.status !== "idle")
+			!current ||
+			current.kind !== "sub" ||
+			current.session !== session ||
+			(current.status !== "running" && current.status !== "idle") ||
+			(!revived && current !== ref)
 		) {
 			return { kind: "refused", message: `Subagent is no longer live: ${agentId}` };
 		}
-		const followUp = ref.status === "idle" && !session.isStreaming;
+		const followUp = current.status === "idle" && !session.isStreaming;
 		if (followUpOnly && !followUp) return { kind: "refused", message: "The agent is no longer idle." };
-		if (followUp && ref.lifecycle?.acceptedAt === undefined) {
+		if (followUp && !revived && current.lifecycle?.acceptedAt === undefined) {
 			return { kind: "refused", message: "The agent has no accepted result to follow up." };
 		}
 		const accepted = Promise.withResolvers<void>();
@@ -105,7 +123,7 @@ async function submitPanePrompt(agentId: string, text: string, followUpOnly = fa
 		);
 		try {
 			await accepted.promise;
-			return { kind: followUp ? "follow-up" : "steered" };
+			return { kind: revived ? "revived" : followUp ? "follow-up" : "steered" };
 		} finally {
 			unsubscribe();
 		}

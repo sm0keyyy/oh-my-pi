@@ -10,10 +10,17 @@ import type { RexLocation } from "./component-pane";
 import { removePaneRecord, writePaneRecord } from "./pane-records";
 import type { RexCli } from "./rex-cli";
 import { cfgRexSubagentPanes } from "./settings";
+import { PaneReopenGate, registerPaneSupervisor, type ReopenOutcome } from "./supervise";
+
+export const FINISHED_PANES_KEPT = 5;
+export type PaneTab = "live" | "thread";
 
 export interface OpenPane {
-	readonly ui: ExtensionUIContext;
+	readonly ui: ExtensionUIContext | undefined;
 	readonly closed: Promise<void>;
+	finish?(): Promise<void>;
+	revive?(session: AgentSession): Promise<void>;
+	setTab?(tab: PaneTab): void;
 	dispose(): Promise<void>;
 }
 
@@ -25,19 +32,19 @@ export interface PaneManagerDeps {
 	relayPath: string;
 	newToken(): string;
 	prepareToken(token: string): Promise<string>;
-	openPane(agentId: string, session: AgentSession, token: string): Promise<OpenPane>;
+	openPane(agentId: string, session: AgentSession | null, token: string): Promise<OpenPane>;
 	onPaneOpened(agentId: string): void;
 }
 
 export interface PaneManager {
 	paneUi(agentId: string): ExtensionUIContext | undefined;
 	location(agentId: string): RexLocation | undefined;
-	reveal(agentId: string): Promise<boolean>;
+	reveal(agentId: string, options?: { tab?: PaneTab }): Promise<boolean>;
 	dispose(): Promise<void>;
 }
 
 interface ActivePane {
-	session: AgentSession;
+	session: AgentSession | null;
 	blockId: string;
 	pane: OpenPane;
 }
@@ -52,6 +59,11 @@ interface Member {
 	queued: boolean;
 	everOpened: boolean;
 	requested: boolean;
+	finished: boolean;
+	tab: PaneTab;
+	lastBlockId?: string;
+	previousBlockId?: string;
+	gate: PaneReopenGate;
 }
 
 interface Group {
@@ -77,12 +89,14 @@ class Manager implements PaneManager {
 	readonly #groups = new Map<string, Group>();
 	readonly #members = new Map<string, Member>();
 	readonly #unsubscribers: Array<() => void>;
+	readonly #finished: Member[] = [];
 	#disposed = false;
 	#warned = false;
 	#disposePromise?: Promise<void>;
 
 	constructor(readonly deps: PaneManagerDeps) {
 		this.#unsubscribers = [
+			registerPaneSupervisor(this),
 			deps.subagentEventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				if (!isRecord(data) || typeof data.id !== "string") return;
 				if (data.status === "started") {
@@ -101,6 +115,7 @@ class Manager implements PaneManager {
 				if (!member) return;
 				this.#queue(member.group, async () => {
 					if (this.deps.registry.get(member.id)) return;
+					member.gate.clear();
 					member.group.members.delete(member);
 					this.#members.delete(member.id);
 					if (member.group.members.size === 0 && !member.group.sessionId && member.group.blocks.size === 0) {
@@ -112,7 +127,8 @@ class Manager implements PaneManager {
 	}
 
 	paneUi(agentId: string): ExtensionUIContext | undefined {
-		return this.#members.get(agentId)?.active?.pane.ui;
+		const member = this.#members.get(agentId);
+		return member?.finished ? undefined : member?.active?.pane.ui;
 	}
 
 	location(agentId: string): RexLocation | undefined {
@@ -121,22 +137,61 @@ class Manager implements PaneManager {
 		return sessionId && member?.active ? { sessionId, blockId: member.active.blockId } : undefined;
 	}
 
-	async reveal(agentId: string): Promise<boolean> {
-		if (this.#disposed || !this.#live(this.deps.registry.get(agentId))) return false;
-		if (!this.#members.has(agentId)) this.#started(agentId, undefined);
+	async reveal(agentId: string, options?: { tab?: PaneTab }): Promise<boolean> {
+		const ref = this.deps.registry.get(agentId);
+		if (this.#disposed || ref?.kind !== "sub") return false;
+		if (!this.#members.has(agentId)) this.#started(agentId, undefined, true);
 		const member = this.#members.get(agentId);
 		if (!member) return false;
 		member.failed = false;
-		this.#changed(agentId);
+		member.tab = options?.tab ?? (this.#live(ref) ? member.tab : "thread");
 		let revealed = false;
 		this.#queue(member.group, async () => {
+			if (this.#disposed || !this.deps.registry.get(agentId)) return;
+			if (!member.active) await this.#open(member, this.#live(this.deps.registry.get(agentId)));
+			member.active?.pane.setTab?.(member.tab);
 			const location = this.location(agentId);
-			if (this.#disposed || !location) return;
+			if (!location) return;
 			await this.deps.rex.focusBlock(location.sessionId, location.blockId);
 			revealed = true;
 		});
 		await member.group.tail;
 		return revealed;
+	}
+
+	markCrashed(blockId: string): boolean {
+		const member = this.#memberForBlock(blockId);
+		if (!member) return false;
+		member.gate.markCrashed();
+		return true;
+	}
+
+	async reopen(blockId: string): Promise<ReopenOutcome> {
+		const member = this.#memberForBlock(blockId);
+		if (!member) return { ok: false, reason: "unknown-block" };
+		let outcome: ReopenOutcome = { ok: false, reason: "agent-gone" };
+		this.#queue(member.group, async () => {
+			const session = this.#live(this.deps.registry.get(member.id));
+			if (this.#disposed || !session) return;
+			if (member.active) {
+				outcome = { ok: false, reason: "already-open" };
+				return;
+			}
+			member.gate.clear();
+			member.failed = false;
+			member.session = session;
+			member.requested = false;
+			await this.#open(member, session);
+			if (member.active) outcome = { ok: true };
+		});
+		await member.group.tail;
+		return outcome;
+	}
+
+	#memberForBlock(blockId: string): Member | undefined {
+		for (const member of this.#members.values())
+			if (member.lastBlockId === blockId || member.previousBlockId === blockId) return member;
+		return undefined;
 	}
 
 	#warn(cause: unknown): void {
@@ -155,10 +210,10 @@ class Manager implements PaneManager {
 		return ref?.kind === "sub" && ref.status !== "parked" && ref.status !== "aborted" ? ref.session : null;
 	}
 
-	#started(id: string, parentToolCallId: string | undefined): void {
+	#started(id: string, parentToolCallId: string | undefined, reveal = false): void {
 		if (this.#disposed) return;
 		const ref = this.deps.registry.get(id);
-		if (!this.#live(ref)) return;
+		if (ref?.kind !== "sub" || (!reveal && !this.#live(ref))) return;
 		let member = this.#members.get(id);
 		if (!member) {
 			let group: Group | undefined;
@@ -187,6 +242,14 @@ class Manager implements PaneManager {
 				queued: false,
 				everOpened: false,
 				requested: false,
+				finished: false,
+				tab: "live",
+				gate: new PaneReopenGate(() => {
+					const current = this.#members.get(id);
+					if (!current || this.#disposed) return;
+					if (current.requested) this.#changed(id);
+					this.#queue(current.group, () => this.#killEmpty(current.group));
+				}),
 			};
 			group.members.add(member);
 			this.#members.set(id, member);
@@ -199,32 +262,76 @@ class Manager implements PaneManager {
 		if (this.#disposed) return;
 		const member = this.#members.get(id);
 		if (!member) return;
-		const session = this.#live(this.deps.registry.get(id));
+		const ref = this.deps.registry.get(id);
+		const session = this.#live(ref);
 		if (member.session !== session) member.failed = false;
 		member.session = session;
 		member.requested = session !== null;
-		if (member.queued || member.active?.session === session || (!member.active && (!session || member.failed)))
-			return;
+		if (member.queued) return;
 		member.queued = true;
 		this.#queue(member.group, async () => {
 			try {
 				if (this.#disposed) return;
-				if (member.active && member.active.session !== member.session) await this.#close(member);
-				const desired = member.session;
-				if (!desired || member.active || member.failed || !member.requested) return;
+				const current = this.deps.registry.get(id);
+				if (!current) {
+					await this.#close(member);
+					return;
+				}
+				if (member.failed) return;
+				const desired = this.#live(current);
+				if (!desired) {
+					if ((current.status === "parked" || current.status === "aborted") && member.active)
+						await this.#finish(member);
+					return;
+				}
+				if (member.active) {
+					if (member.active.session !== desired) {
+						await member.active.pane.revive?.(desired);
+						member.active.session = desired;
+						this.#forgetFinished(member);
+						this.deps.onPaneOpened(id);
+					}
+					return;
+				}
+				if (!member.requested || member.gate.held) return;
 				member.requested = false;
 				await this.#open(member, desired);
+			} catch (error) {
+				member.failed = true;
+				throw error;
 			} finally {
 				member.queued = false;
+				const latest = this.deps.registry.get(id);
 				if (
-					!this.#disposed &&
-					(member.active
-						? member.active.session !== member.session
-						: member.session && member.requested && !member.failed)
+					!member.failed &&
+					member.active &&
+					((this.#live(latest) && member.active.session !== this.#live(latest)) ||
+						((latest?.status === "parked" || latest?.status === "aborted") && !member.finished))
 				)
 					this.#changed(id);
 			}
 		});
+	}
+
+	#forgetFinished(member: Member): void {
+		member.finished = false;
+		const index = this.#finished.indexOf(member);
+		if (index !== -1) this.#finished.splice(index, 1);
+	}
+
+	async #finish(member: Member): Promise<void> {
+		const active = member.active;
+		if (member.finished || !active) return;
+		await active.pane.finish?.();
+		active.session = null;
+		if (member.active !== active) return;
+		member.session = null;
+		member.finished = true;
+		this.#finished.push(member);
+		while (this.#finished.length > FINISHED_PANES_KEPT) {
+			const oldest = this.#finished[0];
+			if (oldest) await this.#close(oldest);
+		}
 	}
 
 	#removeRecord(group: Group, sessionId: string, blockId: string): void {
@@ -250,6 +357,7 @@ class Manager implements PaneManager {
 
 	async #killEmpty(group: Group): Promise<void> {
 		if (!group.sessionId) return;
+		for (const member of group.members) if (member.gate.held) return;
 		for (const member of group.members) if (member.active) return;
 		const sessionId = group.sessionId;
 		group.sessionId = undefined;
@@ -276,6 +384,8 @@ class Manager implements PaneManager {
 		const active = member.active;
 		if (this.#disposed || !active) return;
 		member.active = undefined;
+		member.gate.clear();
+		this.#forgetFinished(member);
 		if (member.group.sessionId) {
 			await this.#closeBlock(member.group, member.group.sessionId, active.blockId).catch(error => this.#warn(error));
 		}
@@ -284,7 +394,7 @@ class Manager implements PaneManager {
 		await this.#label(member.group).catch(error => this.#warn(error));
 	}
 
-	async #open(member: Member, session: AgentSession): Promise<void> {
+	async #open(member: Member, session: AgentSession | null): Promise<void> {
 		const group = member.group;
 		let opened: Promise<{ pane: OpenPane } | { error: unknown }> | undefined;
 		let block: string | undefined;
@@ -328,24 +438,31 @@ class Manager implements PaneManager {
 			let blocks = group.blocks.get(sessionId);
 			if (!blocks) group.blocks.set(sessionId, (blocks = new Set()));
 			blocks.add(block);
-			writePaneRecord(block, { kind: "relay", pid: process.pid, group: true });
+			writePaneRecord(block, { kind: "relay", pid: process.pid, group: true, label: `omp: ${member.id}` });
 			const result = await opened;
 			if ("error" in result) throw result.error;
 			const active = { session, blockId: block, pane: result.pane };
 			member.active = active;
+			member.previousBlockId = member.lastBlockId;
+			member.lastBlockId = block;
+			member.gate.clear();
+			result.pane.setTab?.(member.tab);
+			if (!session) await this.#finish(member);
 			member.everOpened = true;
 			void result.pane.closed
 				.then(() => {
 					if (this.#disposed || member.active !== active) return;
 					member.active = undefined;
 					member.requested = false;
+					this.#forgetFinished(member);
+					member.gate.disconnected();
 					this.#queue(group, async () => {
 						await active.pane.dispose().catch(error => this.#warn(error));
 						await this.#killEmpty(group);
 					});
 				})
 				.catch(error => this.#warn(error));
-			if (this.#disposed || member.session !== session) {
+			if (this.#disposed) {
 				await this.#close(member);
 				return;
 			}
@@ -370,6 +487,8 @@ class Manager implements PaneManager {
 		if (this.#disposePromise) return this.#disposePromise;
 		this.#disposed = true;
 		for (const unsubscribe of this.#unsubscribers) unsubscribe();
+		for (const member of this.#members.values()) member.gate.clear();
+		this.#finished.length = 0;
 		this.#unsubscribers.length = 0;
 		for (const group of this.#groups.values()) {
 			this.#queue(group, async () => {

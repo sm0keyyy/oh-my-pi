@@ -26,6 +26,8 @@ import { startPaneServer } from "../../src/rex-panes/pane-server";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
+import { SocketTerminal } from "../../src/rex-panes/socket-terminal";
+import { markPaneCrashed, reopenCrashedPane } from "../../src/rex-panes/supervise";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { frame, hello, until } from "./helpers/build-relay";
 
@@ -133,7 +135,7 @@ test("open docks or floats, uses one-shot credential argv, writes owner pid, ans
 	]);
 	expect(h.calls[0]?.at(-1)).toEndWith(".credential");
 	expect(await Bun.file(paneRecordPath(pane!.blockId)!).text()).toBe(
-		`omp-pane-record 1\nkind=relay\npid=${process.pid}\ngroup=0\n`,
+		`omp-pane-record 1\nkind=relay\npid=${process.pid}\ngroup=0\nlabel=omp: test\n`,
 	);
 	done!("answer");
 	done!("ignored");
@@ -310,6 +312,33 @@ test("cycles release five component trees, abort listeners and the host registra
 	expect(process.eventNames().map(name => [name, process.listenerCount(name)])).toEqual(counts);
 	await h.host.dispose();
 	expect(await h.host.open(dock, "omp: closed", () => new Text("closed"))).toBeUndefined();
+});
+
+test("supervision reopens only a crashed toggled-on panel in its placement, never a closed panel or review", async () => {
+	const h = await harness();
+	const eof = Promise.withResolvers<void>();
+	const hostClosed = SocketTerminal.prototype.hostClosed;
+	vi.spyOn(SocketTerminal.prototype, "hostClosed").mockImplementation(function (this: SocketTerminal) {
+		hostClosed.call(this);
+		eof.resolve();
+	});
+	let renders = 0;
+	const pane = await h.host.open(dock, "omp: agents", () => new Text(`panel generation ${++renders}`));
+	expect(pane).toBeDefined();
+	const crashed = pane!.blockId;
+	h.peers[0]!.end();
+	await eof.promise;
+	expect(markPaneCrashed(crashed)).toBe(true);
+	expect(await reopenCrashedPane(crashed)).toEqual({ ok: true });
+	await until(() => h.output.join("").includes("panel generation 2"));
+	expect(pane!.blockId).not.toBe(crashed);
+	expect(h.calls[1]?.slice(1, 7)).toEqual(["split", "-s", "s1", "-b", "anchor", "--split=right"]);
+	expect(await h.host.reopen(crashed)).toEqual({ ok: false, reason: "already-open" });
+	const current = pane!.blockId;
+	await pane!.close();
+	expect(await h.host.reopen(current)).toEqual({ ok: false, reason: "panel-off" });
+	const review = await h.host.open(dock, "omp: review", () => new Text("review"));
+	expect(await h.host.reopen(review!.blockId)).toEqual({ ok: false, reason: "unknown-block" });
 });
 
 test("host eligibility requires Rex on Mac with both process location ids", () => {

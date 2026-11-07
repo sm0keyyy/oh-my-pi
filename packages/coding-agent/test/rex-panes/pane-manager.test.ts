@@ -10,7 +10,9 @@ import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
 
 interface TestPane extends OpenPane {
-	session: AgentSession;
+	session: AgentSession | null;
+	finished: boolean;
+	tab: "live" | "thread";
 	disposed: boolean;
 	close(): void;
 }
@@ -95,6 +97,21 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 				session,
 				ui: {} as ExtensionUIContext,
 				disposed: false,
+				finished: session === null,
+				tab: "live",
+				async finish() {
+					pane.finished = true;
+					pane.session = null;
+					notify();
+				},
+				async revive(next) {
+					pane.finished = false;
+					pane.session = next;
+					notify();
+				},
+				setTab(tab) {
+					pane.tab = tab;
+				},
 				closed: closed.promise,
 				close: () => closed.resolve(),
 				async dispose() {
@@ -188,31 +205,34 @@ describe("pane manager", () => {
 			expect(call).toContain("--focus=false");
 	});
 
-	it("lifecycle closes parked, aborted, and removed panes, kills the last group, and revives on the new session", async () => {
+	it("finished panes retain five read-only blocks, evict oldest, revive in place and close on removal", async () => {
 		const h = harness();
-		for (const id of ["a", "b", "c"]) h.start(id);
-		await h.until(() => h.opened.length === 3);
-		const old = h.panes.get("a")![0]!;
-		h.registry.detachSession("a");
-		h.registry.setStatus("a", "parked");
-		h.registry.setStatus("b", "aborted");
-		h.registry.unregister("c");
-		await h.until(() => h.sessions.size === 0);
+		for (const id of ["a", "b", "c", "d", "e", "f"]) h.start(id);
+		await h.until(() => h.opened.length === 6);
+		const old = h.panes.get("b")![0]!;
+		for (const id of ["a", "b", "c", "d", "e", "f"]) {
+			h.registry.detachSession(id);
+			h.registry.setStatus(id, id === "c" ? "aborted" : "parked");
+		}
+		await h.until(() => h.panes.get("f")![0]!.finished && h.panes.get("a")![0]!.disposed);
 		expect(h.calls.filter(call => call[1] === "block" && call[2] === "close").map(call => call.at(-1))).toEqual([
 			"b1",
-			"b2",
-			"b3",
 		]);
-		for (const history of h.panes.values()) expect(history[0]!.disposed).toBe(true);
-		expect(h.manager.paneUi("a")).toBeUndefined();
+		expect(h.manager.paneUi("b")).toBeUndefined();
+		expect(h.manager.location("b")).toEqual({ sessionId: "s1", blockId: "b2" });
 		const fresh = {} as AgentSession;
-		h.registry.attachSession("a", fresh);
-		h.registry.setStatus("a", "running");
-		await h.until(() => h.opened.length === 4);
-		expect(h.panes.get("a")![1]!.session).toBe(fresh);
-		expect(old.session).not.toBe(fresh);
-		expect(h.sessions).toEqual(new Set(["s2"]));
-		expect(h.manager.paneUi("a")).toBe(h.panes.get("a")![1]!.ui);
+		h.registry.attachSession("b", fresh);
+		h.registry.setStatus("b", "running");
+		await h.until(() => old.session === fresh);
+		expect(old.finished).toBe(false);
+		expect(h.manager.location("b")?.blockId).toBe("b2");
+		expect(h.panes.get("b")).toHaveLength(1);
+		expect(await h.manager.reveal("a", { tab: "thread" })).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.finished).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.tab).toBe("thread");
+		for (const id of ["a", "b", "c", "d", "e", "f"]) h.registry.unregister(id);
+		await h.until(() => h.sessions.size === 0);
+		for (const history of h.panes.values()) expect(history[0]!.disposed).toBe(true);
 	});
 
 	it("hints collection once when the last pane closes and once on idempotent disposal", async () => {
@@ -223,11 +243,11 @@ describe("pane manager", () => {
 			h.start("a");
 			h.start("b");
 			await h.until(() => h.opened.length === 2);
-			h.registry.setStatus("a", "parked");
+			h.registry.unregister("a");
 			await h.until(() => h.calls.at(-1)?.[4] === "omp: a");
 			expect(h.panes.get("a")![0]!.disposed).toBe(true);
 			expect(gc).not.toHaveBeenCalled();
-			h.registry.setStatus("b", "parked");
+			h.registry.unregister("b");
 			await collected.promise;
 			expect(h.sessions.size).toBe(0);
 			expect(gc.mock.calls).toEqual([[false]]);
@@ -346,7 +366,7 @@ describe("pane manager", () => {
 		h.start("a");
 		await h.until(() => h.opened.length === 1);
 		expect(h.manager.location("a")).toEqual({ sessionId: "s1", blockId: "b1" });
-		expect(h.records.get("b1")).toEqual({ kind: "relay", pid: process.pid, group: true });
+		expect(h.records.get("b1")).toEqual({ kind: "relay", pid: process.pid, group: true, label: "omp: a" });
 		expect(await h.manager.reveal("a")).toBe(true);
 		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", "b1"]);
 		await h.rex.split("s1", "b1", "right", "omp: panel", ["/relay"]);
@@ -368,8 +388,9 @@ describe("pane manager", () => {
 		expect(h.calls.at(-1)).toEqual(["--autostart=false", "focus", "-s", "s1", location.blockId]);
 		expect(await h.manager.reveal("missing")).toBe(false);
 		h.registry.setStatus("a", "parked");
-		await h.until(() => !h.manager.location("a"));
-		expect(await h.manager.reveal("a")).toBe(false);
+		await h.until(() => h.panes.get("a")!.at(-1)!.finished);
+		expect(await h.manager.reveal("a")).toBe(true);
+		expect(h.panes.get("a")!.at(-1)!.tab).toBe("thread");
 		await h.manager.dispose();
 		expect(h.records.size).toBe(0);
 	});
@@ -381,7 +402,7 @@ describe("pane manager", () => {
 		h.start("b");
 		await h.until(() => h.opened.length === 2);
 		options.failCommand = "block";
-		h.registry.setStatus("a", "parked");
+		h.registry.unregister("a");
 		await h.until(() => h.panes.get("a")![0]!.disposed);
 		expect(h.records.has("b1")).toBe(true);
 		expect(h.records.has("b2")).toBe(true);

@@ -5,7 +5,7 @@ import { AsyncJobManager } from "../../src/async";
 import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry } from "../../src/registry/agent-registry";
-import { routePaneInput } from "../../src/rex-panes/pane-input";
+import { deliverOperatorMessage, routePaneInput } from "../../src/rex-panes/pane-input";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "../../src/session/agent-session";
 import { attachIrcWakeTurnMonitor } from "../../src/task/executor";
 import { registerSubagentRunControl } from "../../src/task/run-controls";
@@ -30,7 +30,7 @@ describe("pane input", () => {
 		AsyncJobManager.resetForTests();
 	});
 
-	it("steers a running agent and refuses commands, missing reasons, and parked agents", async () => {
+	it("deliver steers a running agent and refuses unknown commands and missing reasons", async () => {
 		const prompt = vi.fn(async (_text: string, options?: PromptOptions) => {
 			options?.onPromptQueued?.([]);
 			return true;
@@ -64,6 +64,44 @@ describe("pane input", () => {
 		});
 	});
 
+	it("deliver revives a parked or killed agent and prompts once without command expansion", async () => {
+		for (const status of ["parked", "aborted"] as const) {
+			const prompt = vi.fn(async (_text: string, options?: PromptOptions) => {
+				options?.onPromptQueued?.([]);
+				return true;
+			});
+			const session = {
+				...createSessionDefaults(),
+				isStreaming: false,
+				prompt,
+				subscribe: () => () => {},
+			} as unknown as AgentSession;
+			const registry = AgentRegistry.global();
+			const id = `Revive-${status}`;
+			registry.register({ id, displayName: id, kind: "sub", session: null, status });
+			const revive = vi.spyOn(AgentLifecycleManager.global(), "ensureLive").mockImplementation(async agentId => {
+				const ref = registry.get(agentId);
+				if (ref?.status === "aborted") ref.status = "parked";
+				registry.attachSession(agentId, session);
+				registry.setStatus(agentId, "idle");
+				return session;
+			});
+			expect(await deliverOperatorMessage(id, "Continue with tools")).toEqual({ ok: true, kind: "revived" });
+			expect(prompt).toHaveBeenCalledTimes(1);
+			expect(prompt).toHaveBeenCalledWith(
+				"Continue with tools",
+				expect.objectContaining({
+					streamingBehavior: "steer",
+					runCommands: false,
+					expandPromptTemplates: false,
+				}),
+			);
+			revive.mockRestore();
+		}
+		expect(await routePaneInput("any", "/thread")).toEqual({ kind: "tab", tab: "thread" });
+		expect(await routePaneInput("any", "/live")).toEqual({ kind: "tab", tab: "live" });
+	});
+
 	it("routes reason-bearing stop and abort commands to the pane's agent", async () => {
 		const session = { ...createSessionDefaults(), isStreaming: true } as unknown as AgentSession;
 		AgentRegistry.global().register({ id: "Control", displayName: "Control", kind: "sub", session });
@@ -87,7 +125,7 @@ describe("pane input", () => {
 	});
 
 	it.each([false, true])(
-		"a pane follow-up sends one IRC notice; its later wake registers a job and keeps an accepted yield (structured=%s)",
+		"deliver idle follow-up sends one IRC notice; its later wake registers a job and keeps an accepted yield (structured=%s)",
 		async structured => {
 			using temp = TempDir.createSync("@omp-pane-input-");
 			const listeners = new Set<(event: AgentSessionEvent) => void>();

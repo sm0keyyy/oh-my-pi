@@ -191,4 +191,30 @@ describe("TodoCommandController", () => {
 
 		expect(reminderTextFrom(ctx)).not.toMatch(/Do NOT/i);
 	});
+
+	it("applies a panel editor round trip without stopping the main TUI", async () => {
+		const ctx = createContext("", [{ name: "Work", tasks: [{ content: "Original", status: "pending" }] }]);
+		ctx.ui = { stop: vi.fn(), start: vi.fn(), requestRender: vi.fn() } as unknown as InteractiveModeContext["ui"];
+		const controller = new TodoCommandController(ctx);
+		await controller.editTodos(async markdown => {
+			expect(markdown).toBe("# Work\n- [ ] Original\n");
+			return "# Edited\n- [x] Saved\n";
+		});
+		expect(ctx.session.setTodoPhases).toHaveBeenCalledWith([
+			{ name: "Edited", tasks: [{ content: "Saved", status: "completed" }] },
+		]);
+		expect(ctx.ui.stop).not.toHaveBeenCalled();
+		expect(ctx.ui.start).not.toHaveBeenCalled();
+		expect(reminderTextFrom(ctx)).toContain("Saved");
+	});
+
+	it("leaves todos unchanged when a panel editor fails or returns invalid Markdown", async () => {
+		const ctx = createContext("", []);
+		const controller = new TodoCommandController(ctx);
+		await controller.editTodos(async () => null);
+		await controller.editTodos(async () => "# Invalid\nnot a todo\n");
+		expect(ctx.showWarning).toHaveBeenCalled();
+		expect(ctx.showError).toHaveBeenCalled();
+		expect(ctx.session.setTodoPhases).not.toHaveBeenCalled();
+	});
 });

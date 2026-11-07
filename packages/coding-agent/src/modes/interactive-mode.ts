@@ -3110,7 +3110,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		await logger.time("InteractiveMode.init:hooks", () => this.initHooksAndCustomTools());
 		this.#startSubagentSurfaces();
 		const toolUi = this.getToolUIContext();
-		if (!this.embedded && !this.collabGuest && !this.#rpcSocketSuspended && toolUi) {
+		if (
+			options.mainServices !== false &&
+			!this.embedded &&
+			!this.collabGuest &&
+			!this.#rpcSocketSuspended &&
+			toolUi
+		) {
 			this.#mainServices = startMainServices({
 				settings: this.settings,
 				cwd: this.sessionManager.getCwd(),

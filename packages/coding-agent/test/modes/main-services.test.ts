@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { logger } from "@oh-my-pi/pi-utils";
+import { runRenderCommand } from "../../src/cli/render-cli";
 import * as codegraph from "../../src/codegraph-index";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
 import { ExtensionUiController } from "../../src/modes/controllers/extension-ui-controller";
@@ -223,5 +224,27 @@ test("stop releases the queue watcher and re-init starts a fresh queue service",
 		if (previous === undefined) delete process.env.ASK_BRIDGE_QUEUE_DIR;
 		else process.env.ASK_BRIDGE_QUEUE_DIR = previous;
 		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("render init starts none of the main services", async () => {
+	const operator = spyOn(queue, "startOperatorQueue").mockReturnValue({ dispose: () => {} });
+	const graph = spyOn(codegraph, "startCodegraphMain").mockReturnValue({ dispose: () => {} });
+	const rex = spyOn(watcher, "startRexWatcher").mockReturnValue({ dispose: async () => {} });
+	const fixture = await createTestSession({ settingsOverrides: { "rpcSocket.enabled": false } });
+	try {
+		fixture.sessionManager.appendMessage({
+			role: "user",
+			content: "Render without native services.",
+			timestamp: Date.now(),
+		});
+		await fixture.sessionManager.ensureOnDisk();
+		await fixture.sessionManager.flush();
+		expect(await runRenderCommand({ session: fixture.sessionManager.getSessionFile()!, quiet: true })).toBe(0);
+		expect(operator).not.toHaveBeenCalled();
+		expect(graph).not.toHaveBeenCalled();
+		expect(rex).not.toHaveBeenCalled();
+	} finally {
+		await fixture.cleanup();
 	}
 });

@@ -107,6 +107,8 @@ export type SubmittedUserInput = {
 export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
 	clearInitialTerminalHistory?: boolean;
+	/** Disable background native services for transcript-only rendering. Defaults to true. */
+	mainServices?: boolean;
 	/** Opt into hosting when the caller owns outer startup readiness and shutdown. */
 	autoStartCollab?: boolean;
 }

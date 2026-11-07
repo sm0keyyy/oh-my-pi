@@ -6,6 +6,7 @@ import * as utils from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import { cfgRexWatcher, cfgRexWatcherScript } from "../../src/rex-watch/settings";
 import { rexWatcherEligible, startRexWatcher } from "../../src/rex-watch/watcher";
+import * as identity from "../../src/utils/process-start-token";
 
 let root: string;
 let script: string;
@@ -33,6 +34,13 @@ function sleeper(): { pid: number } {
 	});
 	children.push(child);
 	return child;
+}
+
+async function token(pid: number): Promise<string> {
+	const child = Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+	const value = (await new Response(child.stdout).text()).trim();
+	if ((await child.exited) !== 0 || !value) throw new Error("Fixture process has no start token");
+	return value;
 }
 
 function start(spawn = vi.fn((_argv: string[]) => sleeper())): { dispose(): Promise<void> } {
@@ -102,7 +110,13 @@ test("a dead owner is adopted and a dead watcher is replaced on the next interva
 	fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 	fs.writeFileSync(
 		lockPath,
-		JSON.stringify({ ownerPid: 2147483647, watcherPid: orphan.pid, startedAt: "2026-11-06T00:00:00Z" }),
+		JSON.stringify({
+			ownerPid: 2147483647,
+			ownerStartToken: "dead owner",
+			watcherPid: orphan.pid,
+			watcherStartToken: await token(orphan.pid),
+			startedAt: "2026-11-06T00:00:00Z",
+		}),
 	);
 	const spawn = vi.fn((_argv: string[]) => sleeper());
 	start(spawn);
@@ -171,4 +185,65 @@ setInterval(() => {}, 1000);
 	} finally {
 		if (pid !== undefined && utils.isPidAlive(pid)) process.kill(pid, "SIGTERM");
 	}
+});
+
+test("a reused owner pid does not pin the watcher to an unrelated process", async () => {
+	const unrelated = sleeper();
+	const orphan = sleeper();
+	fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+	await Bun.write(
+		lockPath,
+		JSON.stringify({
+			ownerPid: unrelated.pid,
+			ownerStartToken: "previous owner process",
+			watcherPid: orphan.pid,
+			watcherStartToken: await token(orphan.pid),
+			startedAt: "2026-11-06T00:00:00Z",
+		}),
+	);
+	const spawn = vi.fn((_argv: string[]) => sleeper());
+	const owner = start(spawn);
+	await until(async () => (await Bun.file(lockPath).json()).ownerPid === process.pid);
+	expect(spawn).not.toHaveBeenCalled();
+	expect((await Bun.file(lockPath).json()).ownerStartToken).toBe(await token(process.pid));
+	await owner.dispose();
+	expect(utils.isPidAlive(unrelated.pid)).toBe(true);
+}, 10_000);
+
+test("a reused watcher pid is neither adopted nor signalled", async () => {
+	const unrelated = sleeper();
+	fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+	await Bun.write(
+		lockPath,
+		JSON.stringify({
+			ownerPid: 2147483647,
+			ownerStartToken: "dead owner",
+			watcherPid: unrelated.pid,
+			watcherStartToken: "previous watcher process",
+			startedAt: "2026-11-06T00:00:00Z",
+		}),
+	);
+	const owner = start();
+	await until(async () => (await Bun.file(lockPath).json()).ownerPid === process.pid);
+	expect((await Bun.file(lockPath).json()).watcherPid).not.toBe(unrelated.pid);
+	await owner.dispose();
+	expect(utils.isPidAlive(unrelated.pid)).toBe(true);
+});
+
+test("exit and dispose do not signal a pid whose owned watcher token changed", async () => {
+	const listeners = new Set(process.listeners("exit"));
+	const owner = start();
+	await until(() => fs.existsSync(lockPath));
+	const record = await Bun.file(lockPath).json();
+	const probe = identity.processStartToken;
+	spyOn(identity, "processStartToken").mockImplementation(pid =>
+		pid === record.watcherPid ? Promise.resolve("reused process") : probe(pid),
+	);
+	spyOn(identity, "processStartTokenSync").mockReturnValue("reused process");
+	const onExit = process.listeners("exit").find(listener => !listeners.has(listener));
+	expect(onExit).toBeDefined();
+	onExit!(0);
+	expect(utils.isPidAlive(record.watcherPid)).toBe(true);
+	await owner.dispose();
+	expect(utils.isPidAlive(record.watcherPid)).toBe(true);
 });

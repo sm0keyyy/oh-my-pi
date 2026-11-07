@@ -14,11 +14,14 @@ import {
 } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { writeFileAtomically } from "../utils/atomic-file";
+import { processStartToken, processStartTokenSync } from "../utils/process-start-token";
 import { cfgRexWatcher, cfgRexWatcherScript } from "./settings";
 
 interface WatcherLock {
 	ownerPid: number;
+	ownerStartToken: string;
 	watcherPid: number;
+	watcherStartToken: string;
 	startedAt: string;
 }
 
@@ -49,11 +52,21 @@ async function readLock(lockPath: string): Promise<WatcherLock | undefined> {
 			!Number.isSafeInteger(value.watcherPid) ||
 			typeof value.watcherPid !== "number" ||
 			value.watcherPid <= 0 ||
-			typeof value.startedAt !== "string"
+			typeof value.startedAt !== "string" ||
+			typeof value.ownerStartToken !== "string" ||
+			!value.ownerStartToken ||
+			typeof value.watcherStartToken !== "string" ||
+			!value.watcherStartToken
 		) {
 			throw new Error(`Invalid Rex watcher lock: ${lockPath}`);
 		}
-		return { ownerPid: value.ownerPid, watcherPid: value.watcherPid, startedAt: value.startedAt };
+		return {
+			ownerPid: value.ownerPid,
+			ownerStartToken: value.ownerStartToken,
+			watcherPid: value.watcherPid,
+			watcherStartToken: value.watcherStartToken,
+			startedAt: value.startedAt,
+		};
 	} catch (error) {
 		if (isEnoent(error)) return undefined;
 		throw error;
@@ -112,7 +125,8 @@ export function startRexWatcher(options: {
 				fs.closeSync(fd);
 			}
 		});
-	let ownedPid: number | undefined;
+	let owned: { pid: number; startToken: string } | undefined;
+	let ownerStartToken: string | undefined;
 	let disposed = false;
 	let failed = false;
 	let pending: Promise<void> | undefined;
@@ -123,34 +137,53 @@ export function startRexWatcher(options: {
 		clearInterval(timer);
 		logger.warn("rex-watch: watcher unavailable; main TUI remains available", { error: String(error) });
 	};
+	const matches = async (pid: number, startToken: string): Promise<boolean> =>
+		alive(pid) && (await processStartToken(pid)) === startToken;
 	const check = async (): Promise<void> => {
 		await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
 		const lease = tryAcquireFileLock(lockPath);
 		if (!lease) return;
 		try {
 			if (disposed) return;
+			ownerStartToken ??= (await processStartToken(process.pid)) ?? undefined;
+			if (!ownerStartToken) throw new Error("Cannot identify the Rex watcher owner process");
 			const record = await readLock(lockPath);
-			if (record && !(record.ownerPid === process.pid && record.watcherPid === ownedPid) && alive(record.ownerPid)) {
-				return;
-			}
-			if (record && alive(record.watcherPid)) {
-				if (record.ownerPid !== process.pid) {
-					await writeFileAtomically(lockPath, JSON.stringify({ ...record, ownerPid: process.pid }));
+			const ownsRecord =
+				record?.ownerPid === process.pid &&
+				record.ownerStartToken === ownerStartToken &&
+				record.watcherPid === owned?.pid &&
+				record.watcherStartToken === owned?.startToken;
+			if (record && !ownsRecord && (await matches(record.ownerPid, record.ownerStartToken))) return;
+			if (record && (await matches(record.watcherPid, record.watcherStartToken))) {
+				if (!ownsRecord) {
+					await writeFileAtomically(
+						lockPath,
+						JSON.stringify({ ...record, ownerPid: process.pid, ownerStartToken }),
+					);
 				}
-				ownedPid = record.watcherPid;
+				owned = { pid: record.watcherPid, startToken: record.watcherStartToken };
 				return;
 			}
+			if (disposed) return;
 			await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
 			const child = spawn(argv);
-			ownedPid = child.pid;
+			const startToken = await processStartToken(child.pid);
+			if (!startToken) throw new Error("Cannot identify the Rex watcher child process");
+			owned = { pid: child.pid, startToken };
 			try {
 				await writeFileAtomically(
 					lockPath,
-					JSON.stringify({ ownerPid: process.pid, watcherPid: child.pid, startedAt: new Date().toISOString() }),
+					JSON.stringify({
+						ownerPid: process.pid,
+						ownerStartToken,
+						watcherPid: child.pid,
+						watcherStartToken: startToken,
+						startedAt: new Date().toISOString(),
+					}),
 				);
 			} catch (error) {
-				terminate(child.pid);
-				ownedPid = undefined;
+				if (await matches(child.pid, startToken)) terminate(child.pid);
+				owned = undefined;
 				throw error;
 			}
 		} finally {
@@ -166,9 +199,9 @@ export function startRexWatcher(options: {
 			});
 	};
 	const onExit = (): void => {
-		if (ownedPid === undefined) return;
+		if (!owned) return;
 		try {
-			terminate(ownedPid);
+			if (alive(owned.pid) && processStartTokenSync(owned.pid) === owned.startToken) terminate(owned.pid);
 		} catch (error) {
 			warn(error);
 		}
@@ -184,16 +217,22 @@ export function startRexWatcher(options: {
 		unregister();
 		teardown = (async () => {
 			await pending;
-			if (ownedPid !== undefined) {
+			if (owned) {
+				const child = owned;
 				await withFileLock(lockPath, async () => {
 					const record = await readLock(lockPath);
-					if (record?.ownerPid === process.pid && record.watcherPid === ownedPid) {
-						terminate(ownedPid!);
+					if (
+						record?.ownerPid === process.pid &&
+						record.ownerStartToken === ownerStartToken &&
+						record.watcherPid === child.pid &&
+						record.watcherStartToken === child.startToken
+					) {
+						if (await matches(child.pid, child.startToken)) terminate(child.pid);
 						await fs.promises.unlink(lockPath);
 					}
 				});
 			}
-			ownedPid = undefined;
+			owned = undefined;
 			process.removeListener("exit", onExit);
 		})().catch(warn);
 		return teardown;

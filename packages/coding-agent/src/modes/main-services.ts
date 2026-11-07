@@ -8,6 +8,7 @@ import { createTabTitleRex, startTabTitle } from "../rex-panes/tab-title";
 import { startDiffReview } from "../rex-review/diff-review";
 import { startRexWatcher } from "../rex-watch/watcher";
 import type { AgentSession } from "../session/agent-session";
+import { startUsagePoller } from "../usage";
 
 export interface MainServicesInput {
 	settings: Settings;
@@ -44,6 +45,9 @@ export function startMainServices(input: MainServicesInput): MainServices {
 	});
 	start("rex-panes", () => startTabTitle(input.session, createTabTitleRex(), process.env));
 	start("rex-review", () => startDiffReview({ ...input, ui: input.toolUi }));
+	start("usage", () =>
+		startUsagePoller({ settings: input.settings, notice: (level, text) => input.toolUi.notify(text, level) }),
+	);
 	let teardown: Promise<void> | undefined;
 	return {
 		closed() {

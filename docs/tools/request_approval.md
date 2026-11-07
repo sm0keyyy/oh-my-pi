@@ -30,7 +30,7 @@
 ## Flow
 
 1. Availability follows `session.canPromptUser ?? session.hasUI`; execution also requires a review-capable tool UI.
-2. The tool validates and reads the file, then creates bounded section excerpts for sessions clients. Duplicate section numbers receive unique identifiers such as `§1~2`.
+2. The tool validates and reads the file, then creates bounded section excerpts for sessions clients. Numbered headings keep their `§n` identifiers before unnumbered headings claim identifiers. Repeated numbers and colliding unnumbered headings receive suffixes such as `§1~2`.
 3. The main TUI presents the review through its dialog FIFO and RPC race. A Rex host also opens a pane beside the requesting agent, or beside main when the agent has no pane.
 4. The first answer wins and cancels the other surfaces. Closing only the pane withdraws that surface and leaves the main dialog available.
 5. Section comments stay batched until the verdict. Cancelled, timed-out or withdrawn reviews retain native notes for the same path and content hash. A delivered verdict clears that draft.
@@ -39,8 +39,8 @@
 
 - Main reviews have no deadline.
 - Subagent reviews expire 600 seconds after main presentation, not while queued.
-- In approval mode, first navigate with `j`, `k` or Tab; then use `c` for a section note, `e` to edit a note, `a` to approve, or `r` to request changes. Submitting an empty edited note deletes it. Escape cancels.
-- If a draft already exists in the main editor, typing remains with that draft until an explicit arrow-key or Tab handoff.
+- In approval mode, first press ↑ or ↓ to start the review. Then use `j` and `k` between sections, `c` for a section note, `e` to edit a note, `a` to approve, or `r` to request changes. Submitting an empty edited note deletes it. Escape cancels.
+- If a draft already exists in the main editor, typing and Tab autocomplete remain with that draft until the ↑ or ↓ handoff. Neither `j`, `k` nor Tab starts a review.
 - Sessions clients answer the same review using section excerpts; the full markdown is not sent in the RPC frame.
 
 ## Side Effects

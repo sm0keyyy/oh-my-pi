@@ -1152,7 +1152,7 @@ describe("approval and comment modes", () => {
 			if (originalRows) Object.defineProperty(process.stdout, "rows", originalRows);
 			else Reflect.deleteProperty(process.stdout, "rows");
 		}
-		overlay.handleInput("k");
+		overlay.handleInput("\x1b[A");
 		for (const note of ["merge view and wire", "run both"]) {
 			overlay.handleInput("c");
 			for (const ch of note) overlay.handleInput(ch);
@@ -1169,7 +1169,7 @@ describe("approval and comment modes", () => {
 		overlay.handleInput("r");
 		expect(onPick).toHaveBeenCalledWith("Request changes");
 		const approve = new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel });
-		approve.handleInput("k");
+		approve.handleInput("\x1b[A");
 		approve.handleInput("a");
 		expect(onPick).toHaveBeenCalledWith("Approve");
 		new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel }).handleInput("\x1b");
@@ -1184,7 +1184,7 @@ describe("approval and comment modes", () => {
 			{ mode: "comment", options: [] },
 			{ onPick, onCancel },
 		);
-		overlay.handleInput("k");
+		overlay.handleInput("\x1b[A");
 		overlay.handleInput("c");
 		overlay.handleInput("first");
 		overlay.handleInput(ENTER);
@@ -1200,7 +1200,7 @@ describe("approval and comment modes", () => {
 		overlay.handleInput("s");
 		expect(onPick).toHaveBeenCalledWith("Submit comments");
 		const discard = new PlanReviewOverlay("# One", { mode: "comment", options: [] }, { onPick, onCancel });
-		discard.handleInput("k");
+		discard.handleInput("\x1b[A");
 		discard.handleInput("c");
 		discard.handleInput("unsent");
 		discard.handleInput(ENTER);
@@ -1226,10 +1226,67 @@ describe("review regression", () => {
 		for (const key of "add tests") overlay.handleInput(key);
 		expect(picked).not.toHaveBeenCalled();
 		expect(changed).not.toHaveBeenCalled();
-		overlay.handleInput("k");
+		overlay.handleInput("\x1b[A");
 		overlay.handleInput("a");
 		expect(picked).toHaveBeenCalledWith("Approve");
 	});
+	for (const typed of ["okay", "look at", "make sure"]) {
+		it(`round 2: typing "${typed}" never arms an empty-draft approval`, () => {
+			const picked = vi.fn();
+			const changed = vi.fn();
+			const overlay = new PlanReviewOverlay(
+				"# One\n\n## Two",
+				{ mode: "approval", options: [] },
+				{ onPick: picked, onCancel() {}, onAnnotationStateChange: changed },
+			);
+			for (const key of typed) overlay.handleInput(key);
+			expect(picked).not.toHaveBeenCalled();
+			expect(changed).not.toHaveBeenCalled();
+			expect(stripVTControlCharacters(overlay.render(80).join("\n"))).toContain("↑/↓");
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("a");
+			expect(picked).toHaveBeenCalledWith("Approve");
+		});
+	}
+	it("round 2: Tab stays with draft autocomplete until an arrow-key handoff", () => {
+		const picked = vi.fn();
+		const handleInput = vi.fn();
+		const overlay = new PlanReviewOverlay(
+			"# One\n\n## Two",
+			{
+				mode: "approval",
+				options: [],
+				inputGuard: { isBlocked: () => true, handleInput },
+			},
+			{ onPick: picked, onCancel() {} },
+		);
+		overlay.handleInput("\t");
+		overlay.handleInput("a");
+		expect(handleInput.mock.calls).toEqual([["\t"], ["a"]]);
+		expect(picked).not.toHaveBeenCalled();
+		overlay.handleInput("\x1b[B");
+		overlay.handleInput("a");
+		expect(picked).toHaveBeenCalledWith("Approve");
+	});
+	for (const key of ["j", "k", "\t"]) {
+		it(`round 2: ${JSON.stringify(key)} neither arms nor moves the comment section`, () => {
+			const picked = vi.fn();
+			const changed = vi.fn();
+			const overlay = new PlanReviewOverlay(
+				"# One\n\n## Two",
+				{ mode: "comment", options: [] },
+				{ onPick: picked, onCancel() {}, onAnnotationStateChange: changed },
+			);
+			for (const input of [key, "c", "note", ENTER, "s"]) overlay.handleInput(input);
+			expect(picked).not.toHaveBeenCalled();
+			expect(changed).not.toHaveBeenCalled();
+			overlay.handleInput("\x1b[B");
+			overlay.handleInput("c");
+			overlay.handleInput("first section");
+			overlay.handleInput(ENTER);
+			expect(changed.mock.calls.at(-1)?.[0].annotations).toMatchObject([{ section: { title: "One" } }]);
+		});
+	}
 	for (const mode of ["approval", "comment"] as const) {
 		it(`allows editing and deleting ${mode} section notes`, () => {
 			const changed = vi.fn();
@@ -1238,7 +1295,7 @@ describe("review regression", () => {
 				{ mode, options: [] },
 				{ onPick() {}, onCancel() {}, onAnnotationStateChange: changed },
 			);
-			overlay.handleInput("k");
+			overlay.handleInput("\x1b[A");
 			overlay.handleInput("c");
 			for (const key of "remove this note") overlay.handleInput(key);
 			overlay.handleInput(ENTER);

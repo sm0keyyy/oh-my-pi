@@ -106,3 +106,28 @@ test("status reports an approval as blocked question until the tool completes", 
 	});
 	expect(setRunStatus.mock.calls.at(-1)).toEqual([{ state: "working" }]);
 });
+
+test("round 2: result keeps §1 Render when an unnumbered title precedes it", async () => {
+	await using temp = await TempDir.create(`${process.cwd()}/approval-numbered-result-`);
+	await Bun.write(temp.join("plan.md"), "# Title\n\n## 1. Render\n\nBuild it.\n\n## 2. Verify\n");
+	const tool = new RequestApprovalTool({
+		cwd: temp.path(),
+		hasUI: true,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+	});
+	const review = async (request: ExtensionReviewRequest): Promise<ExtensionReviewResult> => {
+		const render = request.sections.find(section => section.heading === "Render")!;
+		return {
+			kind: "verdict",
+			verdict: "request-changes",
+			comments: [{ section: `${render.id} ${render.heading}`, text: "keep the table" }],
+		};
+	};
+	const result = await tool.execute("numbered", { path: "plan.md" }, undefined, undefined, {
+		hasUI: true,
+		ui: { review },
+	} as unknown as AgentToolContext);
+	expect(result.content).toEqual([{ type: "text", text: "Verdict: changes requested\n§1 Render: keep the table" }]);
+});

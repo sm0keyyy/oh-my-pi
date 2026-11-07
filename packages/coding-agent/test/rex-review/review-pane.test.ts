@@ -60,7 +60,7 @@ for (const winner of ["pane", "main", "cancel", "withdraw"] as const) {
 				expect(label).toBe("omp: review race.md");
 				const result = Promise.withResolvers<unknown>();
 				pane = await factory(tui, theme, KeybindingsManager.inMemory(), result.resolve);
-				pane.handleInput?.("k");
+				pane.handleInput?.("\x1b[A");
 				paneReady.resolve();
 				return {
 					blockId: "review",
@@ -111,14 +111,14 @@ for (const winner of ["pane", "main", "cancel", "withdraw"] as const) {
 test("review notes survive resubmission only for the same path and content hash", () => {
 	const done = vi.fn();
 	const overlay = createReviewOverlay(request, tui, done);
-	overlay.handleInput("k");
+	overlay.handleInput("\x1b[A");
 	overlay.handleInput("c");
 	for (const ch of "merge view and wire") overlay.handleInput(ch);
 	overlay.handleInput("\r");
 	expect(done).not.toHaveBeenCalled();
 	overlay.handleInput("\x1b");
 	const restored = createReviewOverlay(request, tui, done);
-	restored.handleInput("k");
+	restored.handleInput("\x1b[A");
 	restored.handleInput("r");
 	expect(done.mock.calls.at(-1)?.[0]).toEqual({
 		kind: "verdict",
@@ -147,7 +147,7 @@ test("main review FIFO presents one native overlay at a time and has no deadline
 	const second = controller.showReviewDialog({ ...request, path: "/tmp/second.md" });
 	expect(overlays).toHaveLength(1);
 	expect(timers).not.toHaveBeenCalled();
-	overlays[0]!.handleInput("k");
+	overlays[0]!.handleInput("\x1b[A");
 	overlays[0]!.handleInput("a");
 	expect(await first).toMatchObject({ kind: "verdict", verdict: "approve" });
 	expect(overlays).toHaveLength(2);
@@ -295,11 +295,13 @@ test.skipIf(!Bun.env.OMP_APPROVAL_REX_SERVER)(
 							.focused_block_id,
 					);
 					if (kind === "main") {
-						expect((await run(["send", "-s", anchor.sessionId, "-b", pane.blockId, "k"], 5000)).exitCode).toBe(0);
+						expect(
+							(await run(["send-key", "-s", anchor.sessionId, "-b", pane.blockId, "up"], 5000)).exitCode,
+						).toBe(0);
 						expect((await run(["send", "-s", anchor.sessionId, "-b", pane.blockId, "a"], 5000)).exitCode).toBe(0);
 					} else {
 						const overlay = mainOverlays.at(-1)!;
-						overlay.handleInput("k");
+						overlay.handleInput("\x1b[A");
 						for (const note of ["merge view and wire", "run both"]) {
 							overlay.handleInput("c");
 							for (const ch of note) overlay.handleInput(ch);
@@ -419,28 +421,110 @@ test("remote review through raceDialog closes both the native overlay and the pa
 	}
 });
 
-test("review regression: section ids distinguish ordinal collisions and repeated numbered headings", () => {
+test("round 2: numbered section ids take priority over ordinal titles and repeated numbers", () => {
+	expect(splitReviewSections("# Title\n\n## 1. X\n\n## 2. Y\n").map(section => section.id)).toEqual([
+		"§1~2",
+		"§1",
+		"§2",
+	]);
 	const sections = splitReviewSections(
 		"# Title\n\n## 1. X\n\n## 2. Parent A\n\n### 1. Setup\n\n## 3. Parent B\n\n### 1. Setup\n",
 	);
-	expect(sections.map(section => section.id)).toEqual(["§1", "§1~2", "§2", "§1~3", "§3", "§1~4"]);
+	expect(sections.map(section => section.id)).toEqual(["§1~4", "§1", "§2", "§1~2", "§3", "§1~3"]);
 	expect(new Set(sections.map(section => section.id)).size).toBe(sections.length);
 });
 
-test("review regression: a delivered verdict clears notes before another agent reviews the same file", () => {
-	const document = { ...request, path: "/tmp/verdict-draft-regression.md" };
-	const first = vi.fn();
-	const overlay = createReviewOverlay(document, tui, first);
-	overlay.handleInput("k");
-	overlay.handleInput("c");
-	for (const ch of "agent A note") overlay.handleInput(ch);
-	overlay.handleInput("\r");
-	overlay.selectOption("Request changes");
-	expect(first.mock.calls[0]?.[0]).toMatchObject({ comments: [{ text: "agent A note" }] });
-	const second = vi.fn();
-	createReviewOverlay(document, tui, second).selectOption("Approve");
-	expect(second.mock.calls[0]?.[0]).toEqual({ kind: "verdict", verdict: "approve", comments: [] });
+test("round 2: a delivered verdict clears notes through requestReview before another agent reviews", async () => {
+	const document = { ...request, path: "/tmp/verdict-draft-round-two.md" };
+	let ready = Promise.withResolvers<void>();
+	let overlay: PlanReviewOverlay | undefined;
+	const unregister = registerComponentPaneHost({
+		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
+		agentLocation: () => ({ sessionId: "agent", blockId: "agent" }),
+		revealAgent: async () => false,
+		async open(_placement, _label, factory) {
+			const answer = Promise.withResolvers<unknown>();
+			overlay = (await factory(tui, theme, KeybindingsManager.inMemory(), answer.resolve)) as PlanReviewOverlay;
+			ready.resolve();
+			return { blockId: "review", result: answer.promise as never, close: async () => {}, requestRender() {} };
+		},
+	});
+	const ui = { review: () => Promise.withResolvers<ExtensionReviewResult>().promise } as unknown as ExtensionUIContext;
+	try {
+		const first = requestReview(document, ui, undefined, "AgentA");
+		await ready.promise;
+		overlay!.handleInput("\x1b[B");
+		overlay!.handleInput("c");
+		for (const ch of "agent A note") overlay!.handleInput(ch);
+		overlay!.handleInput("\r");
+		overlay!.selectOption("Request changes");
+		expect(await first).toMatchObject({ comments: [{ text: "agent A note" }] });
+		overlay!.setPlanContent(document.markdown);
+		ready = Promise.withResolvers<void>();
+		const second = requestReview(document, ui, undefined, "AgentB");
+		await ready.promise;
+		overlay!.selectOption("Approve");
+		expect(await second).toEqual({ kind: "verdict", verdict: "approve", comments: [] });
+	} finally {
+		unregister();
+	}
 });
+
+for (const lateInput of ["verdict", "annotation"] as const) {
+	test(`round 2: timeout-window ${lateInput} keeps only the notes from before settlement`, async () => {
+		const document = { ...request, path: `/tmp/timeout-window-${lateInput}-round-two.md` };
+		const main = Promise.withResolvers<ExtensionReviewResult>();
+		const ready = Promise.withResolvers<void>();
+		const closing = Promise.withResolvers<void>();
+		const closed = Promise.withResolvers<void>();
+		let overlay: PlanReviewOverlay | undefined;
+		const unregister = registerComponentPaneHost({
+			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
+			agentLocation: () => undefined,
+			revealAgent: async () => false,
+			async open(_placement, _label, factory) {
+				const answer = Promise.withResolvers<unknown>();
+				overlay = (await factory(tui, theme, KeybindingsManager.inMemory(), answer.resolve)) as PlanReviewOverlay;
+				ready.resolve();
+				return {
+					blockId: "review",
+					result: answer.promise as never,
+					close: () => {
+						closing.resolve();
+						return closed.promise;
+					},
+					requestRender() {},
+				};
+			},
+		});
+		try {
+			const review = requestReview(document, { review: () => main.promise } as unknown as ExtensionUIContext);
+			await ready.promise;
+			overlay!.handleInput("\x1b[B");
+			overlay!.handleInput("c");
+			overlay!.handleInput("saved before timeout");
+			overlay!.handleInput("\r");
+			main.resolve({ kind: "cancelled", timedOut: true });
+			await closing.promise;
+			if (lateInput === "verdict") overlay!.selectOption("Approve");
+			else {
+				overlay!.handleInput("c");
+				overlay!.handleInput("late note must not survive");
+				overlay!.handleInput("\r");
+			}
+			closed.resolve();
+			expect(await review).toEqual({ kind: "cancelled", timedOut: true });
+			const restored = vi.fn();
+			createReviewOverlay(document, tui, restored).selectOption("Request changes");
+			expect(restored.mock.calls[0]?.[0]).toMatchObject({
+				comments: [{ section: "§4 Slices", text: "saved before timeout" }],
+			});
+		} finally {
+			closed.resolve();
+			unregister();
+		}
+	});
+}
 
 test("review regression: an asynchronously presented subagent review keeps typing in the main draft", async () => {
 	let draft = "please ";

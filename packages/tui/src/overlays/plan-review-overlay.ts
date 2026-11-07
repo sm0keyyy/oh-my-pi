@@ -663,31 +663,16 @@ export class PlanReviewOverlay implements Component {
 	handleInput(keyData: string): void {
 		if (this.#committed) return;
 		if (this.#mode !== "plan" && !this.#keysArmed) {
-			const handoff =
-				matchesSelectUp(keyData) ||
-				matchesSelectDown(keyData) ||
-				matchesKey(keyData, "tab") ||
-				matchesKey(keyData, "shift+tab");
-			if (this.#inputGuard?.isBlocked()) {
-				if (!handoff) {
-					this.#inputGuard.handleInput(keyData);
-					return;
-				}
-			} else if (!handoff && keyData !== "j" && keyData !== "k") {
-				if (
-					keyData === "a" ||
-					keyData === "r" ||
-					keyData === "c" ||
-					keyData === "s" ||
-					keyData === "e" ||
-					matchesKey(keyData, "enter")
-				)
-					return;
-			}
-			if (handoff || keyData === "j" || keyData === "k") {
+			if (matchesSelectUp(keyData) || matchesSelectDown(keyData)) {
 				this.#keysArmed = true;
 				this.#inputGuard?.syncPresentation?.(false);
+				return;
 			}
+			if (this.#inputGuard?.isBlocked()) {
+				this.#inputGuard.handleInput(keyData);
+				return;
+			}
+			if (!matchesSelectCancel(keyData) && !matchesKey(keyData, "escape")) return;
 		}
 		const cancel = matchesSelectCancel(keyData) || (this.#mode !== "plan" && matchesKey(keyData, "escape"));
 		if (this.#discardConfirm) {
@@ -1320,8 +1305,8 @@ export class PlanReviewOverlay implements Component {
 	#buildHelp(): string {
 		if (!this.#keysArmed)
 			return this.#inputGuard?.isBlocked()
-				? "↑/↓/Tab review · typing edits your prompt"
-				: "j/k/Tab start review · Esc cancel";
+				? "↑/↓ review · typing edits your prompt"
+				: "↑/↓ start review · Esc cancel";
 		if (this.#discardConfirm) return "Discard all comments? Enter/y discard · Esc/n keep editing";
 		if (this.#mode !== "plan")
 			return this.#mode === "approval"
@@ -1933,7 +1918,7 @@ export class PlanReviewOverlay implements Component {
 	#nativeHelpHints(): (NativeHint | undefined)[] {
 		if (!this.#keysArmed)
 			return [
-				{ keys: ["j", "k", "tab"], label: "start review" },
+				{ keys: ["up", "down"], label: "start review" },
 				{ keys: ["escape"], label: "cancel" },
 			];
 		if (this.#mode !== "plan")

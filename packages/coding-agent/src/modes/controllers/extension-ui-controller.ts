@@ -883,7 +883,7 @@ export class ExtensionUiController {
 								},
 							}
 						: undefined;
-				const overlay = createReviewOverlay(request, this.ctx.ui, answer.resolve, inputGuard);
+				const overlay = createReviewOverlay(request, this.ctx.ui, answer.resolve, inputGuard, signal);
 				handle = this.ctx.ui.showOverlay(overlay, {
 					anchor: "top-left",
 					width: "100%",

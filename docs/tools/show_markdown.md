@@ -31,7 +31,7 @@
 1. Availability follows `session.canPromptUser ?? session.hasUI`.
 2. The tool validates and reads the file, then opens the same comment-mode view exposed by `openMarkdownView(path, owner, title?)` for palette callers.
 3. Placement is beside the owning agent's pane, or main when no agent pane is open.
-4. First navigate with `j`, `k` or Tab. Add section notes with `c`; use `e` to edit, and submit an empty edited note to delete it.
+4. First press ↑ or ↓ to start the review. Then use `j` and `k` between sections. Add section notes with `c`, use `e` to edit, and submit an empty edited note to delete it. Neither `j`, `k` nor Tab starts a review. Where a draft owns input, Tab remains its autocomplete key until the arrow-key handoff.
 5. `s` submits the complete batch once. Escape with saved comments asks for confirmation before discarding the batch. Closing or discarding sends nothing.
 6. Main-owned comments use one main-session prompt with `streamingBehavior: "steer"`. Agent-owned comments go only through that agent's pane input route; the parent receives no copy.
 

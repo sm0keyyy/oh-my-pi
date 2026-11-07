@@ -27,20 +27,36 @@ const drafts = new Map<string, PlanReviewAnnotationState>();
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
 
 function indexedReviewSections(markdown: string): Map<number, ExtensionReviewSection> {
-	const sections = new Map<number, ExtensionReviewSection>();
+	const parsed = parsePlanSections(markdown);
 	const usedIds = new Set<string>();
-	for (const [index, section] of parsePlanSections(markdown).entries()) {
-		if (section.level < 1) continue;
-		const numbered = /^(\d+(?:\.\d+)*)\.?\s+(.+)$/.exec(section.title);
-		const baseId = `§${numbered?.[1] ?? sections.size + 1}`;
+	const claimId = (baseId: string): string => {
 		let id = baseId;
 		for (let suffix = 2; usedIds.has(id); suffix++) id = `${baseId}~${suffix}`;
 		usedIds.add(id);
-		sections.set(index, {
-			id,
-			heading: numbered?.[2] ?? section.title,
-			excerpt: section.raw.slice(0, 400),
-		});
+		return id;
+	};
+	const numberedSections = new Map<number, ExtensionReviewSection>();
+	for (const [index, section] of parsed.entries()) {
+		if (section.level < 1) continue;
+		const numbered = /^(\d+(?:\.\d+)*)\.?\s+(.+)$/.exec(section.title);
+		if (numbered)
+			numberedSections.set(index, {
+				id: claimId(`§${numbered[1]}`),
+				heading: numbered[2]!,
+				excerpt: section.raw.slice(0, 400),
+			});
+	}
+	const sections = new Map<number, ExtensionReviewSection>();
+	for (const [index, section] of parsed.entries()) {
+		if (section.level < 1) continue;
+		sections.set(
+			index,
+			numberedSections.get(index) ?? {
+				id: claimId(`§${sections.size + 1}`),
+				heading: section.title,
+				excerpt: section.raw.slice(0, 400),
+			},
+		);
 	}
 	return sections;
 }
@@ -94,9 +110,11 @@ export function createReviewOverlay(
 	tui: TUI,
 	done: (result: ExtensionReviewResult) => void,
 	inputGuard?: PlanReviewOverlayOptions["inputGuard"],
+	signal?: AbortSignal,
 ): PlanReviewOverlay {
 	const key = `${request.path}:${Bun.hash(request.markdown)}`;
 	let state = drafts.get(key) ?? { annotations: [] };
+	let committed = false;
 	return new PlanReviewOverlay(
 		request.markdown,
 		{
@@ -109,15 +127,19 @@ export function createReviewOverlay(
 		},
 		{
 			onPick: label => {
-				drafts.delete(key);
+				committed = true;
 				done({
 					kind: "verdict",
 					verdict: label === "Approve" ? "approve" : "request-changes",
 					comments: reviewComments(state, request.markdown),
 				});
 			},
-			onCancel: () => done({ kind: "cancelled" }),
+			onCancel: () => {
+				committed = true;
+				done({ kind: "cancelled" });
+			},
 			onAnnotationStateChange: next => {
+				if (committed || signal?.aborted) return;
 				state = next;
 				drafts.set(key, next);
 			},
@@ -160,7 +182,7 @@ export async function requestReview(
 			.open<ExtensionReviewResult>(
 				{ kind: "dock", sessionId: location.sessionId, anchorBlockId: location.blockId, direction: "right" },
 				`omp: review ${path.basename(request.path)}`,
-				(tui, _theme, _keys, done) => createReviewOverlay(request, tui, done),
+				(tui, _theme, _keys, done) => createReviewOverlay(request, tui, done, undefined, signal),
 				{ signal },
 			)
 			.then(

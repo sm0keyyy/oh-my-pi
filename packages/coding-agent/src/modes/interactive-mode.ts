@@ -134,6 +134,7 @@ import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type:
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
+import type { AgentHubOverlayComponent } from "@oh-my-pi/pi-tui/overlays/agent-hub";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import type { AgentCostSnapshot } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
@@ -5397,7 +5398,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#todoCommandController.editTodos(editor);
 	}
 
-	createRexAgentsPanel(tui: TUI, done: () => void, focusAgent: (id: string) => Promise<void>): Component {
+	createRexAgentsPanel(
+		tui: TUI,
+		done: () => void,
+		focusAgent: (id: string) => Promise<void>,
+	): AgentHubOverlayComponent {
 		return this.#selectorController.createAgentHub(this.#observerRegistry, tui, done, {
 			focusAgent,
 			closeOnFocus: false,

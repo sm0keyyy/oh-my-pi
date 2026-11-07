@@ -1,10 +1,11 @@
 import { type Component, type TUI } from "@oh-my-pi/pi-tui";
 import { col, text } from "@oh-my-pi/pi-tui/native/describe";
 import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
-import { truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatMoreItems, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import { $which, logger, TempDir } from "@oh-my-pi/pi-utils";
 import type { TodoHudView } from "../../modes/components/todo-hud";
 import type { InteractiveMode } from "../../modes/interactive-mode";
+import { markdownToPhases } from "../../tools/todo";
 import { getEditorCommand, resolveEditorSpawnCommand } from "../../utils/external-editor";
 import type { RexLocation } from "../component-pane";
 import { createRexCli, type RexCli } from "../rex-cli";
@@ -23,13 +24,9 @@ export async function editTodoInRex(
 	const file = temp.join("todos.todo.md");
 	await Bun.write(file, markdown, { mode: 0o600 });
 	if (options.signal.aborted) return null;
-	const { blockId } = await rex.split(
-		location.sessionId,
-		location.blockId,
-		"below",
-		"omp: todo editor",
-		resolveEditorSpawnCommand(editor, file).cmd,
-	);
+	const command = resolveEditorSpawnCommand(editor, file).cmd;
+	if (process.env.PATH !== undefined) command.unshift("/usr/bin/env", `PATH=${process.env.PATH}`);
+	const { blockId } = await rex.split(location.sessionId, location.blockId, "below", "omp: todo editor", command);
 	let closing: Promise<void> | undefined;
 	const close = (): Promise<void> => (closing ??= rex.closeBlock(location.sessionId, blockId));
 	const abort = (): void => {
@@ -37,13 +34,21 @@ export async function editTodoInRex(
 	};
 	options.signal.addEventListener("abort", abort, { once: true });
 	try {
+		let result: { exitCode: number } | undefined;
+		if (!options.signal.aborted) {
+			try {
+				await rex.focusBlock(location.sessionId, blockId);
+				if (!options.signal.aborted) result = await rex.waitBlock(location.sessionId, blockId, 24 * 60 * 60 * 1000);
+			} catch (error) {
+				if (!options.signal.aborted) throw error;
+			}
+		}
 		if (options.signal.aborted) {
 			await close();
-			return null;
+			const saved = await Bun.file(file).text();
+			return saved !== markdown && markdownToPhases(saved).errors.length === 0 ? saved : null;
 		}
-		const result = await rex.waitBlock(location.sessionId, blockId, 24 * 60 * 60 * 1000);
-		if (options.signal.aborted || result.exitCode !== 0) return null;
-		return await Bun.file(file).text();
+		return result?.exitCode === 0 ? await Bun.file(file).text() : null;
 	} finally {
 		options.signal.removeEventListener("abort", abort);
 		await close().catch(error => logger.warn("rex-panels: todo editor close failed", { error: String(error) }));
@@ -70,9 +75,19 @@ export class TodoPanel implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		return [...(this.#view?.lines ?? ["No todos."]), "e edit todos"]
-			.map(line => truncateToWidth(line, width))
-			.slice(0, this.tui.terminal.rows);
+		const rows = Math.max(0, this.tui.terminal.rows);
+		if (rows === 0) return [];
+		const list = this.#view?.lines ?? ["No todos."];
+		const listRows = rows - 1;
+		const visibleRows = Math.max(0, listRows - 1);
+		const visible =
+			list.length > listRows
+				? [
+						...list.slice(0, visibleRows),
+						...(listRows > 0 ? [formatMoreItems(list.length - visibleRows, "row")] : []),
+					]
+				: list;
+		return [...visible, "e edit todos"].map(line => truncateToWidth(line, width));
 	}
 
 	describe(): NativeNode {

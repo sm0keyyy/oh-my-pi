@@ -25,6 +25,8 @@ import {
 	type PanePlacement,
 } from "../../src/rex-panes/component-pane";
 import { cfgRexPanelAgents, cfgRexPanelTodo } from "../../src/rex-panes/panels/settings";
+import { editTodoInRex } from "../../src/rex-panes/panels/todo";
+import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
 import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
 import { SessionManager } from "../../src/session/session-manager";
@@ -211,7 +213,7 @@ test("controls todo e edits Markdown in a Rex split and waits without stopping t
 	const log = temp.join("rex-args");
 	await Bun.write(
 		`${bin}/rex`,
-		`#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nshift\ncase "$1" in\n split) while [ "$1" != -- ]; do shift; done; shift; "$@"; printf '{"block_ids":["block:editor"]}\\n';;\n wait) printf '{"exit_code":0}\\n';;\n block) exit 0;;\n *) exit 1;;\nesac\n`,
+		`#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nshift\ncase "$1" in\n split) while [ "$1" != -- ]; do shift; done; shift; "$@"; printf '{"block_ids":["block:editor"]}\\n';;\n wait) printf '{"exit_code":0}\\n';;\n focus|block) exit 0;;\n *) exit 1;;\nesac\n`,
 	);
 	await fs.chmod(`${bin}/rex`, 0o700);
 	const previous = { PATH: process.env.PATH, VISUAL: process.env.VISUAL, EDITOR: process.env.EDITOR };
@@ -240,6 +242,8 @@ test("controls todo e edits Markdown in a Rex split and waits without stopping t
 	expect(args).toContain("--split=below");
 	expect(args).toContain("-b block:panel-0");
 	expect(args).toContain("wait -s session:main block:editor");
+	expect(args).toContain("focus -s session:main block:editor");
+	expect(args.indexOf("focus -s")).toBeLessThan(args.indexOf("wait -s"));
 	expect(stopped).not.toHaveBeenCalled();
 }, 30000);
 
@@ -286,6 +290,135 @@ test("controls Agents focus reveals without a main-session swap, transcript stay
 	expect(release).toHaveBeenCalledWith("PanelWorker", expect.objectContaining({ id: "PanelWorker" }), {
 		tombstone: true,
 	});
+}, 30000);
+
+test.each(["parked", "aborted"] as const)(
+	"review F3 opens a %s agent transcript when no Rex pane can be revealed",
+	async status => {
+		const { mode, host } = await fixture();
+		AgentRegistry.global().register({
+			id: "HistoricalWorker",
+			displayName: "HistoricalWorker",
+			kind: "sub",
+			session: null,
+			status,
+		});
+		host.revealAgent = async id => {
+			host.focus.resolve(id);
+			return false;
+		};
+		await mode.toggleRexPanel("agents");
+		const panel = host.opened[0]!;
+		const transcript = spyOn(panel.tui, "showOverlay");
+		const swapped = spyOn(mode, "focusAgentSession");
+		cleanups.push(() => {
+			transcript.mockRestore();
+			swapped.mockRestore();
+		});
+		panel.component.handleInput?.("\r");
+		await host.focus.promise;
+		await Promise.resolve();
+		expect(transcript).toHaveBeenCalledWith(expect.anything(), { width: "100%", margin: 0, fullscreen: true });
+		expect(swapped).not.toHaveBeenCalled();
+		expect(mode.rexPanels.isOpen("agents")).toBe(true);
+	},
+	30000,
+);
+
+test("review F4 resolves a bare editor against omp PATH, not the Rex server PATH", async () => {
+	const temp = await TempDir.create("@rex-editor-path-");
+	cleanups.push(() => temp.remove());
+	const bin = temp.join("bin");
+	await fs.mkdir(bin);
+	await Bun.write(`${bin}/panel-editor`, "#!/bin/sh\nprintf '# Path editor\\n- [x] Found on omp PATH\\n' > \"$1\"\n");
+	await fs.chmod(`${bin}/panel-editor`, 0o700);
+	const previous = process.env.PATH;
+	process.env.PATH = `${bin}:${previous}`;
+	cleanups.push(() => {
+		if (previous === undefined) delete process.env.PATH;
+		else process.env.PATH = previous;
+	});
+	let exitCode = -1;
+	const run: RexRunner = async args => {
+		if (args[1] === "split") {
+			const command = args.slice(args.indexOf("--") + 1);
+			const child = Bun.spawn(command, {
+				env: { ...process.env, PATH: "/usr/bin:/bin" },
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+			exitCode = await child.exited;
+			return { exitCode: 0, stdout: '{"block_ids":["block:editor"]}', stderr: "" };
+		}
+		return { exitCode: 0, stdout: args[1] === "wait" ? JSON.stringify({ exit_code: exitCode }) : "", stderr: "" };
+	};
+	const result = await editTodoInRex(
+		"# Original\n- [ ] Work\n",
+		{ sessionId: "s", blockId: "panel" },
+		{
+			signal: new AbortController().signal,
+			rex: createRexCli({ binary: "rex", run }),
+			editorCommand: "panel-editor",
+		},
+	);
+	expect(result).toBe("# Path editor\n- [x] Found on omp PATH\n");
+});
+
+async function abortEditor(markdown: string, saved: string): Promise<string | null> {
+	const abort = new AbortController();
+	const waiting = Promise.withResolvers<void>();
+	const ended = Promise.withResolvers<{ exitCode: number; stdout: string; stderr: string }>();
+	let file = "";
+	const run: RexRunner = async args => {
+		if (args[1] === "split") {
+			file = args.at(-1)!;
+			return { exitCode: 0, stdout: '{"block_ids":["block:editor"]}', stderr: "" };
+		}
+		if (args[1] === "wait") {
+			await Bun.write(file, saved);
+			waiting.resolve();
+			return ended.promise;
+		}
+		if (args[1] === "block") ended.resolve({ exitCode: 0, stdout: '{"exit_code":130}', stderr: "" });
+		return { exitCode: 0, stdout: "", stderr: "" };
+	};
+	const result = editTodoInRex(
+		markdown,
+		{ sessionId: "s", blockId: "panel" },
+		{
+			signal: abort.signal,
+			rex: createRexCli({ binary: "rex", run }),
+			editorCommand: "vi",
+		},
+	);
+	await waiting.promise;
+	abort.abort();
+	return result;
+}
+
+test("review F5 applies a valid saved edit when the panel closes before the editor exits", async () => {
+	const { mode, session } = await fixture();
+	await mode.editPanelTodos(markdown => abortEditor(markdown, "# Saved before close\n- [x] Kept saved work\n"));
+	expect(session.getTodoPhases()).toEqual([
+		{ name: "Saved before close", tasks: [{ content: "Kept saved work", status: "completed" }] },
+	]);
+}, 30000);
+
+test("review F5 does not apply unchanged or malformed files after abort", async () => {
+	const initial = "# Original\n- [ ] Work\n";
+	expect(await abortEditor(initial, initial)).toBeNull();
+	expect(await abortEditor(initial, "# Broken\nnot a todo\n")).toBeNull();
+});
+
+test("review F6 keeps the editor hint and reports omitted todo rows in a short panel", async () => {
+	const { mode, host } = await fixture();
+	await mode.toggleRexPanel("todo");
+	const panel = host.opened[0]!;
+	(panel.tui.terminal as VirtualTerminal).resize(54, 6);
+	const lines = panel.component.render(54).map(line => Bun.stripANSI(line));
+	expect(lines).toHaveLength(6);
+	expect(lines[4]).toBe("… 7 more rows");
+	expect(lines[5]).toBe("e edit todos");
 }, 30000);
 
 class SocketClient {

@@ -19,6 +19,8 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 {{/if}}
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
+`todo`: bead ID or exact text from your todo list, per item. A successful child result marks it done and starts the next pending item. Failure, abort, or operator stop leaves it unchanged. If omitted, omp links only one uniquely matching open item. A missing explicit link runs unlinked and reports the miss.
+The child receives its linked bead as read-only context. Only the main session writes beads; never run `bd` to change them. A child's scratch todos stay session-only.
 {{#if seanceGuidance}}{{seanceGuidance}}{{/if}}
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.

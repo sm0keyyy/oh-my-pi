@@ -1136,6 +1136,14 @@ function renderAgentResult(
 	lines.push(...renderRouteLine(result.resolvedModelRoute, continuePrefix, maxWidth, theme));
 
 	lines.push(...renderTaskSection(result.assignment ?? result.task, continuePrefix, expanded, theme));
+	if (result.todo) {
+		lines.push(
+			truncateTaskRow(
+				`${continuePrefix}${theme.fg("dim", `Todo: ${replaceTabs(sanitizeText(result.todo))}`)}`,
+				maxWidth,
+			),
+		);
+	}
 
 	if (aborted && result.abortReason) {
 		lines.push(
@@ -1998,6 +2006,7 @@ function describeResultAgent(result: SingleResult, state: AgentDescribeState, de
 		assignment,
 		[
 			assignment,
+			result.todo ? noteText(`Todo: ${plainText(result.todo)}`, "dim") : undefined,
 			result.resolvedModelRoute ? noteText(result.resolvedModelRoute, "dim") : undefined,
 			aborted && result.abortReason ? errorLine(result.abortReason) : undefined,
 			warning ? errorLine(warning, "warning") : undefined,
@@ -2249,6 +2258,8 @@ export interface TaskItem {
 	/** Inline instructions; exactly one of task or taskFile is required. */
 	task?: string;
 	taskFile?: string;
+	/** Bead ID or exact todo text in the caller's list. */
+	todo?: string;
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
@@ -2282,6 +2293,8 @@ export interface TaskParams {
 	task?: string;
 	/** Absolute path or local:// URL to a UTF-8 file (flat form), mutually exclusive with task. */
 	taskFile?: string;
+	/** See {@link TaskItem.todo}. */
+	todo?: string;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
@@ -2483,6 +2496,8 @@ export interface SingleResult {
 	assignment?: string;
 	taskFile?: string;
 	taskFileSha256?: string;
+	/** Todo item linked at spawn, by bead ID when present, otherwise exact text. */
+	todo?: string;
 	description?: string;
 	lastIntent?: string;
 	exitCode: number;
@@ -2521,6 +2536,8 @@ export interface SingleResult {
 	error?: string;
 	aborted?: boolean;
 	abortReason?: string;
+	/** Operator wrap-up reason; a stopped run must not complete its linked todo. */
+	operatorStop?: string;
 	/** Aggregated usage from the subprocess, accumulated incrementally from message_end events. */
 	usage?: Usage;
 	/** Output path for the task result */

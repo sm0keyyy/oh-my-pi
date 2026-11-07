@@ -3077,6 +3077,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		assignment,
 		description: progress.description,
 		lastIntent: progress.lastIntent,
+		...(stopReason !== undefined ? { operatorStop: stopReason } : {}),
 		exitCode,
 		output: stopNotice + truncatedOutput,
 		stderr,

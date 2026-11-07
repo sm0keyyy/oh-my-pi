@@ -871,7 +871,19 @@ export class ExtensionUiController {
 				const answer = Promise.withResolvers<ExtensionReviewResult | undefined>();
 				const onAbort = (): void => answer.resolve(undefined);
 				signal?.addEventListener("abort", onAbort, { once: true });
-				const overlay = createReviewOverlay(request, this.ctx.ui, answer.resolve);
+				const draftEditor = this.ctx.editor;
+				const inputGuard =
+					draftEditor.getText().length > 0
+						? {
+								isBlocked: () => draftEditor.getText().length > 0,
+								handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+								component: draftEditor,
+								syncPresentation: (blocked: boolean) => {
+									draftEditor.focused = blocked;
+								},
+							}
+						: undefined;
+				const overlay = createReviewOverlay(request, this.ctx.ui, answer.resolve, inputGuard);
 				handle = this.ctx.ui.showOverlay(overlay, {
 					anchor: "top-left",
 					width: "100%",

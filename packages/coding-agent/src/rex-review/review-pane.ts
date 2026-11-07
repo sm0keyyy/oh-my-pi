@@ -1,7 +1,11 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { TUI } from "@oh-my-pi/pi-tui";
-import { PlanReviewOverlay, type PlanReviewAnnotationState } from "@oh-my-pi/pi-tui/overlays/plan-review-overlay";
+import {
+	PlanReviewOverlay,
+	type PlanReviewAnnotationState,
+	type PlanReviewOverlayOptions,
+} from "@oh-my-pi/pi-tui/overlays/plan-review-overlay";
 import { parsePlanSections } from "@oh-my-pi/pi-tui/overlays/plan-toc";
 import { logger } from "@oh-my-pi/pi-utils";
 import type {
@@ -24,11 +28,16 @@ const MAX_MARKDOWN_BYTES = 1024 * 1024;
 
 function indexedReviewSections(markdown: string): Map<number, ExtensionReviewSection> {
 	const sections = new Map<number, ExtensionReviewSection>();
+	const usedIds = new Set<string>();
 	for (const [index, section] of parsePlanSections(markdown).entries()) {
 		if (section.level < 1) continue;
 		const numbered = /^(\d+(?:\.\d+)*)\.?\s+(.+)$/.exec(section.title);
+		const baseId = `§${numbered?.[1] ?? sections.size + 1}`;
+		let id = baseId;
+		for (let suffix = 2; usedIds.has(id); suffix++) id = `${baseId}~${suffix}`;
+		usedIds.add(id);
 		sections.set(index, {
-			id: `§${numbered?.[1] ?? sections.size + 1}`,
+			id,
 			heading: numbered?.[2] ?? section.title,
 			excerpt: section.raw.slice(0, 400),
 		});
@@ -84,19 +93,29 @@ export function createReviewOverlay(
 	request: ExtensionReviewRequest,
 	tui: TUI,
 	done: (result: ExtensionReviewResult) => void,
+	inputGuard?: PlanReviewOverlayOptions["inputGuard"],
 ): PlanReviewOverlay {
 	const key = `${request.path}:${Bun.hash(request.markdown)}`;
 	let state = drafts.get(key) ?? { annotations: [] };
 	return new PlanReviewOverlay(
 		request.markdown,
-		{ mode: "approval", options: [], promptTitle: request.title, terminal: tui.terminal, annotationState: state },
 		{
-			onPick: label =>
+			mode: "approval",
+			options: [],
+			promptTitle: request.title,
+			terminal: tui.terminal,
+			annotationState: state,
+			inputGuard,
+		},
+		{
+			onPick: label => {
+				drafts.delete(key);
 				done({
 					kind: "verdict",
 					verdict: label === "Approve" ? "approve" : "request-changes",
 					comments: reviewComments(state, request.markdown),
-				}),
+				});
+			},
 			onCancel: () => done({ kind: "cancelled" }),
 			onAnnotationStateChange: next => {
 				state = next;
@@ -124,6 +143,7 @@ export async function requestReview(
 	const finish = (value: ExtensionReviewResult | undefined): void => {
 		if (settled) return;
 		settled = true;
+		if (value?.kind === "verdict") drafts.delete(`${request.path}:${Bun.hash(request.markdown)}`);
 		result.resolve(value);
 		controller.abort();
 	};

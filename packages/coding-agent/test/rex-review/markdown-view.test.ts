@@ -68,6 +68,7 @@ for (const owner of ["main", "agent"] as const) {
 				owner === "main" ? { kind: "main" } : { kind: "agent", agentId: "Worker" },
 			);
 			expect(opened).toBe(true);
+			overlay!.handleInput("k");
 			for (const note of ["merge view and wire", "run both"]) {
 				overlay!.handleInput("c");
 				for (const ch of note) overlay!.handleInput(ch);
@@ -116,6 +117,7 @@ test("batch discard closes without delivering to its owner", async () => {
 			{ path: "/tmp/discard.md", title: "Discard", markdown: "# Section", sections: [] },
 			{ kind: "main" },
 		);
+		overlay!.handleInput("k");
 		overlay!.handleInput("c");
 		overlay!.handleInput("note");
 		overlay!.handleInput("\r");

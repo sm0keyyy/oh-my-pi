@@ -27,7 +27,7 @@ import type {
 	ExtensionUIDialogOptions,
 } from "../../src/extensibility/extensions/types";
 import { registerComponentPaneHost, type ComponentPaneHost } from "../../src/rex-panes/component-pane";
-import { createReviewOverlay, requestReview } from "../../src/rex-review/review-pane";
+import { createReviewOverlay, requestReview, splitReviewSections } from "../../src/rex-review/review-pane";
 import { ExtensionUiController } from "../../src/modes/controllers/extension-ui-controller";
 import { createInteractiveModeContext } from "../helpers/interactive-mode-context";
 
@@ -60,6 +60,7 @@ for (const winner of ["pane", "main", "cancel", "withdraw"] as const) {
 				expect(label).toBe("omp: review race.md");
 				const result = Promise.withResolvers<unknown>();
 				pane = await factory(tui, theme, KeybindingsManager.inMemory(), result.resolve);
+				pane.handleInput?.("k");
 				paneReady.resolve();
 				return {
 					blockId: "review",
@@ -110,19 +111,21 @@ for (const winner of ["pane", "main", "cancel", "withdraw"] as const) {
 test("review notes survive resubmission only for the same path and content hash", () => {
 	const done = vi.fn();
 	const overlay = createReviewOverlay(request, tui, done);
+	overlay.handleInput("k");
 	overlay.handleInput("c");
 	for (const ch of "merge view and wire") overlay.handleInput(ch);
 	overlay.handleInput("\r");
 	expect(done).not.toHaveBeenCalled();
 	overlay.handleInput("\x1b");
 	const restored = createReviewOverlay(request, tui, done);
+	restored.handleInput("k");
 	restored.handleInput("r");
 	expect(done.mock.calls.at(-1)?.[0]).toEqual({
 		kind: "verdict",
 		verdict: "request-changes",
 		comments: [{ section: "§4 Slices", text: "merge view and wire" }],
 	});
-	createReviewOverlay({ ...request, markdown: `${request.markdown}changed` }, tui, done).handleInput("a");
+	createReviewOverlay({ ...request, markdown: `${request.markdown}changed` }, tui, done).selectOption("Approve");
 	expect(done.mock.calls.at(-1)?.[0]).toEqual({ kind: "verdict", verdict: "approve", comments: [] });
 });
 
@@ -144,6 +147,7 @@ test("main review FIFO presents one native overlay at a time and has no deadline
 	const second = controller.showReviewDialog({ ...request, path: "/tmp/second.md" });
 	expect(overlays).toHaveLength(1);
 	expect(timers).not.toHaveBeenCalled();
+	overlays[0]!.handleInput("k");
 	overlays[0]!.handleInput("a");
 	expect(await first).toMatchObject({ kind: "verdict", verdict: "approve" });
 	expect(overlays).toHaveLength(2);
@@ -291,9 +295,11 @@ test.skipIf(!Bun.env.OMP_APPROVAL_REX_SERVER)(
 							.focused_block_id,
 					);
 					if (kind === "main") {
+						expect((await run(["send", "-s", anchor.sessionId, "-b", pane.blockId, "k"], 5000)).exitCode).toBe(0);
 						expect((await run(["send", "-s", anchor.sessionId, "-b", pane.blockId, "a"], 5000)).exitCode).toBe(0);
 					} else {
 						const overlay = mainOverlays.at(-1)!;
+						overlay.handleInput("k");
 						for (const note of ["merge view and wire", "run both"]) {
 							overlay.handleInput("c");
 							for (const ch of note) overlay.handleInput(ch);
@@ -411,4 +417,62 @@ test("remote review through raceDialog closes both the native overlay and the pa
 		await rpc.close();
 		await sdk.session.dispose();
 	}
+});
+
+test("review regression: section ids distinguish ordinal collisions and repeated numbered headings", () => {
+	const sections = splitReviewSections(
+		"# Title\n\n## 1. X\n\n## 2. Parent A\n\n### 1. Setup\n\n## 3. Parent B\n\n### 1. Setup\n",
+	);
+	expect(sections.map(section => section.id)).toEqual(["§1", "§1~2", "§2", "§1~3", "§3", "§1~4"]);
+	expect(new Set(sections.map(section => section.id)).size).toBe(sections.length);
+});
+
+test("review regression: a delivered verdict clears notes before another agent reviews the same file", () => {
+	const document = { ...request, path: "/tmp/verdict-draft-regression.md" };
+	const first = vi.fn();
+	const overlay = createReviewOverlay(document, tui, first);
+	overlay.handleInput("k");
+	overlay.handleInput("c");
+	for (const ch of "agent A note") overlay.handleInput(ch);
+	overlay.handleInput("\r");
+	overlay.selectOption("Request changes");
+	expect(first.mock.calls[0]?.[0]).toMatchObject({ comments: [{ text: "agent A note" }] });
+	const second = vi.fn();
+	createReviewOverlay(document, tui, second).selectOption("Approve");
+	expect(second.mock.calls[0]?.[0]).toEqual({ kind: "verdict", verdict: "approve", comments: [] });
+});
+
+test("review regression: an asynchronously presented subagent review keeps typing in the main draft", async () => {
+	let draft = "please ";
+	let overlay: PlanReviewOverlay | undefined;
+	const ctx = createInteractiveModeContext({
+		editor: {
+			getText: () => draft,
+			handleDraftEdit: key => {
+				draft += key;
+				return true;
+			},
+		},
+		ui: {
+			terminal: { rows: 24 },
+			showOverlay: component => {
+				overlay = component as PlanReviewOverlay;
+				return { hide() {} } as never;
+			},
+		},
+	});
+	const controller = new ExtensionUiController(ctx);
+	let settled = false;
+	const review = controller.showReviewDialog(request).then(result => {
+		settled = true;
+		return result;
+	});
+	for (const key of "add tests") overlay!.handleInput(key);
+	await Promise.resolve();
+	expect(draft).toBe("please add tests");
+	expect(settled).toBe(false);
+	overlay!.handleInput("\x1b[B");
+	overlay!.handleInput("r");
+	expect(await review).toMatchObject({ kind: "verdict", verdict: "request-changes" });
+	expect(draft).toBe("please add tests");
 });

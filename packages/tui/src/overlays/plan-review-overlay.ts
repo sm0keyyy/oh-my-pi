@@ -247,6 +247,12 @@ export interface PlanReviewOverlayOptions {
 	mode?: "plan" | "approval" | "comment";
 	approval?: boolean;
 	terminal?: { readonly rows: number };
+	inputGuard?: {
+		isBlocked(): boolean;
+		handleInput(keyData: string): void;
+		component?: Component;
+		syncPresentation?(blocked: boolean): void;
+	};
 	/** Prompt rendered above the options (e.g. "Plan mode - next step"). */
 	promptTitle?: string;
 	options: string[];
@@ -290,6 +296,8 @@ export class PlanReviewOverlay implements Component {
 
 	#mode: "plan" | "approval" | "comment";
 	#terminal: { readonly rows: number } | undefined;
+	#inputGuard: PlanReviewOverlayOptions["inputGuard"];
+	#keysArmed = false;
 	#discardConfirm = false;
 	#options: string[];
 	#disabled: Set<number>;
@@ -360,6 +368,8 @@ export class PlanReviewOverlay implements Component {
 		});
 		this.#mode = options.mode ?? (options.approval ? "approval" : "plan");
 		this.#terminal = options.terminal;
+		this.#inputGuard = options.inputGuard;
+		this.#keysArmed = this.#mode === "plan";
 		this.#options =
 			this.#mode === "approval"
 				? ["Approve", "Request changes"]
@@ -652,6 +662,33 @@ export class PlanReviewOverlay implements Component {
 
 	handleInput(keyData: string): void {
 		if (this.#committed) return;
+		if (this.#mode !== "plan" && !this.#keysArmed) {
+			const handoff =
+				matchesSelectUp(keyData) ||
+				matchesSelectDown(keyData) ||
+				matchesKey(keyData, "tab") ||
+				matchesKey(keyData, "shift+tab");
+			if (this.#inputGuard?.isBlocked()) {
+				if (!handoff) {
+					this.#inputGuard.handleInput(keyData);
+					return;
+				}
+			} else if (!handoff && keyData !== "j" && keyData !== "k") {
+				if (
+					keyData === "a" ||
+					keyData === "r" ||
+					keyData === "c" ||
+					keyData === "s" ||
+					keyData === "e" ||
+					matchesKey(keyData, "enter")
+				)
+					return;
+			}
+			if (handoff || keyData === "j" || keyData === "k") {
+				this.#keysArmed = true;
+				this.#inputGuard?.syncPresentation?.(false);
+			}
+		}
 		const cancel = matchesSelectCancel(keyData) || (this.#mode !== "plan" && matchesKey(keyData, "escape"));
 		if (this.#discardConfirm) {
 			if (keyData === "y" || matchesKey(keyData, "enter")) {
@@ -696,7 +733,10 @@ export class PlanReviewOverlay implements Component {
 			else if (this.#mode === "approval" && keyData === "a") this.selectOption("Approve");
 			else if (this.#mode === "approval" && keyData === "r") this.selectOption("Request changes");
 			else if (this.#mode === "comment" && keyData === "s") this.selectOption("Submit comments");
-			else if (matchesKey(keyData, "enter") && this.#focus === "actions") this.#confirmSelection();
+			else if (keyData === "e") {
+				this.#focus = "toc";
+				this.#editCurrentAnnotation();
+			} else if (matchesKey(keyData, "enter") && this.#focus === "actions") this.#confirmSelection();
 			else if (matchesKey(keyData, "tab") || keyData === "\t") this.#cycleRegion(1);
 			else this.#handleBodyScroll(keyData);
 			return;
@@ -1278,11 +1318,15 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#buildHelp(): string {
+		if (!this.#keysArmed)
+			return this.#inputGuard?.isBlocked()
+				? "↑/↓/Tab review · typing edits your prompt"
+				: "j/k/Tab start review · Esc cancel";
 		if (this.#discardConfirm) return "Discard all comments? Enter/y discard · Esc/n keep editing";
 		if (this.#mode !== "plan")
 			return this.#mode === "approval"
-				? "j/k section · c comment · a approve · r request changes · Esc cancel"
-				: "j/k section · c comment · s submit batch · Esc close";
+				? "j/k section · c comment · e edit · a approve · r request changes · Esc cancel"
+				: "j/k section · c comment · e edit · s submit batch · Esc close";
 		const sep = " · ";
 		const parts: string[] = [];
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
@@ -1538,6 +1582,8 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#renderFooterLines(innerWidth: number, maxChooserRows = Number.POSITIVE_INFINITY): string[] {
+		if (!this.#keysArmed && this.#inputGuard?.isBlocked())
+			return [...(this.#inputGuard.component?.render(innerWidth) ?? []), theme.fg("dim", this.#buildHelp())];
 		if (this.#annotationChooser) return this.#renderAnnotationChooserLines(innerWidth, maxChooserRows);
 		if (this.#annotating) {
 			const target = this.#annotationTarget;
@@ -1580,6 +1626,7 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	describe(): NativeNode {
+		this.#inputGuard?.syncPresentation?.(!this.#keysArmed && this.#inputGuard.isBlocked());
 		// The terminal lays out the sidebar; it is shown whenever the Contents has
 		// enough entries, which is also what Tab cycling consults.
 		this.#sidebarShown = this.#toc.length >= SIDEBAR_MIN_HEADINGS;
@@ -1594,6 +1641,8 @@ export class PlanReviewOverlay implements Component {
 			this.#selectedIndex,
 			this.#sliderIndex,
 			this.#discardConfirm,
+			this.#keysArmed,
+			!this.#keysArmed && this.#inputGuard?.isBlocked(),
 			this.#committed ? `committed:${this.#committedLabel ?? ""}` : "",
 			this.#annotating
 				? `annotating:${target?.sectionIndex}:${target?.row}:${target?.context}:${this.#editingAnnotation !== undefined}`
@@ -1820,6 +1869,10 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	#describeFooter(): NativeChild[] {
+		if (!this.#keysArmed && this.#inputGuard?.isBlocked()) {
+			const hint = text(this.#buildHelp(), { wrap: "word" });
+			return this.#inputGuard.component ? [this.#inputGuard.component, hint] : [hint];
+		}
 		if (this.#discardConfirm) return [text(this.#buildHelp(), { wrap: "word" })];
 		const chooser = this.#annotationChooser;
 		if (chooser) {
@@ -1878,10 +1931,16 @@ export class PlanReviewOverlay implements Component {
 
 	/** {@link #buildHelp} as keycap hints. */
 	#nativeHelpHints(): (NativeHint | undefined)[] {
+		if (!this.#keysArmed)
+			return [
+				{ keys: ["j", "k", "tab"], label: "start review" },
+				{ keys: ["escape"], label: "cancel" },
+			];
 		if (this.#mode !== "plan")
 			return [
 				{ keys: ["j", "k"], label: "section" },
 				{ keys: ["c"], label: "comment" },
+				{ keys: ["e"], label: "edit note" },
 				...(this.#mode === "approval"
 					? [
 							{ keys: ["a" as const], label: "approve" },
@@ -1934,6 +1993,7 @@ export class PlanReviewOverlay implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		this.#inputGuard?.syncPresentation?.(!this.#keysArmed && this.#inputGuard.isBlocked());
 		const termHeight = this.#terminalRows();
 		const sidebarShown = this.#sidebarVisible(width);
 		this.#sidebarShown = sidebarShown;
@@ -2003,6 +2063,6 @@ export class PlanReviewOverlay implements Component {
 		out.push(divider(width));
 		for (const line of footerLines) out.push(row(line, width));
 		out.push(bottomBorder(width));
-		return out.slice(0, termHeight);
+		return this.#mode === "plan" ? out : out.slice(0, termHeight);
 	}
 }

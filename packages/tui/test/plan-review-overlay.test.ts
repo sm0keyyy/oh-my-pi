@@ -1152,6 +1152,7 @@ describe("approval and comment modes", () => {
 			if (originalRows) Object.defineProperty(process.stdout, "rows", originalRows);
 			else Reflect.deleteProperty(process.stdout, "rows");
 		}
+		overlay.handleInput("k");
 		for (const note of ["merge view and wire", "run both"]) {
 			overlay.handleInput("c");
 			for (const ch of note) overlay.handleInput(ch);
@@ -1168,6 +1169,7 @@ describe("approval and comment modes", () => {
 		overlay.handleInput("r");
 		expect(onPick).toHaveBeenCalledWith("Request changes");
 		const approve = new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel });
+		approve.handleInput("k");
 		approve.handleInput("a");
 		expect(onPick).toHaveBeenCalledWith("Approve");
 		new PlanReviewOverlay("# Plan", { mode: "approval", options: [] }, { onPick, onCancel }).handleInput("\x1b");
@@ -1182,6 +1184,7 @@ describe("approval and comment modes", () => {
 			{ mode: "comment", options: [] },
 			{ onPick, onCancel },
 		);
+		overlay.handleInput("k");
 		overlay.handleInput("c");
 		overlay.handleInput("first");
 		overlay.handleInput(ENTER);
@@ -1197,11 +1200,64 @@ describe("approval and comment modes", () => {
 		overlay.handleInput("s");
 		expect(onPick).toHaveBeenCalledWith("Submit comments");
 		const discard = new PlanReviewOverlay("# One", { mode: "comment", options: [] }, { onPick, onCancel });
+		discard.handleInput("k");
 		discard.handleInput("c");
 		discard.handleInput("unsent");
 		discard.handleInput(ENTER);
 		discard.handleInput("\x1b");
 		discard.handleInput("y");
 		expect(onCancel).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("review regression", () => {
+	beforeEach(() => {
+		setThemeInstance(darkTheme!);
+		setKeybindings(KeybindingsManager.inMemory());
+	});
+	it("ignores verdict and comment letters until explicit navigation", () => {
+		const picked = vi.fn();
+		const changed = vi.fn();
+		const overlay = new PlanReviewOverlay(
+			"# Plan",
+			{ mode: "approval", options: [] },
+			{ onPick: picked, onCancel() {}, onAnnotationStateChange: changed },
+		);
+		for (const key of "add tests") overlay.handleInput(key);
+		expect(picked).not.toHaveBeenCalled();
+		expect(changed).not.toHaveBeenCalled();
+		overlay.handleInput("k");
+		overlay.handleInput("a");
+		expect(picked).toHaveBeenCalledWith("Approve");
+	});
+	for (const mode of ["approval", "comment"] as const) {
+		it(`allows editing and deleting ${mode} section notes`, () => {
+			const changed = vi.fn();
+			const overlay = new PlanReviewOverlay(
+				"# Plan",
+				{ mode, options: [] },
+				{ onPick() {}, onCancel() {}, onAnnotationStateChange: changed },
+			);
+			overlay.handleInput("k");
+			overlay.handleInput("c");
+			for (const key of "remove this note") overlay.handleInput(key);
+			overlay.handleInput(ENTER);
+			expect(changed.mock.calls.at(-1)?.[0].annotations).toHaveLength(1);
+			overlay.handleInput("e");
+			overlay.handleInput("\x15");
+			overlay.handleInput(ENTER);
+			expect(changed.mock.calls.at(-1)?.[0].annotations).toEqual([]);
+		});
+	}
+	it("preserves plan-mode footer and options for bottom-anchored short terminals", () => {
+		const overlay = new PlanReviewOverlay(
+			"# Plan\n\nBody",
+			{ options: APPROVAL_OPTIONS, terminal: { rows: 6 }, helpText: "esc cancel" },
+			{ onPick() {}, onCancel() {} },
+		);
+		const rows = overlay.render(80);
+		expect(rows.length).toBeGreaterThan(6);
+		expect(stripVTControlCharacters(rows.join("\n"))).toContain("Refine plan");
+		expect(stripVTControlCharacters(rows.join("\n"))).toContain("esc cancel");
 	});
 });

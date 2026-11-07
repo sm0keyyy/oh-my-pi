@@ -3,7 +3,7 @@ import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, UsageReport } from "@oh-my-pi/pi-ai";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey, editorKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
@@ -106,7 +106,7 @@ import { createAgentsHubDeps } from "../agents-hub-deps";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { collapseSharedUsageReports } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
-import { AgentHubOverlayComponent } from "@oh-my-pi/pi-tui/overlays/agent-hub";
+import { type AgentHubDeps, AgentHubOverlayComponent } from "@oh-my-pi/pi-tui/overlays/agent-hub";
 import { createAgentHubRuntime } from "../agent-hub-runtime";
 import { AgentsHubComponent } from "@oh-my-pi/pi-tui/overlays/agents-hub";
 import { CopySelectorComponent } from "@oh-my-pi/pi-tui/overlays/copy-selector";
@@ -2523,6 +2523,41 @@ export class SelectorController {
 			return { component: selector, focus: selector.getSelectList() };
 		});
 	}
+	createAgentHub(
+		observers: SessionObserverRegistry,
+		ui: TUI,
+		done: () => void,
+		options?: Pick<AgentHubDeps, "initialSection" | "focusAgent" | "closeOnFocus">,
+	): AgentHubOverlayComponent {
+		return new AgentHubOverlayComponent({
+			...createAgentHubRuntime({
+				settings: this.ctx.settings,
+				registry: this.ctx.collabGuest?.agentRegistry,
+				remote: this.ctx.collabGuest?.hubRemote,
+				sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
+			}),
+			observers,
+			hubKeys: [
+				...this.ctx.keybindings.getKeys("app.agents.hub"),
+				...this.ctx.keybindings.getKeys("app.session.observe"),
+			],
+			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
+			onDone: done,
+			requestRender: () => ui.requestRender(),
+			remote: this.ctx.collabGuest?.hubRemote,
+			ui,
+			getTool: name => this.ctx.session.getToolByName(name),
+			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),
+			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
+			cwd: this.ctx.sessionManager.getCwd(),
+			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
+			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
+			expandThinkingBlocks: () => this.ctx.expandThinkingBlocks,
+			focusAgent: id => this.ctx.focusAgentSession(id),
+			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
+			...options,
+		});
+	}
 
 	showAgentHub(observers: SessionObserverRegistry, options?: AgentHubOpenOptions): void {
 		// A repeat request reuses the open hub, still honoring its deep link (`/hub` → activity).
@@ -2534,10 +2569,6 @@ export class SelectorController {
 			return true;
 		};
 		if (reuseOpenHub()) return;
-		const hubKeys = [
-			...this.ctx.keybindings.getKeys("app.agents.hub"),
-			...this.ctx.keybindings.getKeys("app.session.observe"),
-		];
 		let menu: OpenMenu | undefined;
 		let closed = false;
 
@@ -2557,31 +2588,7 @@ export class SelectorController {
 			this.ctx.ui.requestRender();
 		};
 
-		const hub = new AgentHubOverlayComponent({
-			...createAgentHubRuntime({
-				settings: this.ctx.settings,
-				registry: this.ctx.collabGuest?.agentRegistry,
-				remote: this.ctx.collabGuest?.hubRemote,
-				sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
-			}),
-			observers,
-			hubKeys,
-			expandKeys: this.ctx.keybindings.getKeys("app.tools.expand"),
-			initialSection: options?.initialSection,
-			onDone: done,
-			requestRender: () => this.ctx.ui.requestRender(),
-			remote: this.ctx.collabGuest?.hubRemote,
-			ui: this.ctx.ui,
-			getTool: name => this.ctx.session.getToolByName(name),
-			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),
-			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
-			cwd: this.ctx.sessionManager.getCwd(),
-			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
-			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
-			expandThinkingBlocks: () => this.ctx.expandThinkingBlocks,
-			focusAgent: id => this.ctx.focusAgentSession(id),
-			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
-		});
+		const hub = this.createAgentHub(observers, this.ctx.ui, done, { initialSection: options?.initialSection });
 
 		const showReadyHub = () => {
 			if (closed) return;

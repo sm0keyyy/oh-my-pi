@@ -18,9 +18,13 @@ export function startMainPaneRecord(session: AgentSession, env: NodeJS.ProcessEn
 	let warned = false;
 	let unsubscribe = () => {};
 	let cancelExit = () => {};
+	let poll: NodeJS.Timeout | undefined;
+	let writtenCwd: string | undefined;
+	let writtenSession: string | undefined;
 	const dispose = (): void => {
 		if (disposed) return;
 		disposed = true;
+		clearInterval(poll);
 		unsubscribe();
 		cancelExit();
 	};
@@ -42,16 +46,21 @@ export function startMainPaneRecord(session: AgentSession, env: NodeJS.ProcessEn
 	const write = (): void => {
 		if (disposed) return;
 		try {
-			if (session.sessionFile) {
+			const sessionFile = session.sessionFile;
+			const cwd = session.sessionManager.getCwd();
+			if (cwd === writtenCwd && sessionFile === writtenSession) return;
+			if (sessionFile) {
 				writePaneRecord(blockId, {
 					kind: "omp",
 					pid: process.pid,
-					cwd: session.sessionManager.getCwd(),
-					session: session.sessionFile,
+					cwd,
+					session: sessionFile,
 				});
 			} else {
 				removePaneRecord(blockId);
 			}
+			writtenCwd = cwd;
+			writtenSession = sessionFile;
 		} catch (error) {
 			fail(error);
 		}
@@ -61,6 +70,9 @@ export function startMainPaneRecord(session: AgentSession, env: NodeJS.ProcessEn
 		write();
 		if (!disposed) {
 			unsubscribe = session.registerSessionChangeCallback(write);
+			// /move and /worktree can keep the session ID while its paths change.
+			poll = setInterval(write, 1000);
+			poll.unref();
 			cancelExit = postmortem.register(
 				`rex-main-pane:${blockId}`,
 				reason => {

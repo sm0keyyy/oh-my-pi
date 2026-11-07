@@ -118,6 +118,7 @@ class Manager implements PaneManager {
 					member.gate.clear();
 					member.group.members.delete(member);
 					this.#members.delete(member.id);
+					await this.#killEmpty(member.group);
 					if (member.group.members.size === 0 && !member.group.sessionId && member.group.blocks.size === 0) {
 						for (const [key, group] of this.#groups) if (group === member.group) this.#groups.delete(key);
 					}
@@ -172,7 +173,11 @@ class Manager implements PaneManager {
 		let outcome: ReopenOutcome = { ok: false, reason: "agent-gone" };
 		this.#queue(member.group, async () => {
 			const session = this.#live(this.deps.registry.get(member.id));
-			if (this.#disposed || !session) return;
+			if (this.#disposed || !session) {
+				member.gate.clear();
+				this.#queue(member.group, () => this.#killEmpty(member.group));
+				return;
+			}
 			if (member.active) {
 				outcome = { ok: false, reason: "already-open" };
 				return;
@@ -286,9 +291,9 @@ class Manager implements PaneManager {
 				}
 				if (member.active) {
 					if (member.active.session !== desired) {
+						this.#forgetFinished(member);
 						await member.active.pane.revive?.(desired);
 						member.active.session = desired;
-						this.#forgetFinished(member);
 						this.deps.onPaneOpened(id);
 					}
 					return;
@@ -329,8 +334,14 @@ class Manager implements PaneManager {
 		member.finished = true;
 		this.#finished.push(member);
 		while (this.#finished.length > FINISHED_PANES_KEPT) {
-			const oldest = this.#finished[0];
-			if (oldest) await this.#close(oldest);
+			const oldest = this.#finished.shift();
+			const evicted = oldest?.active;
+			if (!oldest || !evicted) continue;
+			if (oldest.group === member.group) await this.#close(oldest);
+			else
+				this.#queue(oldest.group, async () => {
+					if (oldest.finished && oldest.active === evicted) await this.#close(oldest);
+				});
 		}
 	}
 

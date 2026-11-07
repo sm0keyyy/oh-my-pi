@@ -2,6 +2,10 @@ import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import * as path from "node:path";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { Settings, resetSettingsForTest } from "../../src/config/settings";
+import { IrcBus } from "../../src/irc/bus";
+import { AgentRegistry } from "../../src/registry/agent-registry";
+import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
+import { ThreadView } from "../../src/rex-panes/thread-view";
 import { MutedTerminal } from "../../src/rex-panes/muted-terminal";
 import { createPaneView } from "../../src/rex-panes/pane-view";
 import { routePaneInput } from "../../src/rex-panes/pane-input";
@@ -92,3 +96,80 @@ test("finished Thread panes rebuild persisted brief, IRC, asks and result, and a
 		await view.dispose();
 	}
 });
+
+test.each(["broadcast", "wake-relay"] as const)(
+	"review R4 reconciles %s live IRC with transcript reloads",
+	async kind => {
+		AgentRegistry.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+		const fixture = createPaneSessionFixture();
+		const terminal = new VirtualTerminal(100, 24);
+		const thread = new ThreadView("Alpha", terminal, undefined, undefined, () => {});
+		const bus = IrcBus.global();
+		const body = kind === "broadcast" ? "shared broadcast body" : "ephemeral wake result";
+		try {
+			thread.setVisible(true);
+			await thread.setSession(fixture.session);
+			for (const id of kind === "broadcast" ? ["Beta", "Gamma"] : ["Beta"]) {
+				AgentRegistry.global().register({ id, displayName: id, kind: "sub", status: "running", session: null });
+				const received = bus.wait(id, {}, 1000);
+				const receipt = await bus.send(
+					{ from: "Alpha", to: id, body, ...(kind === "broadcast" ? { broadcast: true } : { wakeRelay: true }) },
+					{ suppressRelay: true },
+				);
+				expect(receipt.outcome).toBe("injected");
+				await received;
+			}
+			await thread.refresh();
+			await terminal.waitForRender();
+			if (kind === "wake-relay") {
+				expect(terminal.getViewport().join("\n")).not.toContain(body);
+				return;
+			}
+			expect(
+				terminal
+					.getViewport()
+					.join("\n")
+					.match(/shared broadcast body/g),
+			).toHaveLength(1);
+			expect(terminal.getViewport().join("\n")).toContain("irc-out Alpha → all");
+			fixture.session.sessionManager.appendMessage({
+				...fixture.partial,
+				content: [{ type: "toolCall", id: "broadcast-send", name: "send", arguments: { message: body } }],
+			});
+			fixture.session.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: "broadcast-send",
+				toolName: "send",
+				isError: false,
+				timestamp: Date.now(),
+				content: [{ type: "text", text: "Delivered" }],
+				details: {
+					op: "send",
+					from: "Alpha",
+					to: "all",
+					receipts: [
+						{ to: "Beta", outcome: "injected" },
+						{ to: "Gamma", outcome: "injected" },
+					],
+				},
+			});
+			await thread.refresh();
+			await terminal.waitForRender();
+			expect(
+				terminal
+					.getViewport()
+					.join("\n")
+					.match(/shared broadcast body/g),
+			).toHaveLength(1);
+			expect(terminal.getViewport().join("\n")).toContain("irc-out Alpha → all");
+		} finally {
+			thread.dispose();
+			await fixture.close();
+			AgentRegistry.resetGlobalForTests();
+			AgentLifecycleManager.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+		}
+	},
+);

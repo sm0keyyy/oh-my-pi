@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { setImmediate } from "node:timers/promises";
 import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
@@ -6,6 +7,7 @@ import { AgentRegistry } from "../../src/registry/agent-registry";
 import { type OpenPane, type PaneManager, rexPanesEligible, startPaneManager } from "../../src/rex-panes/pane-manager";
 import * as paneRecords from "../../src/rex-panes/pane-records";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
+import { markPaneCrashed, reopenCrashedPane } from "../../src/rex-panes/supervise";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
 
@@ -23,7 +25,14 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: string } = {}) {
+function harness(
+	options: {
+		beforeOpen?: () => Promise<void>;
+		beforeRevive?: (id: string) => Promise<void>;
+		beforeCommand?: (args: string[]) => Promise<void>;
+		failCommand?: string;
+	} = {},
+) {
 	const registry = new AgentRegistry();
 	const bus = new EventBus();
 	const calls: string[][] = [];
@@ -56,6 +65,7 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 		calls.push(args);
 		inFlight++;
 		maxInFlight = Math.max(maxInFlight, inFlight);
+		await options.beforeCommand?.(args);
 		await Promise.resolve();
 		inFlight--;
 		const command = args[1];
@@ -105,6 +115,7 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 					notify();
 				},
 				async revive(next) {
+					await options.beforeRevive?.(id);
 					pane.finished = false;
 					pane.session = next;
 					notify();
@@ -155,6 +166,113 @@ function harness(options: { beforeOpen?: () => Promise<void>; failCommand?: stri
 }
 
 describe("pane manager", () => {
+	it("review R1 keeps a reviving oldest pane when another group finishes", async () => {
+		const reviving = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const h = harness({
+			beforeRevive: async id => {
+				if (id === "oldest") {
+					reviving.resolve();
+					await resume.promise;
+				}
+			},
+		});
+		try {
+			h.start("oldest", "oldest-group");
+			for (const id of ["b", "c", "d", "e"]) h.start(id, "fillers");
+			h.start("trigger", "trigger-group");
+			await h.until(() => h.opened.length === 6);
+			for (const id of ["oldest", "b", "c", "d", "e"]) {
+				h.registry.detachSession(id);
+				h.registry.setStatus(id, "parked");
+			}
+			await h.until(() => ["oldest", "b", "c", "d", "e"].every(id => h.panes.get(id)![0]!.finished));
+			await h.manager.reveal("e");
+			const pane = h.panes.get("oldest")![0]!;
+			const location = h.manager.location("oldest");
+			const fresh = {} as AgentSession;
+			h.registry.attachSession("oldest", fresh);
+			h.registry.setStatus("oldest", "running");
+			await reviving.promise;
+			h.registry.detachSession("trigger");
+			h.registry.setStatus("trigger", "parked");
+			await h.manager.reveal("trigger");
+			expect(pane.disposed).toBe(false);
+			expect(h.manager.location("oldest")).toEqual(location);
+			resume.resolve();
+			await h.manager.reveal("oldest");
+			expect(pane.session).toBe(fresh);
+		} finally {
+			resume.resolve();
+		}
+	});
+
+	it("review R1 queues cross-group eviction behind a sibling split already in flight", async () => {
+		const splitting = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		let pause = false;
+		const h = harness({
+			beforeCommand: async args => {
+				if (pause && args[1] === "split" && args[3] === "s1") {
+					splitting.resolve();
+					await resume.promise;
+				}
+			},
+		});
+		try {
+			h.start("oldest", "oldest-group");
+			await h.until(() => h.opened.length === 1);
+			for (const id of ["b", "c", "d", "e"]) h.start(id, "fillers");
+			h.start("trigger", "trigger-group");
+			await h.until(() => h.opened.length === 6);
+			for (const id of ["oldest", "b", "c", "d", "e"]) {
+				h.registry.detachSession(id);
+				h.registry.setStatus(id, "parked");
+			}
+			await h.manager.reveal("oldest");
+			await h.manager.reveal("e");
+			pause = true;
+			h.start("sibling", "oldest-group");
+			await splitting.promise;
+			h.registry.detachSession("trigger");
+			h.registry.setStatus("trigger", "parked");
+			await h.manager.reveal("trigger");
+			expect(h.panes.get("oldest")![0]!.disposed).toBe(false);
+			expect(h.sessions.has("s1")).toBe(true);
+			pause = false;
+			resume.resolve();
+			await h.manager.reveal("sibling");
+			expect(h.panes.get("oldest")![0]!.disposed).toBe(true);
+			expect(h.manager.location("sibling")?.sessionId).toBe("s1");
+			expect(h.calls.some(call => call[1] === "kill" && call[2] === "s1")).toBe(false);
+		} finally {
+			resume.resolve();
+		}
+	});
+
+	it.each(["removed", "agent-gone"] as const)(
+		"review R2 clears a last-pane EOF hold on %s and cleans its session and records",
+		async action => {
+			const h = harness();
+			h.start("last");
+			await h.until(() => h.opened.length === 1);
+			const block = h.manager.location("last")!.blockId;
+			const pane = h.panes.get("last")![0]!;
+			pane.close();
+			await h.until(() => pane.disposed);
+			expect(markPaneCrashed(block)).toBe(true);
+			if (action === "removed") h.registry.unregister("last");
+			else {
+				h.registry.detachSession("last");
+				h.registry.setStatus("last", "parked");
+				expect(await reopenCrashedPane(block)).toEqual({ ok: false, reason: "agent-gone" });
+			}
+			await setImmediate();
+			expect(h.sessions.size).toBe(0);
+			expect(h.records.size).toBe(0);
+		},
+	);
+
 	it("grid groups three agents, uses four-pane tabs, and joins nested children to the ancestor", async () => {
 		const h = harness();
 		expect(h.calls).toEqual([]);

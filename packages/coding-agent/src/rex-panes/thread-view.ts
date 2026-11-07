@@ -21,7 +21,7 @@ export class ThreadView {
 	#dirty = false;
 	#finished = false;
 	#notice = "";
-	#liveIrc: ThreadItem[] = [];
+	#liveIrc: (ThreadItem & { wakeRelay?: boolean })[] = [];
 	#visible = false;
 
 	constructor(
@@ -61,13 +61,26 @@ export class ThreadView {
 			});
 			this.#unsubscribeIrc = IrcBus.global().onSent(message => {
 				if (message.from !== this.agentId && message.to !== this.agentId) return;
+				const to = message.broadcast && message.from === this.agentId ? "all" : message.to;
+				if (
+					to === "all" &&
+					this.#liveIrc.some(
+						item =>
+							item.kind === "irc-out" &&
+							item.from === message.from &&
+							item.to === "all" &&
+							item.text === message.body,
+					)
+				)
+					return;
 				this.#liveIrc.push({
 					kind: message.from === this.agentId ? "irc-out" : "irc-in",
 					from: message.from,
-					to: message.to,
+					to,
 					text: message.body,
 					ts: message.ts,
 					messageId: message.id,
+					...(message.wakeRelay ? { wakeRelay: true } : {}),
 				});
 				this.#liveIrc = boundedItems(this.#liveIrc);
 				void this.refresh();
@@ -103,6 +116,7 @@ export class ThreadView {
 				if (this.#disposed) return;
 				this.#liveIrc = this.#liveIrc.filter(
 					live =>
+						!live.wakeRelay &&
 						!items.some(
 							item =>
 								(item.kind === "irc-in" || item.kind === "irc-out") &&

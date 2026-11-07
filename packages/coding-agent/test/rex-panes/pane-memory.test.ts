@@ -87,6 +87,11 @@ test("finished panes stay within the per-pane and five-cycle RSS bounds without 
 			views.push(view);
 			outputBytes += terminal.bytes;
 		}
+		capture.mockClear();
+		await collectGarbage();
+		for (const tree of closedTrees) expect(await becomesCollectible(tree)).toBe(true);
+		expect(views).toHaveLength(5);
+		for (const view of views) expect(view.session).toBeNull();
 		Bun.gc(true);
 		const finished = process.memoryUsage.rss();
 		for (const view of views) await view.dispose();

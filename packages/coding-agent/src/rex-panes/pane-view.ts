@@ -62,7 +62,7 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 
 	const repaint = (): void => {
 		if (disposed) return;
-		if (tab === "live" && mode) mode.ui.requestRender(true);
+		if (tab === "live" && mode) mode.ui.requestRender(true, { clearScrollback: true });
 		else thread.repaint();
 	};
 	const setTab = (next: PaneTab): void => {
@@ -74,6 +74,7 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 		repaint();
 	};
 	const attach = async (next: AgentSession): Promise<void> => {
+		const replayAfterAttach = !liveTerminal.visible;
 		const composer = new Composer({
 			terminal: liveTerminal,
 			tuiOptions: { embedded: true },
@@ -103,7 +104,7 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 			session = next;
 			snapshot = undefined;
 			await thread.setSession(next);
-			setTab(tab);
+			if (replayAfterAttach) setTab(tab);
 		} catch (error) {
 			created.disposeEmbedded();
 			throw error;
@@ -157,6 +158,7 @@ export async function createPaneView(options: PaneViewOptions): Promise<PaneView
 			liveTerminal.visible = false;
 			mode?.disposeEmbedded();
 			mode = undefined;
+			session = null;
 			await attach(next);
 		},
 		async dispose() {

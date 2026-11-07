@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "../src/async";
@@ -33,6 +34,19 @@ for (const action of ["stop_subagent", "abort_subagent", "cancel"] as const) {
 	test(`${action} preserves parent summary, operator reason, and legacy cancellation`, async () => {
 		using temp = TempDir.createSync("@rpc-control-");
 		const file = temp.join("Child.jsonl");
+		const tombstoneStarted = Promise.withResolvers<void>();
+		const allowTombstone = Promise.withResolvers<void>();
+		let control: Promise<object> | undefined;
+		if (action !== "stop_subagent") {
+			const writeFile = fs.writeFile;
+			vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+				if (args[0] === `${file}.tombstone`) {
+					tombstoneStarted.resolve();
+					await allowTombstone.promise;
+				}
+				return writeFile(...args);
+			});
+		}
 		const roster = new RpcSubagentRegistry(new EventBus(), () => {}, [
 			{
 				id: "Child",
@@ -74,12 +88,13 @@ for (const action of ["stop_subagent", "abort_subagent", "cancel"] as const) {
 						stopReason: "aborted",
 					};
 					emit({ type: "message_end", message: last } as AgentSessionEvent);
-					const result = await handleRpcSubagentControl(
+					control = handleRpcSubagentControl(
 						roster,
 						action === "cancel"
 							? { type: "abort_subagent", subagentId: "Child" }
 							: { type: action, subagentId: "Child", reason: "r" },
 					);
+					const result = await control;
 					expect(result).toEqual(action === "cancel" ? { cancelled: true } : { ok: true });
 				} else {
 					expect(text).toContain("r");
@@ -114,15 +129,34 @@ for (const action of ["stop_subagent", "abort_subagent", "cancel"] as const) {
 			setToolUIContext: () => {},
 			eventBus: new EventBus(),
 		});
+		let runSettled = false;
+		const run = runSubprocess({
+			cwd: temp.path(),
+			agent,
+			task: "inspect",
+			index: 0,
+			id: "Child",
+			enableLsp: false,
+		});
+		void run.then(
+			() => {
+				runSettled = true;
+			},
+			() => {
+				runSettled = true;
+			},
+		);
 		try {
-			const result = await runSubprocess({
-				cwd: temp.path(),
-				agent,
-				task: "inspect",
-				index: 0,
-				id: "Child",
-				enableLsp: false,
-			});
+			if (action !== "stop_subagent") {
+				await tombstoneStarted.promise;
+				// Drain the runnable abort/finalizer chain while the filesystem write is blocked.
+				const checkpoint = Promise.withResolvers<void>();
+				setImmediate(checkpoint.resolve);
+				await checkpoint.promise;
+				expect(runSettled).toBe(false);
+				allowTombstone.resolve();
+			}
+			const result = await run;
 			const parent = formatTaskResultSummary(result, { totalDurationMs: result.durationMs });
 			if (action === "stop_subagent") {
 				expect(parent).toContain("Stopped by operator: r");
@@ -132,11 +166,14 @@ for (const action of ["stop_subagent", "abort_subagent", "cancel"] as const) {
 				expect(parent).toContain("cancelled");
 				expect(parent).toContain(action === "cancel" ? "Cancelled by caller" : "Aborted by operator: r");
 				if (action === "abort_subagent") expect(parent).toContain("last activity:");
+				expect(await Bun.file(`${file}.tombstone`).exists()).toBe(true);
 			}
 			expect(
 				await handleRpcSubagentControl(roster, { type: "stop_subagent", subagentId: "Missing", reason: "r" }),
 			).toEqual({ ok: false, reason: "unknown-agent" });
 		} finally {
+			allowTombstone.resolve();
+			await Promise.allSettled([run, control]);
 			roster.dispose();
 		}
 	});

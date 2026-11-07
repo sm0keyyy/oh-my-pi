@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { logger } from "@oh-my-pi/pi-utils";
+import * as utils from "@oh-my-pi/pi-utils";
 import { runRenderCommand } from "../../src/cli/render-cli";
 import * as codegraph from "../../src/codegraph-index";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
@@ -14,6 +15,9 @@ import * as mainServices from "../../src/modes/main-services";
 import * as queue from "../../src/operator-queue";
 import { answerPendingForSession } from "../../src/operator-queue/drain";
 import * as watcher from "../../src/rex-watch/watcher";
+import * as mainRecord from "../../src/rex-panes/main-pane-record";
+import { paneRecordPath } from "../../src/rex-panes/pane-records";
+import * as tabTitle from "../../src/rex-panes/tab-title";
 import {
 	registerSubagentAskHost,
 	subagentAskHostFor,
@@ -27,6 +31,8 @@ import { createTestSession } from "../utilities";
 beforeEach(async () => {
 	await Settings.init({ inMemory: true });
 	await initTheme();
+	spyOn(mainRecord, "startMainPaneRecord").mockReturnValue({ dispose() {}, closed() {} });
+	spyOn(tabTitle, "startTabTitle").mockReturnValue({ dispose() {} });
 });
 
 afterEach(() => {
@@ -58,11 +64,14 @@ test("main services start once and all dispose once even when one teardown rejec
 		settings: Settings.isolated(),
 		cwd: "/fixture/repo",
 		toolUi: ui,
+		session: createInteractiveModeContext().session,
 		sessionId: () => "main",
 	});
 	expect(operator).toHaveBeenCalledTimes(1);
 	expect(graph).toHaveBeenCalledWith({ cwd: "/fixture/repo", ui });
 	expect(rex).toHaveBeenCalledTimes(1);
+	expect(mainRecord.startMainPaneRecord).toHaveBeenCalledTimes(1);
+	expect(tabTitle.startTabTitle).toHaveBeenCalledTimes(1);
 	await Promise.all([services.dispose(), services.dispose()]);
 	expect(disposed).toEqual(["queue", "codegraph", "rex"]);
 	expect(warn).toHaveBeenCalledTimes(1);
@@ -82,6 +91,7 @@ test("a throwing queue startup leaves codegraph and the watcher available and lo
 		settings: Settings.isolated(),
 		cwd: "/fixture/repo",
 		toolUi: ui,
+		session: createInteractiveModeContext().session,
 		sessionId: () => "main",
 	});
 	await services.dispose();
@@ -92,7 +102,7 @@ test("a throwing queue startup leaves codegraph and the watcher available and lo
 });
 
 test("interactive init resolves the current ask host on every drain and starts no services for guests", async () => {
-	const start = spyOn(mainServices, "startMainServices").mockReturnValue({ dispose: async () => {} });
+	const start = spyOn(mainServices, "startMainServices").mockReturnValue({ dispose: async () => {}, closed() {} });
 	for (const guest of [false, true]) {
 		const fixture = await createTestSession({
 			inMemory: true,
@@ -120,6 +130,7 @@ test("interactive init resolves the current ask host on every drain and starts n
 				expect(start).toHaveBeenCalledTimes(1);
 				const input = start.mock.calls[0]![0];
 				expect(input.sessionId()).toBe(fixture.session.sessionManager.getSessionId());
+				expect(input.session).toBe(fixture.session);
 				const host = subagentAskHostFor(bus)!;
 				const external = spyOn(host, "externalUi");
 				const first = input.askUi!();
@@ -246,5 +257,65 @@ test("render init starts none of the main services", async () => {
 		expect(rex).not.toHaveBeenCalled();
 	} finally {
 		await fixture.cleanup();
+	}
+});
+
+test("successful shutdown removes the main record but stop and failed shutdown preserve it", async () => {
+	vi.spyOn(mainRecord, "startMainPaneRecord").mockRestore();
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "main-services-record-"));
+	const keys = ["TERM_PROGRAM", "REX_SESSION", "REX_BLOCK"] as const;
+	const previous = keys.map(key => process.env[key]);
+	const blockId = "block:00000000-0000-0000-0000-000000000001";
+	Object.assign(process.env, { TERM_PROGRAM: "rex", REX_SESSION: "session:fixture", REX_BLOCK: blockId });
+	spyOn(utils, "getBaseConfigRoot").mockReturnValue(root);
+	spyOn(queue, "startOperatorQueue").mockReturnValue({ dispose() {} });
+	spyOn(codegraph, "startCodegraphMain").mockReturnValue({ dispose() {} });
+	spyOn(watcher, "startRexWatcher").mockReturnValue({ dispose: async () => {} });
+	spyOn(utils.postmortem, "quit").mockResolvedValue();
+	try {
+		for (const failed of [false, true]) {
+			const fixture = await createTestSession({
+				settingsOverrides: { "rex.subagentPanes": false, "rpcSocket.enabled": false },
+			});
+			const bus = new EventBus();
+			const mode = new InteractiveMode(
+				fixture.session,
+				"test",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				bus,
+				new Composer({ terminal: new VirtualTerminal() }),
+				bus,
+			);
+			spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+			mode.ui.terminal.drainInput = async () => {};
+			let restoreDispose = () => {};
+			try {
+				await mode.init({ suppressWelcomeIntro: true });
+				const file = paneRecordPath(blockId)!;
+				expect(fs.existsSync(file)).toBe(true);
+				mode.stop();
+				expect(fs.existsSync(file)).toBe(true);
+				await mode.init({ suppressWelcomeIntro: true });
+				if (failed) {
+					const dispose = spyOn(fixture.session, "dispose").mockRejectedValue(new Error("cannot save"));
+					restoreDispose = () => dispose.mockRestore();
+				}
+				await mode.shutdown();
+				expect(fs.existsSync(file)).toBe(failed);
+			} finally {
+				restoreDispose();
+				mode.stop();
+				await fixture.cleanup();
+			}
+		}
+	} finally {
+		for (const [index, key] of keys.entries()) {
+			if (previous[index] === undefined) delete process.env[key];
+			else process.env[key] = previous[index];
+		}
+		fs.rmSync(root, { recursive: true, force: true });
 	}
 });

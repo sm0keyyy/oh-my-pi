@@ -201,7 +201,8 @@ export class TodoTracker {
 	/** Rehydrates a branch without replaying its mutations against beads. */
 	syncFromBranch(refresh = true, options?: { discardPending?: boolean }): void {
 		const branch = this.#host.sessionManager.getBranch();
-		this.setPhases(getLatestTodoPhasesFromEntries(branch));
+		const phases = getLatestTodoPhasesFromEntries(branch);
+		if (!Bun.deepEquals(phases, this.#phases)) this.setPhases(phases);
 		this.#base = undefined;
 		this.#syncState = undefined;
 		for (let i = branch.length - 1; i >= 0; i--) {
@@ -236,10 +237,12 @@ export class TodoTracker {
 		this.#queue = this.#queue
 			.then(async () => {
 				if (commit.epoch !== this.#epoch) return;
-				const oldIds = assigned.flatMap(phase => [phase.id, ...phase.tasks.map(task => task.id)]);
+				const identities = assigned
+					.flatMap(phase => [phase, ...phase.tasks])
+					.map(value => ({ value, id: value.id }));
 				let info = await store.write(this.#syncState === "pending" ? (this.#base ?? previous) : previous, assigned);
 				if (commit.epoch !== this.#epoch) return;
-				this.#applyRemintedIds(oldIds, assigned, commit.epoch);
+				this.#applyRemintedIds(identities, commit.epoch);
 				let synced: TodoPhase[] | undefined;
 				if (info.state === "synced") {
 					const result = await store.refresh(assigned, undefined);
@@ -259,13 +262,10 @@ export class TodoTracker {
 			});
 	}
 
-	#applyRemintedIds(before: readonly (string | undefined)[], assigned: TodoPhase[], epoch: number): void {
-		const after = assigned.flatMap(phase => [phase.id, ...phase.tasks.map(task => task.id)]);
+	#applyRemintedIds(before: readonly { value: { id?: string }; id?: string }[], epoch: number): void {
 		const changes = new Map<string, string>();
-		for (let i = 0; i < before.length; i++) {
-			const oldId = before[i],
-				newId = after[i];
-			if (oldId && newId && oldId !== newId) changes.set(oldId, newId);
+		for (const { value, id } of before) {
+			if (id && value.id && id !== value.id) changes.set(id, value.id);
 		}
 		if (changes.size === 0) return;
 		const remap = (phases: TodoPhase[]): void => {

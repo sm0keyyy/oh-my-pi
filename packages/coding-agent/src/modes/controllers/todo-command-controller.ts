@@ -132,7 +132,7 @@ function buildSystemReminder(action: string, phases: TodoPhase[], removed = fals
 }
 
 export class TodoCommandController {
-	#pendingEditorMarkdown: string | undefined;
+	#pendingEditorMarkdown: { sessionId: string; source: string; markdown: string } | undefined;
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
 	/**
@@ -415,18 +415,23 @@ export class TodoCommandController {
 		}
 
 		const current = this.#currentPhases();
+		const sessionId = this.ctx.sessionManager.getSessionId();
+		const source = phasesToMarkdown(current);
+		if (this.#pendingEditorMarkdown?.sessionId !== sessionId || this.#pendingEditorMarkdown?.source !== source)
+			this.#pendingEditorMarkdown = undefined;
 		const initialMarkdown =
-			this.#pendingEditorMarkdown ??
-			(current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n");
+			this.#pendingEditorMarkdown?.markdown ??
+			(current.length > 0 ? source : "# Todos\n- [ ] (replace this with your tasks)\n");
 
 		this.ctx.ui.stop();
 		try {
 			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".todo.md" });
 			if (result === null) {
+				this.#pendingEditorMarkdown = undefined;
 				this.ctx.showWarning("Editor exited without saving; todos unchanged.");
 				return;
 			}
-			this.#pendingEditorMarkdown = result;
+			this.#pendingEditorMarkdown = { sessionId, source, markdown: result };
 			const { phases: parsed, errors } = markdownToPhases(result);
 			if (errors.length > 0) {
 				this.ctx.showError(`Could not parse Markdown:\n  ${errors.join("\n  ")}`);

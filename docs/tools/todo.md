@@ -22,9 +22,15 @@ If bd is missing, times out, fails, or returns invalid data, omp warns once per 
 
 Refresh runs after load, branch synchronization, at prompt start, and through the panel refresh hook. It drains queued writes first. A synced prompt-start refresh can reuse a successful read for 30 seconds if no local change occurred. Load and panel refreshes always read.
 
+Prune and compaction drain queued writes before they restore the list. An unchanged branch snapshot does not invalidate those writes.
+
 Rewind and fork discard older pending deltas. The next refresh adopts bd state without replay, and a synced marker prevents replay after resume. Ordinary resume preserves pending work for reconciliation. A missing store initializes on the next write, not on a read.
 
 A bead deleted outside omp disappears at refresh, with an info notice. omp does not recreate it.
+
+A new task that collides with a removed bead gets an ID above the highest existing child suffix. Recovery preserves that identity across restarts. A conflict-kept bead remains in the list after recovery by either a write or a refresh.
+
+An epic closes only when every bd child is closed. If an unlisted sibling remains open, unrelated writes do not repeat the child read. A write to a child of that epic permits another close check.
 
 ## Operations
 
@@ -90,7 +96,7 @@ IDs are trailing comments; keep them when renaming:
 
 The blocker comment precedes the ID. A heading rename with the same ID updates the epic. A rename without an ID follows content matching and can move tasks to a new epic.
 
-Repeated bead IDs produce a parse error that names the repeated line. The controller retains rejected Markdown for the next `/todo edit`.
+Repeated bead IDs produce a parse error that names the repeated line. The controller retains rejected Markdown for the next `/todo edit` only while the session and list stay unchanged. An editor exit without a save discards that buffer.
 
 ## Results and persistence
 

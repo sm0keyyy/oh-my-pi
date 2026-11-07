@@ -38,7 +38,7 @@ export class BeadsUnavailableError extends Error {}
 export interface TodoStore {
 	readonly info: TodoBeadsInfo;
 	assignIds(prev: readonly TodoPhase[], next: readonly TodoPhase[]): TodoPhase[];
-	write(prev: readonly TodoPhase[], next: readonly TodoPhase[]): Promise<TodoBeadsInfo>;
+	write(prev: readonly TodoPhase[], next: TodoPhase[]): Promise<TodoBeadsInfo>;
 	refresh(
 		phases: readonly TodoPhase[],
 		base: readonly TodoPhase[] | undefined,
@@ -85,6 +85,7 @@ class BeadsStore implements TodoStore {
 	#suffixes = new Map<string, number>();
 	#minted = new Set<string>();
 	#attempted = new Set<string>();
+	#skippedEpicCloses = new Set<string>();
 	constructor(
 		readonly route: BeadsRoute,
 		readonly notice: (level: "info" | "warning", message: string) => void,
@@ -272,12 +273,14 @@ class BeadsStore implements TodoStore {
 		const all = new Map(existing.map(bead => [bead.id, bead]));
 		let reminted = false;
 		const replayConflicts: string[] = [];
+		const collisionParents = new Set<string>();
 		for (const phase of ours) {
 			const epic = phase.id ? all.get(phase.id) : undefined;
 			if (
 				epic &&
-				this.#minted.has(epic.id) &&
+				!known.has(epic.id) &&
 				!this.#attempted.has(epic.id) &&
+				(this.#minted.has(epic.id) || this.#info.state === "pending") &&
 				(epic.title !== phase.name || epic.issue_type !== "epic")
 			) {
 				const oldId = phase.id!;
@@ -293,10 +296,12 @@ class BeadsStore implements TodoStore {
 				const bead = task.id ? all.get(task.id) : undefined;
 				if (
 					bead &&
-					this.#minted.has(bead.id) &&
+					!known.has(bead.id) &&
 					!this.#attempted.has(bead.id) &&
+					(this.#minted.has(bead.id) || this.#info.state === "pending") &&
 					(bead.title !== task.content || bead.issue_type === "epic")
 				) {
+					if (phase.id) collisionParents.add(phase.id);
 					delete task.id;
 					reminted = true;
 				} else if (bead && !known.has(bead.id) && this.#info.state === "pending") {
@@ -315,6 +320,14 @@ class BeadsStore implements TodoStore {
 			}
 		}
 		if (reminted) {
+			for (const id of collisionParents) {
+				const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
+				for (const child of children) {
+					if (!child.id.startsWith(`${id}.`)) continue;
+					const suffix = Number(child.id.slice(id.length + 1));
+					if (Number.isSafeInteger(suffix)) this.#suffixes.set(id, Math.max(this.#suffixes.get(id) ?? 0, suffix));
+				}
+			}
 			const assigned = this.assignIds(base, ours);
 			for (let i = 0; i < ours.length; i++) {
 				ours[i]!.id = assigned[i]!.id;
@@ -324,6 +337,20 @@ class BeadsStore implements TodoStore {
 		}
 		const next = this.#merge(base, ours, existing, replayConflicts);
 		const changes = diffBeads(base, next, existing);
+		const touched = new Set(changes.nodes.map(node => node.id));
+		for (const line of changes.batch) touched.add(line.split(" ", 2)[1]!);
+		for (const args of changes.updates) touched.add(args[1]!);
+		for (const phases of [base, next]) {
+			for (const phase of phases) {
+				if (phase.id && phase.tasks.some(task => task.id && touched.has(task.id)))
+					this.#skippedEpicCloses.delete(phase.id);
+			}
+		}
+		for (const id of touched) {
+			const bead = all.get(id);
+			const parent = bead?.parent ?? bead?.dependencies?.find(dep => dep.type === "parent-child")?.depends_on_id;
+			if (parent) this.#skippedEpicCloses.delete(parent);
+		}
 		// A closed epic must reopen before an append, and reparenting must precede its old epic's close.
 		for (const id of changes.reopen) await this.#cli.call(["update", id, "--status", "open"]);
 		if (changes.nodes.length) {
@@ -344,14 +371,16 @@ class BeadsStore implements TodoStore {
 		const closeEpics: string[] = [];
 		for (const line of changes.closeEpics) {
 			const id = line.split(" ", 2)[1]!;
+			if (this.#skippedEpicCloses.has(id)) continue;
 			// A phase can contain one adopted child, without its open siblings.
 			const children = parseBeads(await this.#cli.call(["list", "--all", "-n", "0", "--parent", id]));
 			if (children.every(child => child.status === "closed")) closeEpics.push(line);
+			else this.#skippedEpicCloses.add(id);
 		}
 		if (closeEpics.length) await this.#cli.call(["batch", "-m", "omp: todo sync"], `${closeEpics.join("\n")}\n`);
 		return next;
 	}
-	write(prev: readonly TodoPhase[], next: readonly TodoPhase[]): Promise<TodoBeadsInfo> {
+	write(prev: readonly TodoPhase[], next: TodoPhase[]): Promise<TodoBeadsInfo> {
 		const before = clonePhases(prev),
 			after = clonePhases(next);
 		return queued(this.route.root, async () => {
@@ -361,11 +390,12 @@ class BeadsStore implements TodoStore {
 			try {
 				await this.#ensure(true);
 				this.#base = await this.#apply(this.#base, after);
-				// Collision remints must reach the caller's snapshot as well as the durable store.
+				// Update existing identities before replacing membership, so the tracker can propagate remints.
 				for (let i = 0; i < next.length; i++) {
 					next[i]!.id = after[i]!.id;
 					for (let j = 0; j < next[i]!.tasks.length; j++) next[i]!.tasks[j]!.id = after[i]!.tasks[j]!.id;
 				}
+				next.splice(0, next.length, ...clonePhases(this.#base));
 				this.#synced();
 			} catch (error) {
 				this.#reconcilePending = true;

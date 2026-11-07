@@ -2821,7 +2821,8 @@ export class AgentSession implements SettingsScope {
 			resetPlanReference: () => {
 				this.#planReferenceSent = false;
 			},
-			syncTodoPhasesFromBranch: () => {
+			syncTodoPhasesFromBranch: async () => {
+				await this.#todo.flush();
 				this.#todo.syncFromBranch();
 				this.#modelMentions.syncFromBranch();
 				if (this.#postCompactionTodoPending) {

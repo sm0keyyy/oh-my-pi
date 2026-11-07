@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/todo-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import { phasesToMarkdown, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import * as externalEditor from "../../../src/utils/external-editor";
 import { createTodoBeadsFixture } from "../../helpers/todo-beads";
@@ -28,6 +28,7 @@ function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext
 			appendMessage: vi.fn(),
 			getBranch: () => [],
 			getCwd: () => cwd,
+			getSessionId: () => "todo-test-session",
 		},
 		ui: { stop: vi.fn(), start: vi.fn(), requestRender: vi.fn() },
 		setTodos: vi.fn(),
@@ -219,6 +220,25 @@ describe("TodoCommandController", () => {
 		await controller.handleTodoCommand("edit");
 		expect(editor.mock.calls[1]?.[1]).toBe(invalid);
 	});
+
+	for (const change of ["session", "phases", "cancel"] as const) {
+		it(`N4 discards rejected Markdown after ${change} changes its edit context`, async () => {
+			const initial: TodoPhase[] = [{ name: "Build", tasks: [{ content: "A", status: "pending" }] }];
+			const ctx = createContext("/tmp/todo-editor-fixture", initial);
+			const invalid = "# Build\nnot a task\n";
+			vi.spyOn(externalEditor, "getEditorCommand").mockReturnValue("fixture-editor");
+			const editor = vi.spyOn(externalEditor, "openInEditor").mockResolvedValue(null);
+			editor.mockResolvedValueOnce(invalid);
+			const controller = new TodoCommandController(ctx);
+			await controller.handleTodoCommand("edit");
+			if (change === "session") vi.spyOn(ctx.sessionManager, "getSessionId").mockReturnValue("other-session");
+			if (change === "phases")
+				ctx.session.setTodoPhases([{ name: "Build", tasks: [{ content: "B", status: "completed" }] }]);
+			if (change === "cancel") await controller.handleTodoCommand("edit");
+			await controller.handleTodoCommand("edit");
+			expect(editor.mock.calls.at(-1)?.[1]).toBe(phasesToMarkdown(ctx.session.getTodoPhases()));
+		});
+	}
 
 	for (const mode of ["tui", "acp"] as const) {
 		it(`F7 persists assigned IDs immediately after a ${mode} todo edit`, async () => {

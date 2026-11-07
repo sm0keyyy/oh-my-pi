@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ptree } from "@oh-my-pi/pi-utils";
@@ -6,7 +6,21 @@ import { BdCli, createBdRunner, openTodoStore, parseBeads, type BdRunner } from 
 import { TodoTracker } from "../../src/session/todo-tracker";
 import { cfgTodoBeadsRoots } from "../../src/tools/settings";
 import { TodoTool, getLatestTodoPhasesFromEntries, committedTodoPhases } from "../../src/tools/todo";
-import { createTodoBeadsFixture } from "../helpers/todo-beads";
+import { createTodoBeadsFixture, type TodoBeadsSessionFixture } from "../helpers/todo-beads";
+
+function liveSession(f: TodoBeadsSessionFixture) {
+	const store = f.open();
+	const tracker = new TodoTracker(f.host, store);
+	const tool = new TodoTool({
+		...f.session,
+		getTodoPhases: () => tracker.phases,
+		setTodoPhases: (next, options) => tracker.commit(next, options),
+		getTodoStore: () => store,
+		flushTodoPhases: () => tracker.flush(),
+		refreshTodoPhases: () => tracker.refresh(),
+	});
+	return { tracker, tool, cli: new BdCli(f.root, f.runner) };
+}
 
 describe("todo beads", () => {
 	it("ids survive init, done, append, rm and same-text replacement in snapshots and results", async () => {
@@ -189,5 +203,152 @@ describe("todo beads", () => {
 			}
 		},
 		30_000,
+	);
+
+	it.skipIf(!process.env.OMP_TEST_BD)(
+		"N1 real bd retains two RPC-shaped writes through a same-branch prune rehydrate",
+		async () => {
+			const f = await createTodoBeadsFixture({ binary: process.env.OMP_TEST_BD });
+			try {
+				const s = liveSession(f);
+				await s.tool.execute("init", { op: "init", phase: "P", items: ["a", "b"] });
+				const next = s.tracker.phases;
+				next[0]!.tasks[0]!.status = "completed";
+				s.tracker.commit(next);
+				f.manager.appendCustomEntry("user_todo_edit", { phases: s.tracker.phases });
+				const appended = s.tracker.phases;
+				appended[0]!.tasks.push({ content: "n", status: "pending" });
+				s.tracker.commit(appended);
+				f.manager.appendCustomEntry("user_todo_edit", { phases: s.tracker.phases });
+				s.tracker.syncFromBranch();
+				await s.tracker.flush();
+				expect(s.tracker.phases[0]!.tasks.map(task => task.content)).toEqual(["a", "b", "n"]);
+				const beads = parseBeads(await s.cli.call(["list", "--all", "-n", "0", "--parent", next[0]!.id!]));
+				expect(beads.find(bead => bead.title === "a")?.status).toBe("closed");
+				expect(beads.find(bead => bead.title === "n")?.status).toBe("open");
+			} finally {
+				await f.cleanup();
+			}
+		},
+		60_000,
+	);
+
+	for (const scenario of [
+		{ name: "one-removed-offline", total: 3, offline: true },
+		{ name: "three-removed-online", total: 5, offline: false },
+	]) {
+		it.skipIf(!process.env.OMP_TEST_BD)(
+			`N2 real bd preserves c across restarts: ${scenario.name}`,
+			async () => {
+				const f = await createTodoBeadsFixture({ binary: process.env.OMP_TEST_BD });
+				try {
+					const first = liveSession(f);
+					first.tracker.commit([
+						{
+							name: "P",
+							tasks: Array.from({ length: scenario.total }, (_, i) => ({
+								content: `x${i + 1}`,
+								status: "pending" as const,
+							})),
+						},
+					]);
+					await first.tracker.flush();
+					const reduced = first.tracker.phases;
+					const epic = reduced[0]!.id!;
+					reduced[0]!.tasks = reduced[0]!.tasks.slice(0, 2);
+					first.tracker.commit(reduced);
+					await first.tracker.flush();
+					const second = liveSession(f);
+					second.tracker.syncFromBranch(false);
+					await second.tracker.refresh();
+					f.setOffline(scenario.offline);
+					await second.tool.execute("append", { op: "append", phase: "P", items: ["c"] });
+					f.setOffline(false);
+					const resumed = liveSession(f);
+					resumed.tracker.syncFromBranch(false);
+					await resumed.tracker.refresh();
+					const c = resumed.tracker.phases[0]!.tasks.find(task => task.content === "c");
+					expect(c?.id).toBe(`${epic}.${scenario.total + 1}`);
+					expect(resumed.tracker.store.info.state).toBe("synced");
+					const again = liveSession(f);
+					again.tracker.syncFromBranch(false);
+					await again.tracker.refresh();
+					expect(again.tracker.phases[0]!.tasks.find(task => task.id === c!.id)?.content).toBe("c");
+					const family = parseBeads(await again.cli.call(["list", "--all", "-n", "0", "--parent", epic]));
+					expect(family.find(bead => bead.title === "c")?.id).toBe(c!.id);
+					expect(family.filter(bead => /^x[3-5]$/.test(bead.title)).every(bead => bead.status === "closed")).toBe(
+						true,
+					);
+					expect(f.notices.some(notice => notice.includes("Repeated pinned-ID collisions"))).toBe(false);
+				} finally {
+					await f.cleanup();
+				}
+			},
+			60_000,
+		);
+	}
+
+	it.skipIf(!process.env.OMP_TEST_BD)(
+		"N3 real bd returns conflict-kept membership after recovery by write",
+		async () => {
+			const f = await createTodoBeadsFixture({ binary: process.env.OMP_TEST_BD });
+			const now = Date.now();
+			const clock = spyOn(Date, "now").mockReturnValue(now);
+			try {
+				const s = liveSession(f);
+				await s.tool.execute("init", { op: "init", phase: "P", items: ["A", "B", "C"] });
+				const b = s.tracker.phases[0]!.tasks.find(task => task.content === "B")!.id!;
+				f.setOffline(true);
+				await s.tool.execute("rm-b", { op: "rm", task: "B" });
+				f.setOffline(false);
+				await s.cli.call(["update", b, "--status", "in_progress"]);
+				clock.mockReturnValue(now + 61_000);
+				await s.tool.execute("recover", { op: "done", task: "C" });
+				expect(s.tracker.phases[0]!.tasks.find(task => task.id === b)).toMatchObject({
+					content: "B",
+					status: "in_progress",
+				});
+				expect(s.tracker.store.info.state).toBe("synced");
+				const resumed = liveSession(f);
+				resumed.tracker.syncFromBranch(false);
+				await resumed.tracker.refresh();
+				expect(resumed.tracker.phases[0]!.tasks.find(task => task.id === b)?.status).toBe("in_progress");
+			} finally {
+				clock.mockRestore();
+				await f.cleanup();
+			}
+		},
+		60_000,
+	);
+
+	it.skipIf(!process.env.OMP_TEST_BD)(
+		"N5 real bd rechecks a skipped epic close only after its child changes",
+		async () => {
+			const f = await createTodoBeadsFixture({ binary: process.env.OMP_TEST_BD });
+			try {
+				const source = liveSession(f);
+				await source.tool.execute("init", { op: "init", phase: "P", items: ["Child", "Sibling"] });
+				const epic = source.tracker.phases[0]!.id!;
+				const [child, sibling] = source.tracker.phases[0]!.tasks.map(task => task.id!);
+				const adopted = liveSession(f);
+				await adopted.tool.execute("adopt", { op: "adopt", id: child });
+				await adopted.tool.execute("done", { op: "done", task: child });
+				const familyReads = () =>
+					f.calls.filter(call => call.argv.includes("--parent") && call.argv.includes(epic)).length;
+				const before = familyReads();
+				await adopted.tool.execute("unrelated", { op: "append", phase: "Other", items: ["Unrelated"] });
+				expect(familyReads()).toBe(before);
+				await adopted.cli.call(["batch", "-m", "omp: todo sync"], `close ${sibling} "done"\n`);
+				await adopted.tool.execute("touch-child", { op: "start", task: child });
+				await adopted.tool.execute("finish-child", { op: "done", task: child });
+				expect(familyReads()).toBe(before + 1);
+				expect(parseBeads(await adopted.cli.call(["list", "--all", "-n", "0", "--id", epic]))[0]!.status).toBe(
+					"closed",
+				);
+			} finally {
+				await f.cleanup();
+			}
+		},
+		60_000,
 	);
 });

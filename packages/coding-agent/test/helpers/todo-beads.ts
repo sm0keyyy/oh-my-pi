@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { type } from "@oh-my-pi/omptype";
-import { type Bead, type BdRunner, openTodoStore } from "../../src/beads";
+import { type Bead, type BdRunner, type TodoStore, createBdRunner, openTodoStore } from "../../src/beads";
 import { Settings } from "../../src/config/settings";
 import { SessionManager } from "../../src/session/session-manager";
 import { TodoTracker, type TodoTrackerHost } from "../../src/session/todo-tracker";
@@ -14,11 +14,31 @@ const Graph = type({
 	nodes: type({ id: "string", title: "string", type: "string", status: "string", "parent_id?": "string" }).array(),
 });
 
-/** In-memory bd transport. Production store, mapping, queue, and tracker remain real. */
-export async function createTodoBeadsFixture(options?: { initialized?: boolean }) {
-	const root = await fs.mkdtemp(path.join(os.tmpdir(), "todo-beads-"));
+export interface TodoBeadsSessionFixture {
+	root: string;
+	runner: BdRunner;
+	open(): TodoStore;
+	host: TodoTrackerHost;
+	session: ToolSession;
+}
+
+/** The bd transport is in-memory unless a live-test binary is explicitly supplied. */
+export async function createTodoBeadsFixture(options?: { initialized?: boolean; binary?: string }) {
+	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "todo-beads-")));
+	const home = path.join(root, "home");
+	const live = options?.binary ? createBdRunner(options.binary) : undefined;
+	if (live) {
+		await fs.mkdir(home);
+		const git = Bun.spawn(["git", "init", "--quiet", root], {
+			cwd: root,
+			env: { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (await git.exited) throw new Error(await new Response(git.stderr).text());
+	}
 	const settings = Settings.isolated();
-	cfgTodoBeadsRoots.override(settings, []);
+	cfgTodoBeadsRoots.override(settings, live ? [root] : []);
 	cfgTodoBeadsGlobalDir.override(settings, root);
 	const remote = new Map<string, Bead>();
 	const calls: { argv: readonly string[]; stdin?: string }[] = [];
@@ -28,6 +48,11 @@ export async function createTodoBeadsFixture(options?: { initialized?: boolean }
 	const runner: BdRunner = async (argv, options) => {
 		calls.push({ argv: [...argv], stdin: options.stdin });
 		if (offline) throw new Error("bd missing");
+		if (live)
+			return live(argv, {
+				...options,
+				env: { ...options.env, HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+			});
 		const reply = (data: unknown) => ({
 			exitCode: 0,
 			stdout: JSON.stringify({ schema_version: 1, data }),
@@ -162,6 +187,7 @@ export async function createTodoBeadsFixture(options?: { initialized?: boolean }
 	return {
 		root,
 		remote,
+		runner,
 		calls,
 		notices,
 		settings,

@@ -1,182 +1,120 @@
 # todo
 
-> Applies one mutation to the session todo list and returns a text summary plus the full phase/task state.
+The todo tool applies one operation and returns a text summary plus the full phase/task snapshot. The params object is the operation: no `ops` wrapper.
 
-## Source
+## Store
 
-- Entry: `packages/coding-agent/src/tools/todo.ts`
-- Model-facing prompt: `packages/coding-agent/src/prompts/tools/todo.md`
-- Key collaborators:
-   - `packages/coding-agent/src/tools/index.ts` — registers tool, exposes session hooks, gates availability.
-   - `packages/coding-agent/src/modes/controllers/event-controller.ts` — updates the visible todo UI on tool completion.
-   - `packages/coding-agent/src/session/todo-tracker.ts` — owns canonical phases, restores branch snapshots, and manages completion reminders.
-   - `packages/coding-agent/src/session/agent-session.ts` — exposes todo state hooks and emits failure reminders.
-   - `packages/coding-agent/src/modes/controllers/todo-command-controller.ts` — `/todo` command path, custom-entry persistence, transcript reminder injection.
-   - `packages/tui/src/render/render-utils.ts` — collapsed-preview cap for renderer trees.
+Main sessions use beads by default. A phase is an epic; its tasks are child beads. `TodoPhase.id` and `TodoItem.id` hold their bead IDs. JSONL keeps membership and order; beads keeps durable task state. Old snapshots without IDs acquire them on their next write.
 
-## Inputs
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `todo.store` | `beads` | `session` keeps the list in JSONL only. |
+| `todo.beads.roots` | `["~/Developer"]` | Repositories under these folders use their own store. Linked worktrees use the main checkout. |
+| `todo.beads.globalDir` | `~/.omp/beads` | Dedicated global checkout for other working directories. |
 
-The params object **is** a single op — the discriminator and its fields live at the top level (no `ops` array wrapper).
+The first write initializes a missing store in stealth mode, without hooks or AGENTS files. A present but broken `.beads` is not reinitialized. omp pins bd 1.3.4, warns on a different version, and never upgrades it. It never runs compact, flatten, push, pull, or delete.
 
-| Op        | Required fields              | Optional fields                                                          | Effect                                                                                                                                                                 |
-| --------- | ---------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`    | `list` **or** flat `items`   | `phase` (names the phase for the flat `items` form; defaults to `Tasks`) | Replaces the entire list — with `list`, uses the given phases; with a flat `items` array, synthesizes one phase. Every new task starts `pending` before normalization. |
-| `start`   | `task`                       | None                                                                     | Marks one task `in_progress`; any other `in_progress` task is demoted to `pending`.                                                                                    |
-| `done`    | `task` or `phase` or neither | None                                                                     | Marks the target task, phase, or all tasks `completed`.                                                                                                                |
-| `drop`    | `task` or `phase` or neither | None                                                                     | Marks the target task, phase, or all tasks `abandoned`.                                                                                                                |
-| `block`   | `task` or `phase`            | `reason`                                                                 | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line.                                   |
-| `unblock` | `task` or `phase`            | None                                                                     | Returns blocked target tasks to `pending` and clears their blocker notes.                                                                                              |
-| `rm`      | `task` or `phase` or neither | None                                                                     | Removes the target task, clears the phase's task list, or clears all task lists.                                                                                       |
-| `append`  | `phase`, `items`             | None                                                                     | Appends new `pending` tasks to a phase; creates the phase if missing.                                                                                                  |
-| `view`    | None                         | None                                                                     | Echoes the current list. A `view` call is read-only: no normalization, no state write.                                                                                 |
+Only main sessions write beads. Subagent lists, including prewalk scratch lists, remain session-only. Agents use `todo`, not raw bd commands.
 
-### Fields
+If bd is missing, times out, fails, or returns invalid data, omp warns once per failure episode with the reason and `bd doctor`. Ordinary list operations keep working session-only. Results start with `Beads offline: changes stay in this session.` and `details.beads.state` is `pending`. A `todo_beads_sync` entry preserves the last synced base. Later writes and prompt starts probe at most once per 60 seconds. Recovery merges base/session/bd changes; bd wins a conflict, with a notice listing the IDs. Recovery writes a synced marker and an info notice.
 
-| Field    | Type                                                                                          | Required                                                                                          | Description                                                                                                                                                                      |
-| -------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `op`     | `"init" \| "start" \| "done" \| "rm" \| "drop" \| "block" \| "unblock" \| "append" \| "view"` | Yes in the schema                                                                                 | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow).                                                   |
-| `list`   | `{ phase: string; items: string[] }[]`                                                        | For `init` (unless a flat `items` list is given)                                                  | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases.                                                                      |
-| `task`   | `string`                                                                                      | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm`                               | Exact task content match.                                                                                                                                                        |
-| `phase`  | `string`                                                                                      | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`).                                                      |
-| `items`  | `string[]`                                                                                    | For `append`; or as a flat `init` payload                                                         | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
-| `reason` | `string`                                                                                      | No                                                                                                | Optional blocker note for `block`; normalized to a single trimmed line.                                                                                                          |
+Refresh runs after load, branch synchronization, at prompt start, and through the panel refresh hook. It drains queued writes first. Rewind and fork do not replay a snapshot as a beads write. Branch synchronization suppresses refresh while pending; explicit load/prompt refresh can reconcile pending work. A bead deleted outside omp disappears at refresh, with an info notice; omp does not recreate it.
 
-## Outputs
+## Operations
 
-The tool returns a single-shot `AgentToolResult`:
+| `op` | Required | Optional | Effect |
+| --- | --- | --- | --- |
+| `init` | `list` or flat `items` | `phase` for flat form | Replace the list. Flat form defaults to phase `Tasks`. `list: []` clears phases. |
+| `start` | `task` | | Start that task; demote other active tasks. |
+| `done` | | `task`, `phase` | Complete one task, one phase, or all tasks. |
+| `drop` | | `task`, `phase` | Abandon one task, one phase, or all tasks. |
+| `block` | `task` or `phase` | `reason`, `on` | Block open work. `on` adds a dependency. Without `on`, `reason` is a one-line blocker note. Closed tasks stay closed for note-only blocks. |
+| `unblock` | `task` or `phase` | `on` | Clear a blocker note, or remove the dependency named by `on`. Other dependencies still apply. |
+| `rm` | | `task`, `phase` | Remove one task, clear a phase, or clear every phase's tasks. Beads close with `removed from omp list`. |
+| `append` | `phase`, `items` | | Append pending tasks; create the phase if needed. Duplicate content is rejected. |
+| `view` | | | Read the list without normalization or a write. |
+| `ready` | | | Read up to 10 repo-wide ready task beads, with IDs and priorities. |
+| `adopt` | `id` | `phase` for a single task | Add an epic and its children, or one task. A single task defaults to phase `Adopted`. Re-adopting an existing ID does not duplicate it. |
+| `file` | `task` | `reason`, `priority` | Create a task bead outside this list. `reason` is its description; priority is 0–4, default 2. Link `discovered-from` the in-progress bead when present. |
 
-- `content`: one text part containing the summary from `formatSummary(...)`.
-   - Empty final state with no errors: `Todo list cleared.` (`Todo list is empty.` for a pure-`view` call).
-   - Non-empty final state: remaining-item list, current phase progress, then a per-phase tree.
-   - Op-specific errors prefix the summary with `Errors: ...`; schema failures instead return `Invalid todo arguments: ...`. Both set `isError: true` and leave returned/persisted phases at their pre-call state.
-- `details`:
-   - `phases: TodoPhase[]`
-   - `storage: "session" | "memory"`
-   - `completedTasks?: TodoCompletionTransition[]` when a task changed from non-completed to `completed` during the call
-   - `op?: TodoOperation` identifies the resolved operation, including a mutation that later produced op-specific errors; absent on schema-validation failures and legacy transcript entries.
+`task` resolves by bead ID first, then exact content. `on` accepts a bead ID or exact task content. `phase` is an exact name. Keep content and phase names unique: `init` rejects duplicate names/content, and `append` checks content across the list. A missing reference is an error; use `view` to recover it.
 
-`TodoPhase` / `TodoItem` state model:
+`list` is `{ phase: string, items: string[] }[]`; each phase needs at least one item. Flat `init.items` and `append.items` must be nonempty. An unrelated empty `items` array is ignored. If `op` is omitted, execution infers only unambiguous shapes: a nonempty `list` means `init`; nonempty `items` with `phase` means `append`; bare `items` means `init` only when the list is empty. Invalid schemas and operation errors return `isError: true` without committing the list.
 
-- `TodoPhase`: `{ name: string, tasks: TodoItem[] }`
-- `TodoItem`: `{ content: string, status: "pending" | "in_progress" | "completed" | "abandoned" | "blocked", blocker?: string }`
+`ready`, `adopt`, `file`, and dependency changes require a synced store. They return a tool error when beads is pending or off. `ready` and `file` do not replace the canonical todo snapshot.
 
-The TUI renderer (`todoToolRenderer`) merges call and result into one transcript block and renders phases as a tree. Collapsed transcript previews cap tree items at `PREVIEW_LIMITS.COLLAPSED_ITEMS` (`8`).
+## Identity and status
 
-## Flow
+Every writer matches phases by ID, then exact name. Tasks match by ID, then exact content in the same phase, then anywhere. This preserves IDs through ID-less remote edits and a same-text `init`. A task without a match is new; an old unmatched task is removed. Renaming a phase with its ID changes the epic title, not its identity.
 
-1. `TodoTool.execute(...)` clones the current cached phases from `session.getTodoPhases?.() ?? []` (`packages/coding-agent/src/tools/todo.ts`).
-2. `resolveTodoParams(...)` validates the raw single-op payload. With `lenientArgValidation`, an omitted `op` can be inferred from non-empty `list` (`init`), non-empty `items` plus a non-empty `phase` (`append`), or non-empty `items` without that phase when no phases exist (`init`). Targeting fields alone cannot infer an op. Other schema failures return `Invalid todo arguments: ...`.
-3. `applyParams(...)` applies the resolved op with `applyEntry(...)`.
-4. Each op mutates the working phase array:
-   - `initPhases(...)` rebuilds the list from scratch.
-   - `start` resolves a task by exact `content`, demotes every other `in_progress` task to `pending`, then marks the target `in_progress`.
-   - `done` / `drop` use `getTaskTargets(...)` to target one task, one phase, or every task.
-   - `block` requires a task or phase target. It marks only `pending`, `in_progress`, or already-`blocked` targets as blocked, preserving completed/abandoned tasks; a repeated block can replace or clear the note.
-   - `unblock` requires a task or phase target and changes only blocked targets to `pending`.
-   - `rm` removes one task, clears one phase's `tasks`, or clears all phases' task arrays.
-   - `appendItems(...)` resolves or creates the target phase and pushes new `pending` tasks unless the same task content already exists anywhere.
-5. Missing task/phase references and op-specific failures are recorded in an `errors` array; any error discards the op's mutations at the end.
-6. After a successful mutation, `normalizeInProgressTask(...)` enforces the single-active-task invariant:
-   - if multiple tasks are `in_progress`, only the first stays active and the rest become `pending`;
-   - if none are `in_progress`, the first `pending` task in phase/task order is auto-promoted to `in_progress`;
-   - blocked tasks are skipped, so a list may have no active task when all open work is blocked.
-7. `execute(...)` stores the updated phases with `session.setTodoPhases?.(...)` only when the op produced no errors and was not a `view`; a failed op is discarded. `storage` is `"session"` when `session.getSessionFile()` exists, else `"memory"`.
-8. `getCompletionTransitions(...)` compares the previous and updated phases (skipped for failed or `view` calls); newly completed tasks are returned in `details.completedTasks`.
-9. Details include the resolved `op` on success or op-specific failure, including an op inferred from omitted input. A payload that cannot be schema-validated returns before an op is available.
-10.   The agent runtime watches `todo` tool results in `packages/coding-agent/src/session/agent-session.ts`; successful results refresh cached todos, failed results inject a hidden next-turn reminder telling the model that todo progress is not visible until it retries.
-11.   The event controller updates the visible todo UI from `result.details.phases` on success, or shows a warning on error (`packages/coding-agent/src/modes/controllers/event-controller.ts`).
+| omp write | bd |
+| --- | --- |
+| `pending` | `open`, reopening if needed |
+| `in_progress` | `in_progress` |
+| `blocked` with a reason | `blocked` plus `omp.blocker` |
+| `completed` | closed with reason `done` |
+| `abandoned` | closed with reason `dropped` |
+| removed | closed with reason `removed from omp list` |
 
-## Modes / Variants
+| bd read | omp |
+| --- | --- |
+| `open`, no open blocking dependency | `pending` |
+| `open`, open blocking dependency | `blocked`, note `waits on <id>` (derived, not written back) |
+| `in_progress`, `hooked` | `in_progress` |
+| `blocked` | `blocked` with `omp.blocker` |
+| `deferred` | `blocked`, note `deferred` |
+| closed, reason starts with `dropped` | `abandoned` |
+| other closed | `completed` |
+| `pinned`, unknown | `pending`; unknown status warns once |
 
-### State transitions
+An epic closes when every child is closed, and reopens before a child reopens or is appended. Adopting an epic orders numeric child suffixes first, then creation time.
 
-| Current status | `start`                                                              | `done`                          | `drop`                          | `block`                        | `unblock`               | `rm`    | `append`                     |
-| -------------- | -------------------------------------------------------------------- | ------------------------------- | ------------------------------- | ------------------------------ | ----------------------- | ------- | ---------------------------- |
-| `pending`      | `in_progress` on target                                              | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | New tasks enter as `pending` |
-| `in_progress`  | Target stays `in_progress`; non-target active tasks become `pending` | `completed`                     | `abandoned`                     | `blocked`                      | No change               | Removed | No status change             |
-| `blocked`      | Can be set to `in_progress` if targeted                              | `completed`                     | `abandoned`                     | Stays blocked; note may change | `pending`, note cleared | Removed | No status change             |
-| `completed`    | Can be set back to `in_progress` if targeted                         | Stays `completed`               | Becomes `abandoned` if targeted | No change                      | No change               | Removed | No status change             |
-| `abandoned`    | Can be set back to `in_progress` if targeted                         | Becomes `completed` if targeted | Stays `abandoned`               | No change                      | No change               | Removed | No status change             |
+The todo tool advances after a successful mutation: with no active task, the first pending task in list order starts. Multiple active tasks reduce to the first. Blocked tasks never start automatically. Completing work out of order can move the active pointer backward without reopening completed tasks. Operator `set_todos` edits preserve the statuses sent, without auto-advance; raw Cursor/session writes also preserve their statuses. `/todo` helpers retain their checklist normalization.
 
-Normalization then re-applies the single-active-task rule after the op runs.
+## Markdown editing
 
-### Op targeting rules
+`/todo edit` and the import/export helpers use headings and checklist markers: `[ ]` pending, `[/]` active, `[x]` completed, `[-]` abandoned, `[!]` blocked. The parser also accepts `>` for active, `~` for abandoned, and escaped brackets. Tasks before a heading enter phase `Todos`.
 
-- `done`, `drop`, `rm`:
-   - `task` set: affect one exact-content task.
-   - else `phase` set: affect every task in that exact-name phase.
-   - else: affect every task in every phase.
-- `block` and `unblock` use the same task-or-phase lookup but reject an omitted target.
-- `append` is the only op that creates a missing phase.
-- `init` discards previous phases entirely.
+IDs are trailing comments; keep them when renaming:
 
-### Markdown round-trip helpers
+```markdown
+# Build <!-- bead: omp-k7m2qx -->
+- [!] Write the adapter <!-- blocker: waiting for access --> <!-- bead: omp-k7m2qx.1 -->
+```
 
-The same file also exposes non-tool helpers used by `/todo`:
+The blocker comment precedes the ID. A heading rename with the same ID updates the epic. A rename without an ID follows content matching and can move tasks to a new epic.
 
-- `phasesToMarkdown(...)` serializes phases as headings plus checklist items (`[ ]`, `[/]`, `[x]`, `[-]`, `[!]`). A blocked reason is preserved in a trailing `<!-- blocker: ... -->` comment.
-- `markdownToPhases(...)` parses that format, defaults orphan tasks into a `Todos` phase, also accepts `>` as `in_progress` and `~` as `abandoned`, restores blocked notes, and runs the same normalization step.
+## Results and persistence
 
-## Side Effects
+`details` contains `op`, `phases`, `storage: "session" | "memory"`, optional `completedTasks`, and optional `beads: { state: "synced" | "pending" | "off", store?: "repo" | "global", reason?: string }`. Phases and tasks carry optional IDs; completion transitions carry the task ID when present. Text results show full IDs.
 
-- Filesystem
-   - None in the tool itself.
-- Session state (transcript, memory, jobs, checkpoints, registries)
-   - Mutates the session todo cache through `setTodoPhases`.
-   - `storage` reports whether the session has a backing session file, but the tool does not append a custom session entry itself.
-   - Successful state-changing tool-result messages carry `details.phases`; `getLatestTodoPhasesFromEntries(...)` restores the latest canonical snapshot. Failed and pure-`view` results are skipped.
-   - Eval callers use `committedTodoPhases(...)` to persist mutations separately when there is no direct `todo` tool-result entry.
-   - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
-- User-visible prompts / interactive UI
-   - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
-   - `event-controller` updates the visible todo panel from successful results.
-   - On error, `event-controller` shows `Todo update failed...`; the visible panel may stay stale until a later successful call.
-   - `/todo expand` shows every phase and task in the sticky HUD; `/todo collapse` restores its bounded preview. Both are display-only and leave todo state unchanged.
-- Background work / cancellation
-   - When every task is `completed` or `abandoned`, the TUI hides the HUD after `tasks.todoClearDelay`. Canonical phases are not removed. The dismissal is persisted as a `todo_hud_state` custom entry tied to the exact canonical snapshot (`packages/coding-agent/src/modes/interactive-mode.ts`).
+A nonempty result lists remaining items and per-phase progress. An empty mutation says `Todo list cleared.`; an empty view says `Todo list is empty.` Errors name missing fields, missing references, duplicates, or the unavailable store. Failed mutations leave the list unchanged. Dependency operations can already have changed bd if a subsequent external operation fails; the next refresh reads that state.
 
-## Limits & Caps
+Successful tool-result snapshots survive reload; `/todo`, eval, Cursor, and RPC writers also use custom `user_todo_edit` entries. Failed and read-only results are not canonical snapshots. The tracker owns the write queue, identity assignment, refresh, and subscribers. `resetTodoPhases` clears local state without closing beads.
 
-- `init.list`: applies to a single op (`todoSchema`). The params object carries exactly one op.
-- `init.list[*].items`: schema-level `minItems: 1`.
-- Flat `init.items` and `append.items`: the shared schema allows any array length, but op-specific execution rejects missing/empty lists.
-- Renderer collapsed preview: `PREVIEW_LIMITS.COLLAPSED_ITEMS = 8` (`packages/tui/src/render/render-utils.ts`).
-- Execution-time repair: an omitted `op` is inferred only for the unambiguous payloads described above; the schema itself still requires `op`.
-- HUD auto-hide delay: `tasks.todoClearDelay` default `60` seconds; `< 0` disables hiding, `0` hides immediately. Applies only when all tasks are closed; blocked or pending work keeps the HUD visible. Canonical state survives the display change and session resume.
-- Tool execution mode: `concurrency = "exclusive"`, `strict = true`, `loadMode = "discoverable"`.
+The TUI renders the result as a checklist/tree, with completed-task strike animation. Collapsed previews use `PREVIEW_LIMITS.COLLAPSED_ITEMS`. `/todo expand` and `/todo collapse` change only display state. Once every task is completed or abandoned, `tasks.todoClearDelay` hides the HUD (default 60 seconds; negative disables, zero hides immediately). A `todo_hud_state` entry ties dismissal to the canonical snapshot; canonical tasks remain. `todo.enabled` gates availability. Prewalk-armed subagents can keep a session-only todo tool until handoff.
 
-## Errors
+The tool is discoverable, exclusive, and strict, with lenient recovery for the omitted-op forms above. Source: `packages/coding-agent/src/tools/todo.ts`; model prompt: `packages/coding-agent/src/prompts/tools/todo.md`.
 
-- Ordinary bad op payloads are accumulated as human-readable strings in `errors`; the result is marked `isError: true` and the mutation is discarded — the returned and persisted state stay at the pre-call list.
-- Error strings come from the helpers in `packages/coding-agent/src/tools/todo.ts`, including:
-   - `Missing list for init operation`
-   - `Missing task content`
-   - `Duplicate phase "..." in init list` / `Duplicate task "..." in init list`
-   - `Task "..." not found` with an extra empty-list hint when applicable, or a hint that tasks are referenced by content (not `task-N` IDs) when the missing content looks like an ID
-   - `Missing phase name`
-   - `Phase "..." not found`
-   - `Missing phase name for append operation`
-   - `block requires a task or phase target`
-   - `unblock requires a task or phase target`
-   - `Missing items for append operation`
-   - `Task "..." already exists`
-- A `todo` call carries a single op; any error in it discards every mutation the op made.
-- Runtime-level tool failure is handled outside the tool body: `agent-session` injects a hidden reminder and the event controller warns the user that visible progress may be stale.
-- Idempotency is op-specific:
-   - `init` is a full replacement; replaying the same payload yields the same state.
-   - `start`, `done`, `drop`, `block`, and `unblock` are effectively idempotent on an existing target state, though `start` also demotes another active task and a repeated `block` can update its reason.
-   - Task-targeted `rm` is not idempotent: the second call errors because the task is gone. Phase-targeted `rm` only empties the phase, so repeating it succeeds; untargeted `rm` similarly clears task lists without removing phase objects.
-   - `append` is not idempotent: duplicate task content is rejected with `Task "..." already exists`; the `append` op validates up front, so an op with any duplicate appends nothing.
+## Install bd 1.3.4 on macOS arm64
 
-## Notes
+Run these commands yourself after approving installation. omp does not install or upgrade bd.
 
-- Task lookup is exact string equality inside the tool. The model-facing prompt says task content and phase names are identifiers and should stay unique; `append` enforces task uniqueness globally, and `init` rejects duplicate phase names and duplicate task contents in its payload.
-- `findTaskByContent(...)` returns the first matching task across phases. Duplicate task contents make later targeted ops ambiguous.
-- `normalizeInProgressTask(...)` runs once after the op, not mid-op. A single op (e.g. `init`) can build an intermediate invalid state and rely on final normalization.
-- `storage: "session"` means the session has a session-file backing; it does not mean this tool wrote a durable custom entry.
-- Reload persistence differs by path:
-   - plain `todo` calls survive in transcript tool-result details;
-   - `/todo` command edits additionally append `customType: "user_todo_edit"` entries and inject a visible-to-model `<system-reminder>` developer message describing the manual edit.
-- On resume, rewind, fork, or branch rehydration, `TodoTracker.syncFromBranch()` restores the latest successful mutation/custom-entry snapshot, including completed and abandoned tasks. Pure `view` results do not replace canonical state.
-- Tool availability is gated by `todo.enabled`, and the registry excludes it when `includeYield` is enabled unless the session is prewalk-armed (`packages/coding-agent/src/tools/index.ts`).
-- Subagents do not inherit `todo`; `packages/coding-agent/src/task/executor.ts` also filters it from the active set as a parent-owned tool. Exception (both layers): prewalk-armed subagents keep it — the prewalk plan nudge and todo gate require the child to commit its own todo list before the hand-off.
+```sh
+mkdir -p ~/Developer/scratch/bd-install
+cd ~/Developer/scratch/bd-install
+curl -fsSLO https://github.com/gastownhall/beads/releases/download/v1.3.4/beads_1.3.4_darwin_arm64.tar.gz
+curl -fsSLO https://github.com/gastownhall/beads/releases/download/v1.3.4/checksums.txt
+shasum -a 256 -c --ignore-missing checksums.txt
+echo "b08a9c15bff80c42235f32946f94a6566a7d90944fe8afe45f3fd2f350596cdb  beads_1.3.4_darwin_arm64.tar.gz" | shasum -a 256 -c
+tar -xzf beads_1.3.4_darwin_arm64.tar.gz bd
+install -m 0755 bd ~/.local/bin/bd
+bd version --json
+bd metrics off
+```
+
+Both checksum checks must report `OK`; version must report `1.3.4`. Repeat the steps with the approved version and hash for an upgrade. omp warns until its `BD_PIN` matches.
+
+## Scratch live receipt
+
+Build the coding-agent binary, put the pinned bd on PATH, then run `bun packages/coding-agent/scripts/beads-live.ts <scratch-repo> [phases.json]`. The harness uses a temporary HOME and config overlay, sends only `set_todos` and `get_state` RPC frames, waits for bd to contain the IDs, and prints the RPC and bd results as one JSON line. It makes no provider calls. Use a disposable scratch checkout, never an operator repository.

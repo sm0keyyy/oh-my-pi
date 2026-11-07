@@ -1054,3 +1054,24 @@ describe("todoToolRenderer.renderCall preview sanitization", () => {
 		expect(Bun.stripANSI(rendered)).toContain("it");
 	});
 });
+
+describe("markdown bead identities", () => {
+	it("round-trips IDs and blocker notes while a heading rename retains its epic", () => {
+		const phases: TodoPhase[] = [
+			{
+				id: "omp-k7m2qx",
+				name: "Build",
+				tasks: [
+					{ id: "omp-k7m2qx.1", content: "Write the adapter", status: "blocked", blocker: "waiting for access" },
+					{ id: "Other_task.2", content: "Review", status: "in_progress" },
+				],
+			},
+		];
+		const markdown = phasesToMarkdown(phases);
+		expect(markdown).toContain("<!-- blocker: waiting for access --> <!-- bead: omp-k7m2qx.1 -->");
+		expect(markdownToPhases(markdown)).toEqual({ phases, errors: [] });
+		const renamed = markdownToPhases(markdown.replace("# Build", "# Release"));
+		expect(renamed.errors).toEqual([]);
+		expect(renamed.phases[0]).toMatchObject({ id: "omp-k7m2qx", name: "Release", tasks: phases[0]!.tasks });
+	});
+});

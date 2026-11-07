@@ -3,6 +3,7 @@ import type { EditStore } from "@oh-my-pi/pi-natives";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
+import type { TodoBeadsInfo, TodoStore } from "../beads";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { EvalPreludeDefinition } from "../eval/preludes";
@@ -479,7 +480,11 @@ export interface ToolSession {
 	/** Get cached todo phases for this session. */
 	getTodoPhases?: () => TodoPhase[];
 	/** Replace cached todo phases for this session. */
-	setTodoPhases?: (phases: TodoPhase[]) => void;
+	setTodoPhases?: (phases: TodoPhase[], options?: { advance?: boolean }) => void;
+	/** Store and queue owned by the canonical todo tracker. */
+	getTodoStore?: () => TodoStore;
+	flushTodoPhases?: () => Promise<TodoBeadsInfo>;
+	refreshTodoPhases?: () => Promise<void>;
 	/**
 	 * Record todo phases on the session branch. Direct `todo` calls persist via
 	 * their toolResult entry; callers that produce none (the eval bridge) use this

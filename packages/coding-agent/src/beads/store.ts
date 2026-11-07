@@ -496,7 +496,7 @@ export function openTodoStore(options: {
 	const config = beadsSettings(options.settings);
 	if (
 		options.agentKind === "sub" ||
-		(isBunTestRuntime() && (!options.runner || !config.explicitRoots)) ||
+		((isBunTestRuntime() || Bun.env.NODE_ENV === "test") && (!options.runner || !config.explicitRoots)) ||
 		config.store === "session"
 	) {
 		const unavailable = async (): Promise<never> => {

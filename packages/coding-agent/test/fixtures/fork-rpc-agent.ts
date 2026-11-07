@@ -69,7 +69,11 @@ const agent = new Agent({
 const session = new AgentSession({
 	agent,
 	sessionManager: SessionManager.create(cwd, path.join(cwd, "sessions")),
-	settings: Settings.isolated({ "compaction.enabled": false, "goal.continuationModes": ["rpc"] }),
+	settings: Settings.isolated({
+		"compaction.enabled": false,
+		"goal.continuationModes": ["rpc"],
+		"todo.store": "session",
+	}),
 	modelRegistry,
 	sideStreamFn: side.stream,
 });

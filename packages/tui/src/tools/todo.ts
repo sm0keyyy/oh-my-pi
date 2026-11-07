@@ -26,10 +26,23 @@ import type { NativeToolView, ToolRenderResult } from "./renderer";
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 /** Operation names accepted by the todo tool and echoed in successful result details. */
-export type TodoOperation = "init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view";
+export type TodoOperation =
+	| "init"
+	| "start"
+	| "done"
+	| "rm"
+	| "drop"
+	| "block"
+	| "unblock"
+	| "append"
+	| "view"
+	| "ready"
+	| "adopt"
+	| "file";
 
 /** A task displayed within a todo phase. */
 export interface TodoItem {
+	id?: string;
 	content: string;
 	status: TodoStatus;
 	/** When `status === "blocked"`, an optional note on what the task is waiting for. */
@@ -40,12 +53,14 @@ export interface TodoItem {
 
 /** A named group of todo tasks. */
 export interface TodoPhase {
+	id?: string;
 	name: string;
 	tasks: TodoItem[];
 }
 
 /** A task that became complete in the latest update. */
 export interface TodoCompletionTransition {
+	id?: string;
 	phase: string;
 	content: string;
 }
@@ -57,6 +72,7 @@ export interface TodoToolDetails {
 	phases: TodoPhase[];
 	storage: "session" | "memory";
 	completedTasks?: TodoCompletionTransition[];
+	beads?: { state: "synced" | "pending" | "off"; store?: "repo" | "global"; reason?: string };
 }
 
 /** Minimum overlap (after normalization) required for a substring match.
@@ -233,6 +249,8 @@ export function selectCollapsedTodos<T extends { status: TodoStatus }>(
 type TodoRenderOp = {
 	op?: string;
 	task?: string;
+	id?: string;
+	on?: string;
 	phase?: string;
 	items?: string[];
 };
@@ -426,7 +444,7 @@ function computeTouchedPhases(
 			if (named) touched.add(named.name);
 		}
 		if (typeof op.task === "string" && op.task) {
-			const phase = phases.find(phase => phase.tasks.some(task => task.content === op.task));
+			const phase = phases.find(phase => phase.tasks.some(task => task.id === op.task || task.content === op.task));
 			if (phase) touched.add(phase.name);
 		}
 	}
@@ -516,6 +534,9 @@ function describeTodoResult(
 			body: [errorText(resultText(result) || "Todo operation failed")],
 		};
 	}
+	if (result.details?.op === "ready" || result.details?.op === "file") {
+		return { tool: { title: "Todo" }, body: [noteText(forDisplay(resultText(result)))] };
+	}
 	const phases = (result.details?.phases ?? []).filter(phase => phase.tasks.length > 0);
 	const total = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 	if (total === 0) {
@@ -581,6 +602,9 @@ export const todoToolRenderer = {
 				phase: "error",
 				borderColor: "error",
 			}));
+		}
+		if (result.details?.op === "ready" || result.details?.op === "file") {
+			return new Text(forDisplay(result.content.find(content => content.type === "text")?.text ?? ""), 0, 0);
 		}
 
 		const phases = (result.details?.phases ?? []).filter(phase => phase.tasks.length > 0);

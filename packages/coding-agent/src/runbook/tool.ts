@@ -18,7 +18,8 @@ export class RunbookTool implements AgentTool<typeof runbookInput, RunbookDetail
 		registerRunbookSession(session);
 	}
 	static createIf(session: ToolSession): RunbookTool | null {
-		return (session.canPromptUser ?? session.hasUI) &&
+		return session.getSessionId?.() === session.sessionManager?.getSessionId?.() &&
+			(session.canPromptUser ?? session.hasUI) &&
 			((session.taskDepth ?? 0) > 0 || session.tuiTranscript !== false)
 			? new RunbookTool(session)
 			: null;

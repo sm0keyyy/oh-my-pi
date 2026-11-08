@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { Text } from "../components/text";
 import { formatExtensionLink } from "../render/extension-links";
@@ -25,6 +26,12 @@ export interface RunbookView {
 	running?: number;
 	notice?: string;
 }
+// This authority stays in rendered UI rows, never in model-visible runbook details.
+const linkNonce = crypto.randomUUID();
+const linkNonceBytes = Buffer.from(linkNonce);
+export function hasRunbookLinkNonce(candidate: string): boolean {
+	return candidate.length === linkNonce.length && timingSafeEqual(Buffer.from(candidate), linkNonceBytes);
+}
 const views = new Map<string, () => RunbookView>();
 export function setRunbookView(id: string, view: (() => RunbookView) | undefined): void {
 	if (view) views.set(id, view);
@@ -34,7 +41,11 @@ const display = (value: string): string => replaceTabs(sanitizeText(value));
 export function runbookLines(details: RunbookDetails): string[] {
 	const view = views.get(details.runbookId)?.() ?? { runs: [] };
 	const link = (label: string, step: number | "all") =>
-		formatExtensionLink(label, `omp-runbook:${details.runbookId}/${step}`, `${details.runbookId}/${step}`);
+		formatExtensionLink(
+			label,
+			`omp-runbook:${details.runbookId}/${step}#${linkNonce}`,
+			`${details.runbookId}/${step}`,
+		);
 	const lines = [display(`${details.title} · ${details.runbookId}`), link("Run all", "all")];
 	for (const [index, step] of details.steps.entries()) {
 		const n = index + 1;

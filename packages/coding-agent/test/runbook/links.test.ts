@@ -29,17 +29,22 @@ test("pick routes only a valid owner link and rejects forged ids, steps and dupl
 		const id = result.details!.runbookId;
 		setExtensionLinks([RUNBOOK_LINK_SCHEME]);
 		const labels = runbookLines(result.details!).flatMap(line => extensionLinkLabels(line));
-		expect(labels.map(label => label.url)).toContain("omp-runbook:" + id + "/1");
-		for (const link of [
-			"omp-runbook:unknown/1",
-			"omp-runbook:" + id + "/2",
-			"omp-runbook:" + id + "/0",
-			"omp-runbook:" + id + "/1?command=bad",
+		const link = labels.find(label => label.url.startsWith(`omp-runbook:${id}/1#`))?.url;
+		if (!link) throw new Error("Runbook renderer returned no step link");
+		const nonce = link.split("#")[1]!;
+		expect(JSON.stringify(result)).not.toContain(nonce);
+		for (const forged of [
+			link.replace(id, "unknown"),
+			link.replace("/1#", "/2#"),
+			link.replace("/1#", "/0#"),
+			link.replace("/1#", "/1?command=bad#"),
+			link.split("#")[0]!,
+			link.replace(nonce, "00000000-0000-0000-0000-000000000000"),
 		])
-			expect((await activateRunbookLink(link, f.journal.getSessionId())).ok).toBe(false);
-		expect((await activateRunbookLink("omp-runbook:" + id + "/1", "other-session")).ok).toBe(false);
+			expect((await activateRunbookLink(forged, f.journal.getSessionId())).ok).toBe(false);
+		expect((await activateRunbookLink(link, "other-session")).ok).toBe(false);
 		expect(f.jobs.getAllJobs()).toHaveLength(0);
-		expect((await activateRunbookLink("omp-runbook:" + id + "/1", f.journal.getSessionId())).ok).toBe(true);
+		expect((await activateRunbookLink(link, f.journal.getSessionId())).ok).toBe(true);
 		expect(await runRunbook(id, "all", "rpc")).toEqual({ ok: false, reason: "running" });
 		gate.resolve({ exitCode: 0, output: "approved" });
 		await f.settle();
@@ -94,6 +99,9 @@ test("headless and RPC-only sessions have no registered runbook even with advert
 		expect(
 			BUILTIN_TOOLS.runbook({ ...f.session, hasUI: true, canPromptUser: true, tuiTranscript: false }),
 		).toBeNull();
+		expect(
+			BUILTIN_TOOLS.runbook({ ...f.session, getSessionId: () => `${f.journal.getSessionId()}-advisor` }),
+		).toBeNull();
 		const sub = await BUILTIN_TOOLS.runbook(subSession);
 		expect(sub?.name).toBe("runbook");
 	} finally {
@@ -145,6 +153,34 @@ test("assistant markdown cannot turn a runbook URI into an execution control", a
 		}
 		expect(f.jobs.getAllJobs()).toHaveLength(0);
 		expect(runbookLines(result.details!).flatMap(row => extensionLinkLabels(row))).toHaveLength(2);
+	} finally {
+		await f.close();
+		setExtensionLinks([]);
+	}
+});
+
+test("hand-built OSC8 runbook markers in assistant markdown cannot start jobs", async () => {
+	await initTheme(false);
+	const f = fixture({ local: async () => ({ exitCode: 0, output: "must not run" }) });
+	try {
+		const result = await new RunbookTool(f.session).execute("forged-marker", {
+			title: "Approval",
+			steps: [{ title: "Run", command: "ignored" }],
+		});
+		f.save(result.details!);
+		setExtensionLinks([RUNBOOK_LINK_SCHEME]);
+		const id = result.details!.runbookId;
+		for (const suffix of ["", "#00000000-0000-0000-0000-000000000000"]) {
+			const url = `omp-runbook:${id}/all${suffix}`;
+			const source = `\x1b]8;id=omp-extension-link;${url}\x07Run all\x1b]8;;\x07`;
+			const rows = new Markdown(source, 0, 0, getMarkdownTheme()).render(120);
+			const labels = rows.flatMap(row => extensionLinkLabels(row));
+			expect(labels.map(label => label.url)).toContain(url);
+			for (const label of labels)
+				expect((await activateRunbookLink(label.url, f.journal.getSessionId())).ok).toBe(false);
+		}
+		expect(f.jobs.getAllJobs()).toHaveLength(0);
+		expect(f.deliveries).toEqual([]);
 	} finally {
 		await f.close();
 		setExtensionLinks([]);

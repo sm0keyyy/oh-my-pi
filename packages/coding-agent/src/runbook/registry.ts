@@ -1,4 +1,5 @@
 import {
+	hasRunbookLinkNonce,
 	setRunbookView,
 	type RunbookDetails,
 	type RunbookRunEntry,
@@ -251,8 +252,8 @@ export async function runRunbook(runbookId: string, step: number | "all", _origi
 	}
 }
 export async function activateRunbookLink(url: string, sessionId: string, repaint?: () => void): Promise<RunOutcome> {
-	const match = /^omp-runbook:([a-zA-Z0-9-]+)\/(all|[1-9][0-9]*)$/.exec(url);
-	if (!match) return { ok: false, reason: "unknown-runbook" };
+	const match = /^omp-runbook:([a-zA-Z0-9-]+)\/(all|[1-9][0-9]*)#([a-f0-9-]{36})$/.exec(url);
+	if (!match || !hasRunbookLinkNonce(match[3]!)) return { ok: false, reason: "unknown-runbook" };
 	const book = books.get(match[1]!);
 	if (!book || book.owner.session.getSessionId?.() !== sessionId) return { ok: false, reason: "unknown-runbook" };
 	book.repaint = repaint;

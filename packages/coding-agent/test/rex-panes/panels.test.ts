@@ -21,6 +21,7 @@ import {
 	registerComponentPaneHost,
 	type ComponentPane,
 	type ComponentPaneHost,
+	type ComponentPaneOptions,
 	type PaneComponentFactory,
 	type PanePlacement,
 } from "../../src/rex-panes/component-pane";
@@ -54,7 +55,12 @@ class PanelHost implements ComponentPaneHost {
 	readonly revealed: string[] = [];
 	readonly focus = Promise.withResolvers<string>();
 	readonly main = { sessionId: "session:main", blockId: "block:main" };
-	async open<T>(placement: PanePlacement, label: string, factory: PaneComponentFactory<T>): Promise<ComponentPane<T>> {
+	async open<T>(
+		placement: PanePlacement,
+		label: string,
+		factory: PaneComponentFactory<T>,
+		options?: ComponentPaneOptions,
+	): Promise<ComponentPane<T>> {
 		const result = Promise.withResolvers<T | undefined>();
 		const tui = new TUI(new VirtualTerminal(54, 40), false, { embedded: true });
 		let closed = false;
@@ -75,6 +81,7 @@ class PanelHost implements ComponentPaneHost {
 			void pane.close();
 		});
 		this.opened.push({ placement, label, component, tui, pane });
+		options?.onOpen?.({ sessionId: placement.sessionId, blockId: pane.blockId });
 		return pane;
 	}
 	mainLocation() {

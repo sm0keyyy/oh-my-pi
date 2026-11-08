@@ -101,15 +101,19 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 				placement,
 				`omp: ${name}`,
 				(tui, _theme, _keys, done) => definition.create(tui, () => done(), host, entry),
-				{ signal: entry.abort.signal },
+				{
+					signal: entry.abort.signal,
+					onOpen(location) {
+						entry.location = location;
+						entry.start?.();
+					},
+				},
 			);
 			if (!pane) {
 				release(name, entry);
 				return { open: false };
 			}
 			entry.pane = pane;
-			entry.location = { sessionId: location.sessionId, blockId: pane.blockId };
-			entry.start?.();
 			void pane.result.then(() => release(name, entry));
 			if (disposed) {
 				await pane.close();

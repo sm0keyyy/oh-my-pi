@@ -37,12 +37,17 @@ export interface ComponentPane<T> {
 	requestRender(): void;
 	close(): Promise<void>;
 }
+export interface ComponentPaneOptions {
+	signal?: AbortSignal;
+	/** Runs after each mounted generation, including a crash reopen. */
+	onOpen?(location: RexLocation): void;
+}
 export interface ComponentPaneHost {
 	open<T>(
 		placement: PanePlacement,
 		label: string,
 		factory: PaneComponentFactory<T>,
-		options?: { signal?: AbortSignal },
+		options?: ComponentPaneOptions,
 	): Promise<ComponentPane<T> | undefined>;
 	mainLocation(): RexLocation | undefined;
 	agentLocation(agentId: string): RexLocation | undefined;
@@ -92,8 +97,9 @@ export function createComponentPaneHost(deps: ComponentPaneHostDeps): ComponentP
 		placement: PanePlacement,
 		label: string,
 		factory: PaneComponentFactory<T>,
-		signal?: AbortSignal,
+		options?: ComponentPaneOptions,
 	): Promise<ComponentPane<T> | undefined> {
+		const signal = options?.signal;
 		if (disposed || signal?.aborted) return undefined;
 		if (!label.startsWith("omp: ")) {
 			warn(new Error("Pane labels must start with omp: "));
@@ -113,6 +119,7 @@ export function createComponentPaneHost(deps: ComponentPaneHostDeps): ComponentP
 					if (pane?.panel) closedPanels.set(pane.label, pane.blockId);
 				},
 				warn,
+				options?.onOpen,
 			);
 			panes.add(pane);
 			await pane.open(label, factory);
@@ -142,9 +149,9 @@ export function createComponentPaneHost(deps: ComponentPaneHostDeps): ComponentP
 			placement: PanePlacement,
 			label: string,
 			factory: PaneComponentFactory<T>,
-			options?: { signal?: AbortSignal },
+			options?: ComponentPaneOptions,
 		) {
-			const operation = open(placement, label, factory, options?.signal);
+			const operation = open(placement, label, factory, options);
 			pending.add(operation);
 			void operation.finally(() => pending.delete(operation));
 			return operation;
@@ -198,6 +205,7 @@ class HostedPane<T> implements ComponentPane<T> {
 		readonly signal: AbortSignal | undefined,
 		readonly released: () => void,
 		readonly warn: (error: unknown) => void,
+		readonly onOpen?: (location: RexLocation) => void,
 	) {
 		signal?.addEventListener("abort", this.#abort, { once: true });
 	}
@@ -275,6 +283,7 @@ class HostedPane<T> implements ComponentPane<T> {
 			tui.start();
 			this.#overlay = tui.showOverlay(component, { fullscreen: true });
 			this.#unsubscribeRepaint = terminal.onRepaintNeeded(() => tui.requestRender(true));
+			this.onOpen?.({ sessionId: this.placement.sessionId, blockId: this.blockId });
 		} finally {
 			if (this.#closed) {
 				await this.#closing;

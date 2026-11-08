@@ -18,11 +18,18 @@ import {
 	rexHostEligible,
 } from "../../src/rex-panes/component-pane";
 import type { ExtensionUIContext } from "../../src/extensibility/extensions/types";
+import { Settings } from "../../src/config/settings";
+import { IrcBus } from "../../src/irc/bus";
+import type { InteractiveMode } from "../../src/modes/interactive-mode";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { startPaneManager } from "../../src/rex-panes/pane-manager";
 import { paneRecordPath } from "../../src/rex-panes/pane-records";
 import { newPaneToken } from "../../src/rex-panes/pane-server";
 import { startPaneServer } from "../../src/rex-panes/pane-server";
+import { startRexPanels } from "../../src/rex-panes/panels";
+import { TodoPanel } from "../../src/rex-panes/panels/todo";
+import * as rexFocus from "../../src/rex-panes/rex-focus";
+import { startUsagePoller } from "../../src/usage";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
 import type { AgentSession } from "../../src/session/agent-session";
 import { EventBus } from "../../src/utils/event-bus";
@@ -50,6 +57,7 @@ async function harness() {
 	const calls: string[][] = [];
 	const peers: net.Socket[] = [];
 	const output: string[] = [];
+	const outputByPeer: string[][] = [];
 	let next = 0;
 	let fail = false;
 	const run: RexRunner = async args => {
@@ -62,7 +70,13 @@ async function harness() {
 		const ready = Promise.withResolvers<void>();
 		const socket = net.connect(argv[1]!, () => ready.resolve());
 		socket.on("error", ready.reject);
-		socket.on("data", data => output.push(data.toString()));
+		const peerOutput: string[] = [];
+		outputByPeer.push(peerOutput);
+		socket.on("data", data => {
+			const text = data.toString();
+			output.push(text);
+			peerOutput.push(text);
+		});
 		peers.push(socket);
 		await ready.promise;
 		const greeting = hello(token);
@@ -100,6 +114,7 @@ async function harness() {
 		calls,
 		peers,
 		output,
+		outputByPeer,
 		fail: () => {
 			fail = true;
 		},
@@ -339,6 +354,191 @@ test("supervision reopens only a crashed toggled-on panel in its placement, neve
 	expect(await h.host.reopen(current)).toEqual({ ok: false, reason: "panel-off" });
 	const review = await h.host.open(dock, "omp: review", () => new Text("review"));
 	expect(await h.host.reopen(review!.blockId)).toEqual({ ok: false, reason: "unknown-block" });
+});
+
+async function disconnectPanel(blockId: string, peer: net.Socket): Promise<void> {
+	const eof = Promise.withResolvers<void>();
+	const hostClosed = SocketTerminal.prototype.hostClosed;
+	const closed = vi.spyOn(SocketTerminal.prototype, "hostClosed").mockImplementation(function (this: SocketTerminal) {
+		hostClosed.call(this);
+		eof.resolve();
+	});
+	peer.end();
+	await eof.promise;
+	closed.mockRestore();
+	expect(markPaneCrashed(blockId)).toBe(true);
+}
+
+test("crash-reopened todo edits through the replacement block and disposes the old panel", async () => {
+	const h = await harness();
+	const bin = path.join(root, "bin");
+	await fs.mkdir(bin);
+	const log = path.join(root, "editor-args");
+	await Bun.write(
+		path.join(bin, "rex"),
+		`#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nshift\ncase "$1" in\n split) while [ "$1" != -- ]; do shift; done; shift; "$@"; printf '{"block_ids":["block:editor"]}\\n';;\n wait) printf '{"exit_code":0}\\n';;\n focus|block) exit 0;;\n *) exit 1;;\nesac\n`,
+	);
+	await fs.chmod(path.join(bin, "rex"), 0o700);
+	const previous = { PATH: process.env.PATH, VISUAL: process.env.VISUAL };
+	process.env.PATH = `${bin}:${previous.PATH}`;
+	process.env.VISUAL = "printf '# Saved\\n- [x] Reopened edit\\n' >";
+	cleanup.push(async () => {
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+	const edited = Promise.withResolvers<string | null>();
+	const mode = {
+		refreshRexPanelWidgets() {},
+		todoHudView: () => undefined,
+		onTodoPanelChange: () => () => {},
+		async editPanelTodos(editor: (markdown: string) => Promise<string | null>) {
+			edited.resolve(await editor("# Work\n- [ ] Original\n"));
+		},
+	} as unknown as InteractiveMode;
+	const panels = startRexPanels({ settings: Settings.isolated(), mode });
+	const unregister = registerComponentPaneHost(h.host);
+	cleanup.push(async () => {
+		await panels.dispose();
+		unregister();
+	});
+	const disposed = vi.spyOn(TodoPanel.prototype, "dispose");
+	await panels.toggle("todo");
+	const blockId = "block:00000000-0000-0000-0000-000000000001";
+	await disconnectPanel(blockId, h.peers[0]!);
+	expect(await h.host.reopen(blockId)).toEqual({ ok: true });
+	expect(disposed).toHaveBeenCalledTimes(1);
+	h.peers[1]!.write(frame(2, Buffer.from("e")));
+	expect(await edited.promise).toBe("# Saved\n- [x] Reopened edit\n");
+	const args = await Bun.file(log).text();
+	expect(args).toContain("-b block:00000000-0000-0000-0000-000000000002 --split=below");
+	expect(args).not.toContain(`-b ${blockId} `);
+});
+
+test("crash-reopened dashboard replaces its events child once and loads the new block", async () => {
+	const h = await harness();
+	const bin = path.join(root, "bin");
+	await fs.mkdir(bin);
+	const pidsFile = path.join(root, "watchers");
+	await Bun.write(path.join(bin, "rex"), `#!/bin/sh\nprintf '%s\\n' "$$" >> '${pidsFile}'\nexec sleep 60\n`);
+	await fs.chmod(path.join(bin, "rex"), 0o700);
+	const previous = process.env.PATH;
+	process.env.PATH = `${bin}:${previous}`;
+	cleanup.push(async () => {
+		if (previous === undefined) delete process.env.PATH;
+		else process.env.PATH = previous;
+	});
+	const commands: string[][] = [];
+	vi.spyOn(rexFocus, "runPanelRex").mockImplementation(async args => {
+		commands.push(args);
+		return {
+			exitCode: 0,
+			stderr: "",
+			stdout: JSON.stringify(
+				args[0] === "session"
+					? {
+							active_window_id: "window:one",
+							windows: [{ window_id: "window:one", layers: [{ blocks: [{ block_id: "block:anchor" }] }] }],
+						}
+					: {},
+			),
+		};
+	});
+	const mode = {
+		refreshRexPanelWidgets() {},
+		session: { sessionManager: { getCwd: () => root } },
+	} as unknown as InteractiveMode;
+	const panels = startRexPanels({ settings: Settings.isolated(), mode });
+	const unregister = registerComponentPaneHost(h.host);
+	cleanup.push(async () => {
+		await panels.dispose();
+		unregister();
+	});
+	const pids = async () => (await Bun.file(pidsFile).text()).trim().split("\n").map(Number);
+	const loaded = (blockId: string) =>
+		commands.some(args => args[4] === "session.float_block" && JSON.parse(args[5]!).block_id === blockId);
+	await panels.toggle("dashboard");
+	const old = "block:00000000-0000-0000-0000-000000000001";
+	await until(async () => (await Bun.file(pidsFile).exists()) && loaded(old));
+	const firstPid = (await pids())[0]!;
+	await disconnectPanel(old, h.peers[0]!);
+	expect(await h.host.reopen(old)).toEqual({ ok: true });
+	await until(async () => (await pids()).length === 2 && loaded("block:00000000-0000-0000-0000-000000000002"));
+	const watchers = await pids();
+	expect(watchers).toHaveLength(2);
+	await until(() => {
+		try {
+			process.kill(firstPid, 0);
+			return false;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			return true;
+		}
+	});
+	expect(() => process.kill(watchers[1]!, 0)).not.toThrow();
+	await panels.dispose();
+});
+
+test("crash-reopened usage and feed resume live subscriptions and feed history", async () => {
+	const h = await harness();
+	const mode = {
+		refreshRexPanelWidgets() {},
+		sessionManager: { getSessionFile: () => `${import.meta.dir}/../fixtures/threads/feed/root.jsonl` },
+	} as unknown as InteractiveMode;
+	const settings = Settings.isolated();
+	const panels = startRexPanels({ settings, mode });
+	const unregister = registerComponentPaneHost(h.host);
+	cleanup.push(async () => {
+		await panels.dispose();
+		unregister();
+		IrcBus.resetGlobalForTests();
+	});
+	AgentRegistry.global().register({
+		id: "Alpha",
+		displayName: "Alpha",
+		kind: "sub",
+		session: null,
+		status: "running",
+	});
+	await panels.toggle("usage");
+	await panels.toggle("feed");
+	const usage = "block:00000000-0000-0000-0000-000000000001";
+	const feed = "block:00000000-0000-0000-0000-000000000002";
+	await disconnectPanel(usage, h.peers[0]!);
+	await disconnectPanel(feed, h.peers[1]!);
+	expect(await h.host.reopen(usage)).toEqual({ ok: true });
+	expect(await h.host.reopen(feed)).toEqual({ ok: true });
+	await until(() => h.outputByPeer[3]!.join("").includes("Team update."));
+	const poller = startUsagePoller({
+		settings,
+		notice() {},
+		run: async argv => ({
+			exitCode: 0,
+			stdout: JSON.stringify(
+				argv.includes("dashboard")
+					? {
+							schemaVersion: 1,
+							generatedAt: new Date().toISOString(),
+							providers: [
+								{
+									id: "claude",
+									label: "Claude",
+									windows: [{ kind: "session", label: "Session", usedPercent: 37 }],
+								},
+							],
+						}
+					: [],
+			),
+		}),
+	});
+	cleanup.push(async () => poller.dispose());
+	const waiting = IrcBus.global().wait("Alpha", {}, 1000);
+	await IrcBus.global().send({ from: "Main", to: "Alpha", body: "Reopened live feed", broadcast: true });
+	await waiting;
+	await until(
+		() => h.outputByPeer[2]!.join("").includes("37%") && h.outputByPeer[3]!.join("").includes("Reopened live feed"),
+	);
 });
 
 test("host eligibility requires Rex on Mac with both process location ids", () => {

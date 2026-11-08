@@ -31,7 +31,19 @@ export class FeedPanel implements Component {
 			.then(history => {
 				if (this.#disposed) return;
 				loading = false;
-				for (const item of [...history, ...live]) this.#append(item, false);
+				for (const item of history) this.#append(item, false);
+				for (const item of live) {
+					if (
+						!history.some(
+							value =>
+								value.from === item.from &&
+								value.to === item.to &&
+								value.text === item.text &&
+								Math.abs(value.ts - item.ts) <= 1000,
+						)
+					)
+						this.#append(item, false);
+				}
 				tui.requestRender();
 			})
 			.catch(() => logger.warn("rex-panels: team feed unavailable"));
@@ -46,6 +58,7 @@ export class FeedPanel implements Component {
 		) {
 			this.#items.push(item);
 			this.#items.sort((a, b) => a.ts - b.ts);
+			if (this.#items.length > 500) this.#items.splice(0, this.#items.length - 500);
 			if (redraw) this.tui.requestRender();
 		}
 	}

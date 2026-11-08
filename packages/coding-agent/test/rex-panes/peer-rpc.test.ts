@@ -93,6 +93,32 @@ test("peer RPC authenticates in memory, correlates responses, times out and clos
 	await expect(peer!.call({ type: "get_state" }, 1000)).rejects.toThrow();
 });
 
+test("peer RPC disables session events before requesting state", async () => {
+	const f = await fixture();
+	const peer = await peerRpc(process.pid, { dir: f.dir });
+	cleanups.push(() => peer?.close());
+	expect(peer).toBeDefined();
+	expect(f.commands[0]).toEqual({ type: "set_event_filter", events: [] });
+	expect(f.commands[1]?.type).toBe("get_state");
+});
+
+test("peer RPC skips malformed, missing-endpoint and symlink discovery entries", async () => {
+	const f = await fixture();
+	const malformed = path.join(f.dir, "0000000000000000.json");
+	await fs.writeFile(malformed, "{", { mode: 0o600 });
+	const staleId = "0000000000000001";
+	await fs.writeFile(
+		path.join(f.dir, `${staleId}.json`),
+		JSON.stringify({ ...f.metadata, instanceId: staleId, endpoint: path.join(f.dir, `${staleId}.sock`) }),
+		{ mode: 0o600 },
+	);
+	await fs.symlink(f.filename, path.join(f.dir, "0000000000000002.json"));
+	const peer = await peerRpc(process.pid, { dir: f.dir });
+	cleanups.push(() => peer?.close());
+	expect(peer).toBeDefined();
+	expect(await peer!.call({ type: "get_subagents" }, 1000)).toEqual({ subagents: [{ id: "Worker", status: "idle" }] });
+});
+
 test("peer RPC refuses reused pid identity, unsafe metadata, symlinks and external endpoints", async () => {
 	const f = await fixture();
 	f.stale();

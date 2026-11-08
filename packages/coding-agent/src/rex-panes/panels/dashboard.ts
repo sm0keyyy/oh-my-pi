@@ -52,7 +52,6 @@ export class DashboardPanel implements Component {
 			const bead = this.#beads.find(value => value.id === item.value);
 			const go = this.#go;
 			if (!bead || !go || this.#busy || this.#disposed || this.#failed) return;
-			const windowId = this.#windowId;
 			this.#busy = true;
 			this.#list.setItems(
 				this.#beads.map(value => ({
@@ -62,9 +61,7 @@ export class DashboardPanel implements Component {
 				})),
 			);
 			void go(bead)
-				.catch(() => {
-					if (windowId === this.#windowId) this.#fail();
-				})
+				.catch(() => logger.warn("rex-panels: dashboard Go failed"))
 				.finally(() => {
 					this.#busy = false;
 					if (!this.#disposed && !this.#failed) this.#setBeads(this.#beads);
@@ -163,10 +160,16 @@ export class DashboardPanel implements Component {
 						.list()
 						.filter(ref => ref.kind === "sub")
 						.map(ref => `${ref.displayName} · ${ref.status}`);
-					go = bead =>
-						this.options.session.prompt(`Start bead ${bead.id}: ${bead.title}`, {
-							streamingBehavior: "followUp",
-						});
+					go = bead => {
+						const admitted = Promise.withResolvers<void>();
+						void this.options.session
+							.prompt(`Start bead ${bead.id}: ${bead.title}`, {
+								streamingBehavior: "followUp",
+								onPromptAdmitted: () => admitted.resolve(),
+							})
+							.then(() => admitted.resolve(), admitted.reject);
+						return admitted.promise;
+					};
 				} else {
 					const peer = await (this.options.peer ?? peerRpc)(candidate.pid);
 					if (!peer) continue;
@@ -201,7 +204,11 @@ export class DashboardPanel implements Component {
 		let log: string[] = [];
 		let beads: BeadBrief[] = [];
 		if (cwd) {
-			log = await (vcs.git(cwd)?.logOnelines(10) ?? Promise.resolve([]));
+			try {
+				log = (await vcs.git(cwd)?.logOnelines(10)) ?? [];
+			} catch {
+				log = [];
+			}
 			try {
 				beads = await openTodoStore({
 					cwd,

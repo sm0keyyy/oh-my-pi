@@ -20,58 +20,62 @@ export async function peerRpc(pid: number, options: { dir?: string } = {}): Prom
 		if (!stat || (stat.mode & 0o777) !== 0o700) return undefined;
 		for (const name of await fs.promises.readdir(dir)) {
 			if (!/^[a-f0-9]{16}\.json$/.test(name)) continue;
-			const file = await fs.promises.open(path.join(dir, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-			let meta: unknown;
 			try {
-				const info = await file.stat();
-				if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > 4096)
-					continue;
-				meta = JSON.parse(await file.readFile("utf8"));
-			} finally {
-				await file.close();
-			}
-			if (
-				!isRecord(meta) ||
-				meta.version !== 1 ||
-				meta.pid !== pid ||
-				typeof meta.instanceId !== "string" ||
-				name !== `${meta.instanceId}.json` ||
-				typeof meta.endpoint !== "string" ||
-				typeof meta.token !== "string" ||
-				!/^[a-f0-9]{64}$/.test(meta.token) ||
-				typeof meta.startedAt !== "number" ||
-				!Number.isFinite(meta.startedAt)
-			)
-				continue;
-			const canonical = path.join(dir, `${meta.instanceId}.sock`);
-			const fallback = path.join(socketFallbackDir(dir, "/tmp"), `${meta.instanceId}.sock`);
-			if (meta.endpoint !== canonical && meta.endpoint !== fallback) continue;
-			const parent = await assertPrivateDir(path.dirname(meta.endpoint));
-			const endpoint = await fs.promises.lstat(meta.endpoint);
-			if (
-				!parent ||
-				(parent.mode & 0o077) !== 0 ||
-				!endpoint.isSocket() ||
-				endpoint.uid !== process.getuid?.() ||
-				(endpoint.mode & 0o077) !== 0
-			)
-				continue;
-			const peer = connect(meta.endpoint, meta.token);
-			try {
-				const state = await peer.call({ type: "get_state" }, 1500);
-				const identity = isRecord(state) ? state.rpcSession : undefined;
-				if (
-					!isRecord(identity) ||
-					identity.pid !== pid ||
-					identity.instanceId !== meta.instanceId ||
-					identity.startedAt !== meta.startedAt
-				) {
-					peer.close();
-					continue;
+				const file = await fs.promises.open(path.join(dir, name), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+				let meta: unknown;
+				try {
+					const info = await file.stat();
+					if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > 4096)
+						continue;
+					meta = JSON.parse(await file.readFile("utf8"));
+				} finally {
+					await file.close();
 				}
-				return peer;
+				if (
+					!isRecord(meta) ||
+					meta.version !== 1 ||
+					meta.pid !== pid ||
+					typeof meta.instanceId !== "string" ||
+					name !== `${meta.instanceId}.json` ||
+					typeof meta.endpoint !== "string" ||
+					typeof meta.token !== "string" ||
+					!/^[a-f0-9]{64}$/.test(meta.token) ||
+					typeof meta.startedAt !== "number" ||
+					!Number.isFinite(meta.startedAt)
+				)
+					continue;
+				const canonical = path.join(dir, `${meta.instanceId}.sock`);
+				const fallback = path.join(socketFallbackDir(dir, "/tmp"), `${meta.instanceId}.sock`);
+				if (meta.endpoint !== canonical && meta.endpoint !== fallback) continue;
+				const parent = await assertPrivateDir(path.dirname(meta.endpoint));
+				const endpoint = await fs.promises.lstat(meta.endpoint);
+				if (
+					!parent ||
+					(parent.mode & 0o077) !== 0 ||
+					!endpoint.isSocket() ||
+					endpoint.uid !== process.getuid?.() ||
+					(endpoint.mode & 0o077) !== 0
+				)
+					continue;
+				const peer = connect(meta.endpoint, meta.token);
+				try {
+					const state = await peer.call({ type: "get_state" }, 1500);
+					const identity = isRecord(state) ? state.rpcSession : undefined;
+					if (
+						!isRecord(identity) ||
+						identity.pid !== pid ||
+						identity.instanceId !== meta.instanceId ||
+						identity.startedAt !== meta.startedAt
+					) {
+						peer.close();
+						continue;
+					}
+					return peer;
+				} catch {
+					peer.close();
+				}
 			} catch {
-				peer.close();
+				continue;
 			}
 		}
 	} catch {
@@ -107,6 +111,7 @@ function connect(endpoint: string, token: string): PeerRpc {
 		socket.write(`${JSON.stringify({ type: "hello", token })}\n`);
 		token = "";
 		socket.write(`${JSON.stringify({ type: "negotiate_protocol", protocolVersion: 2 })}\n`);
+		socket.write(`${JSON.stringify({ type: "set_event_filter", events: [] })}\n`);
 	});
 	socket.on("data", chunk => {
 		buffer += chunk;

@@ -1,3 +1,4 @@
+import { $ } from "bun";
 import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
@@ -18,7 +19,7 @@ import {
 	type ComponentPaneHost,
 	type PanePlacement,
 } from "../../src/rex-panes/component-pane";
-import { DashboardPanel } from "../../src/rex-panes/panels/dashboard";
+import { type DashboardOptions, DashboardPanel } from "../../src/rex-panes/panels/dashboard";
 import { FeedPanel } from "../../src/rex-panes/panels/feed";
 import { startRexPanels } from "../../src/rex-panes/panels";
 import { cfgRexPanelFeed, cfgRexPanelUsage } from "../../src/rex-panes/panels/settings";
@@ -190,6 +191,148 @@ test("PJ.c feed uses fixture IRC history once, orders it and appends live delive
 	cfgRexPanelFeed.set(f.settings, "float");
 	await f.service.toggle("feed");
 	expect(f.placements.at(-1)!.kind).toBe("float");
+});
+
+test("PJ.c feed reconciles live delivery with nearby history timestamps without dropping later repeats", async () => {
+	const registry = new AgentRegistry();
+	registry.register({ id: "Alpha", displayName: "Alpha", kind: "sub", session: null, status: "running" });
+	const bus = new IrcBus(registry);
+	const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:04.250Z"));
+	cleanups.push(() => clock.mockRestore());
+	const panel = new FeedPanel(tui(), `${import.meta.dir}/../fixtures/threads/feed/root.jsonl`, bus);
+	cleanups.push(() => panel.dispose());
+	const waiting = bus.wait("Alpha", {}, 1000);
+	await bus.send({ from: "Beta", to: "Alpha", body: "Team update.", broadcast: true });
+	await waiting;
+	await panel.ready;
+	expect(plain(panel).match(/Team update\./g)).toHaveLength(1);
+	clock.mockReturnValue(Date.parse("2026-01-01T00:00:06.000Z"));
+	const later = bus.wait("Alpha", {}, 1000);
+	await bus.send({ from: "Beta", to: "Alpha", body: "Team update.", broadcast: true });
+	await later;
+	expect(plain(panel).match(/Team update\./g)).toHaveLength(2);
+});
+
+test("PJ.c feed retains only the newest 500 items after timestamp sorting", async () => {
+	const registry = new AgentRegistry();
+	registry.register({ id: "Alpha", displayName: "Alpha", kind: "sub", session: null, status: "running" });
+	const bus = new IrcBus(registry);
+	const panel = new FeedPanel(new TUI(new VirtualTerminal(200, 600), false, { embedded: true }), undefined, bus);
+	cleanups.push(() => panel.dispose());
+	await panel.ready;
+	const clock = spyOn(Date, "now");
+	cleanups.push(() => clock.mockRestore());
+	for (let index = 0; index <= 500; index++) {
+		clock.mockReturnValue(10_000 + index);
+		const waiting = bus.wait("Alpha", {}, 1000);
+		await bus.send({ from: "Main", to: "Alpha", body: `message-${index}` });
+		await waiting;
+	}
+	clock.mockReturnValue(0);
+	const waiting = bus.wait("Alpha", {}, 1000);
+	await bus.send({ from: "Main", to: "Alpha", body: "old-delayed-message" });
+	await waiting;
+	const output = plain(panel);
+	expect(output.split("\n")).toHaveLength(500);
+	expect(output).not.toContain("message-0");
+	expect(output).not.toContain("old-delayed-message");
+	expect(output).toContain("message-1");
+	expect(output).toContain("message-500");
+});
+
+async function localDashboard(prompt: DashboardOptions["session"]["prompt"], cwd?: string) {
+	const dir = await fs.mkdtemp("/tmp/jplocal-");
+	cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+	const settings = Settings.isolated();
+	new Setting({ id: "todo.beads.roots", type: "array", default: [] }).override(settings, []);
+	new Setting({ id: "todo.beads.globalDir", type: "string", default: dir }).override(settings, dir);
+	const panel = new DashboardPanel(tui(), {
+		sessionId: "session:test",
+		settings,
+		session: { sessionManager: SessionManager.inMemory(cwd ?? dir), prompt },
+		run: async args =>
+			result(
+				args[0] === "session"
+					? {
+							active_window_id: "window:one",
+							windows: [
+								{
+									window_id: "window:one",
+									focused_block_id: "block:main",
+									layers: [{ blocks: [{ block_id: "block:main" }] }],
+								},
+							],
+						}
+					: args[0] === "block"
+						? { foreground: { pid: process.pid } }
+						: {},
+			),
+		follow: () => ({ dispose() {} }),
+		beadsRunner: async argv => ({
+			exitCode: 0,
+			stderr: "",
+			timedOut: false,
+			stdout: JSON.stringify({
+				schema_version: 1,
+				data: argv.includes("version")
+					? { version: "1.3.4" }
+					: argv.includes("where")
+						? { root: dir }
+						: [{ id: "global-ready", title: "Ready work", priority: 2, status: "open", issue_type: "task" }],
+			}),
+		}),
+	});
+	cleanups.push(() => panel.dispose());
+	panel.start("block:dashboard");
+	await eventually(() => expect(plain(panel)).toContain("Go global-ready"));
+	return panel;
+}
+
+test("PJ.b local Go becomes available at admission and survives rejected prompts", async () => {
+	const turns: Array<{
+		message: string;
+		admit?: () => void;
+		resolve(value: boolean): void;
+		reject(error: Error): void;
+	}> = [];
+	const panel = await localDashboard((message, options) => {
+		const turn = Promise.withResolvers<boolean>();
+		turns.push({ message, admit: options?.onPromptAdmitted, resolve: turn.resolve, reject: turn.reject });
+		expect(options?.streamingBehavior).toBe("followUp");
+		return turn.promise;
+	});
+	panel.handleInput("\r");
+	panel.handleInput("\r");
+	expect(turns).toHaveLength(1);
+	expect(turns[0]!.message).toBe("Start bead global-ready: Ready work");
+	expect(turns[0]!.admit).toBeDefined();
+	turns[0]!.admit!();
+	await eventually(() => {
+		panel.handleInput("\r");
+		expect(turns).toHaveLength(2);
+	});
+	turns[0]!.reject(new Error("Turn failed after admission"));
+	turns[1]!.reject(new Error("Prompt failed before admission"));
+	await eventually(() => {
+		panel.handleInput("\r");
+		expect(turns).toHaveLength(3);
+	});
+	expect(plain(panel)).toContain("Go global-ready");
+	turns[2]!.resolve(false);
+});
+
+test("PJ.b an unborn HEAD leaves an empty log and working Go", async () => {
+	const dir = await fs.mkdtemp("/tmp/jpunborn-");
+	cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+	await $`git init -b main ${dir}`.quiet();
+	const prompted = Promise.withResolvers<string>();
+	const panel = await localDashboard(async message => {
+		prompted.resolve(message);
+		return false;
+	}, dir);
+	expect(plain(panel)).toContain("No commits.");
+	panel.handleInput("\r");
+	expect(await prompted.promise).toBe("Start bead global-ready: Ready work");
 });
 
 test("PJ.b dashboard follows event windows, reads a peer and sends Go to that main session", async () => {

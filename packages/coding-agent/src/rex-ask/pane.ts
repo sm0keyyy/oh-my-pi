@@ -140,13 +140,21 @@ export class AskPane {
 			if (this.#pane !== pane) return;
 			this.#fail(new Error("Rex ask pane closed before an answer"));
 		});
-		this.#watch = (this.options.follow ?? followActiveWindow)(this.#sessionId, id => this.#follow(id));
+		this.#watch = (this.options.follow ?? followActiveWindow)(
+			this.#sessionId,
+			id => this.#follow(id),
+			undefined,
+			() => {
+				this.#chain = this.#chain.then(() => this.#raise(true)).catch(error => this.#fail(error));
+			},
+		);
 		void this.#watch.failed?.then(() => this.#fail(new Error("Rex ask tab events unavailable")));
 		// Subscribe before the second snapshot so a tab switch during open is not lost.
 		const current = await this.#inspect();
 		if (typeof current.active_window_id === "string" && current.active_window_id !== this.#windowId)
 			this.#follow(current.active_window_id);
-		await this.#raise();
+		this.#chain = this.#chain.then(() => this.#raise()).catch(error => this.#fail(error));
+		await this.#chain;
 	}
 	#follow(windowId: string): void {
 		if (!this.#pane || this.#disposed || windowId === this.#windowId) return;
@@ -181,14 +189,25 @@ export class AskPane {
 			})
 			.catch(error => this.#fail(error));
 	}
-	async #raise(): Promise<void> {
+	async #raise(onlyIfCovered = false): Promise<void> {
 		const pane = this.#pane;
 		if (!pane) return;
 		const snapshot = await this.#inspect();
 		if (this.#pane !== pane) return;
-		const layers = Array.isArray(snapshot.windows)
-			? snapshot.windows.flatMap(window => (isRecord(window) && Array.isArray(window.layers) ? window.layers : []))
-			: [];
+		const window = Array.isArray(snapshot.windows)
+			? snapshot.windows.find(
+					value =>
+						isRecord(value) &&
+						Array.isArray(value.layers) &&
+						value.layers.some(
+							layer =>
+								isRecord(layer) &&
+								Array.isArray(layer.blocks) &&
+								layer.blocks.some(block => isRecord(block) && block.block_id === pane.blockId),
+						),
+				)
+			: undefined;
+		const layers = isRecord(window) && Array.isArray(window.layers) ? window.layers : [];
 		const layer = layers.find(
 			value =>
 				isRecord(value) &&
@@ -196,23 +215,32 @@ export class AskPane {
 				value.blocks.some(block => isRecord(block) && block.block_id === pane.blockId),
 		);
 		if (!isRecord(layer) || typeof layer.layer_id !== "string") throw new Error("Rex ask layer unavailable");
+		if (onlyIfCovered && layers.findLast(value => isRecord(value) && value.kind === "floating") === layer) return;
 		await this.#call("session.raise_layer", { layer_id: layer.layer_id });
 	}
 	async focus(): Promise<boolean> {
-		await this.#opening;
-		await this.#chain;
-		if (!this.#pane) return false;
-		await this.#raise();
-		await this.#call("session.focus_block", { block_id: this.#pane.blockId });
-		return true;
+		const pane = this.#pane;
+		if (!pane) return false;
+		const focused = this.#chain.then(async () => {
+			if (this.#pane !== pane) return false;
+			await this.#raise();
+			if (this.#pane !== pane) return false;
+			await this.#call("session.focus_block", { block_id: pane.blockId });
+			return this.#pane === pane;
+		});
+		this.#chain = focused.then(
+			() => {},
+			error => this.#fail(error),
+		);
+		return focused;
 	}
 	#fail(error: unknown): void {
 		logger.warn("rex-ask: float unavailable; using inline dialog", { error: String(error) });
-		while (this.#queue.length) this.#queue[0]!.settle(undefined);
+		for (const pending of this.#queue.splice(0)) pending.settle(undefined);
 	}
 	async dispose(): Promise<void> {
 		this.#disposed = true;
-		while (this.#queue.length) this.#queue[0]!.finish(undefined);
+		for (const pending of this.#queue.splice(0)) pending.finish(undefined);
 		await this.#opening;
 		await this.#chain;
 	}

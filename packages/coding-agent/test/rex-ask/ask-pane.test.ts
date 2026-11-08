@@ -9,6 +9,8 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import { ModelRegistry } from "../../src/config/model-registry";
+import type { CollabHost, CollabGuestUiResult } from "../../src/collab/host";
+import type { CollabUiRequestDraft } from "@oh-my-pi/pi-wire";
 import type { ExtensionUIContext, ExtensionAskDialogQuestion } from "../../src/extensibility/extensions/types";
 import { ExtensionUiController } from "../../src/modes/controllers/extension-ui-controller";
 import type { InteractiveModeContext } from "../../src/modes/types";
@@ -16,7 +18,7 @@ import { startRpcSocketServer } from "../../src/modes/rpc/rpc-socket";
 import { renderQuestions } from "../../src/operator-queue/drain";
 import { enqueueRequest, listPending } from "../../src/operator-queue/queue";
 import { queuePaths } from "../../src/operator-queue/paths";
-import { requestOperatorAsk, routeAskDialog, startAskPane, focusAskPane } from "../../src/rex-ask";
+import { requestOperatorAsk, routeAskDialog, startAskPane, focusAskPane, askHostSessionId } from "../../src/rex-ask";
 import { createComponentPaneHost, registerComponentPaneHost } from "../../src/rex-panes/component-pane";
 import { startPaneServer } from "../../src/rex-panes/pane-server";
 import { createRexCli, type RexRunner } from "../../src/rex-panes/rex-cli";
@@ -39,7 +41,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-async function fixture() {
+async function fixture(collabHost?: Pick<CollabHost, "requestGuestUi">) {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ask-"));
 	cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
 	const server = await startPaneServer({ dir: path.join(dir, "pane") });
@@ -55,9 +57,14 @@ async function fixture() {
 	let creations = 0;
 	const focus = { w1: "main-block", w2: "other-block" };
 	let changed: ((id: string) => void) | undefined;
+	let viewChanged: (() => void) | undefined;
+	const eventsFailed = Promise.withResolvers<void>();
+	let covered = false;
+	let beforeRequest: ((args: string[]) => Promise<void>) | undefined;
 	const run: RexRunner = async raw => {
 		const args = raw[0] === "--autostart=false" ? raw.slice(1) : raw;
 		calls.push(args);
+		await beforeRequest?.(args);
 		if (fail) return { exitCode: 1, stdout: "", stderr: "Rex unavailable" };
 		let value: unknown = {};
 		if (args[0] === "session" && args[1] === "inspect") {
@@ -67,8 +74,17 @@ async function fixture() {
 					window_id: id,
 					focused_block_id: focus[id as keyof typeof focus],
 					layers: [
-						{ layer_id: `base-${id}`, blocks: [{ block_id: id === "w1" ? "main-block" : "other-block" }] },
-						...(opened && placed === id ? [{ layer_id: "ask-layer", blocks: [{ block_id: ASK_BLOCK }] }] : []),
+						{
+							layer_id: `base-${id}`,
+							kind: "tiled",
+							blocks: [{ block_id: id === "w1" ? "main-block" : "other-block" }],
+						},
+						...(opened && placed === id
+							? [{ layer_id: "ask-layer", kind: "floating", blocks: [{ block_id: ASK_BLOCK }] }]
+							: []),
+						...(covered && placed === id
+							? [{ layer_id: "panel-layer", kind: "floating", blocks: [{ block_id: "panel" }] }]
+							: []),
 					],
 				})),
 			};
@@ -91,6 +107,7 @@ async function fixture() {
 				value = { layer_id: "ask-layer", block_ids: [ASK_BLOCK] };
 			} else if (args[4] === "session.move_block") placed = payload.anchor_block_id === "other-block" ? "w2" : "w1";
 			else if (args[4] === "session.focus_block") focus[placed as keyof typeof focus] = payload.block_id;
+			else if (args[4] === "session.raise_layer") covered = false;
 		} else if (args[0] === "block" && args[1] === "close") {
 			opened = false;
 			peers.at(-1)?.end();
@@ -98,11 +115,14 @@ async function fixture() {
 		return { exitCode: 0, stdout: JSON.stringify(value), stderr: "" };
 	};
 	vi.spyOn(rexFocus, "runPanelRex").mockImplementation(run);
-	vi.spyOn(rexFocus, "followActiveWindow").mockImplementation((_session, change) => {
+	vi.spyOn(rexFocus, "followActiveWindow").mockImplementation((_session, change, _run, view) => {
 		changed = change;
+		viewChanged = view;
 		return {
+			failed: eventsFailed.promise,
 			dispose: () => {
 				changed = undefined;
+				viewChanged = undefined;
 			},
 		};
 	});
@@ -126,7 +146,7 @@ async function fixture() {
 		for (const peer of peers) peer.destroy();
 	});
 	const settings = Settings.isolated({ "speech.enabled": false, "ask.notify": "off", "ask.timeout": 0 });
-	const controller = new ExtensionUiController({} as InteractiveModeContext);
+	const controller = new ExtensionUiController({ collabHost } as InteractiveModeContext);
 	const ui = {
 		timeoutStartsOnPresentation: true,
 		askDialog: controller.showAskDialog.bind(controller),
@@ -156,6 +176,16 @@ async function fixture() {
 		fail: () => {
 			fail = true;
 		},
+		dispose: () => service.dispose(),
+		eventsFailed,
+		beforeRequest: (handler: (args: string[]) => Promise<void>) => {
+			beforeRequest = handler;
+		},
+		cover: () => {
+			covered = true;
+			viewChanged?.();
+		},
+		covered: () => covered,
 		unregister,
 	};
 }
@@ -173,6 +203,9 @@ test("main ask, subagent ask and operator interview share one FIFO float, raise 
 		context: "Interview context",
 	});
 	const interview = (await listPending(paths))[0]!.interview!;
+	const journal = SessionManager.inMemory(h.dir);
+	await journal.setSessionName("Release", "user");
+	cleanups.push(() => journal.close());
 	const toolSession: ToolSession = {
 		cwd: h.dir,
 		hasUI: true,
@@ -180,6 +213,7 @@ test("main ask, subagent ask and operator interview share one FIFO float, raise 
 		getSessionSpawns: () => "*",
 		settings: h.settings,
 		getAgentId: () => "Main",
+		sessionManager: journal,
 	};
 	const tool = new AskTool(toolSession);
 	const first = tool.execute(
@@ -298,10 +332,17 @@ for (const winner of ["float", "sessions-web"] as const) {
 		});
 		client.write(`${JSON.stringify({ type: "hello", token: meta.token })}\n`);
 		await until(() => frames.some(frame => frame.type === "available_commands_update"));
-		const pending = h.ui.askDialog!(question("race"), { source: { agent: "Worker" }, context: "Race context" });
+		const subagents = registerSubagentAskHost({ main: h.ui, subagentEventBus: new EventBus() });
+		cleanups.push(() => subagents.dispose());
+		const pending = subagents.uiFor("Worker", "Worker").askDialog!(question("race"), {
+			source: { agent: "Worker" },
+			context: "Race context",
+		});
 		await until(() => frames.some(frame => frame.method === "ask") && h.screen().includes("Choose race?"));
 		const request = frames.find(frame => frame.method === "ask")!;
 		expect(request).toMatchObject({ source: { agent: "Worker" }, context: "Race context" });
+		expect(request.questions).toMatchObject([{ question: "Worker: Choose race?" }]);
+		expect(h.screen()).not.toContain("Worker: Choose race?");
 		client.write(`${JSON.stringify({ id: "focus-ask", type: "focus_ask_pane" })}\n`);
 		await until(() => frames.some(frame => frame.id === "focus-ask"));
 		expect(frames.find(frame => frame.id === "focus-ask")).toMatchObject({ success: true, data: { focused: true } });
@@ -326,3 +367,172 @@ for (const winner of ["float", "sessions-web"] as const) {
 		expect(await next).toBeUndefined();
 	});
 }
+
+for (const winner of ["float", "guest"] as const) {
+	test(`collab guests stay in the ask race when the ${winner} answers first`, async () => {
+		const guest = Promise.withResolvers<CollabGuestUiResult>();
+		let request: CollabUiRequestDraft | undefined;
+		let guestSignal: AbortSignal | undefined;
+		const h = await fixture({
+			requestGuestUi: (value, signal) => {
+				request = value;
+				guestSignal = signal;
+				signal?.addEventListener("abort", () => guest.resolve({ kind: "unavailable" }), { once: true });
+				return guest.promise;
+			},
+		});
+		const answer = h.ui.askDialog!(question("collab"));
+		await until(() => request !== undefined && h.screen().includes("Choose collab?"));
+		expect(request).toMatchObject({ kind: "select", title: "Choose collab?" });
+		if (winner === "float") h.send("\r");
+		else guest.resolve({ kind: "answered", value: "No" });
+		expect(await answer).toMatchObject({
+			kind: "submit",
+			results: [{ selectedOptions: [winner === "float" ? "Yes" : "No"] }],
+		});
+		if (winner === "float") expect(guestSignal?.aborted).toBe(true);
+		await until(() => h.widgets.get("rex-ask-wait") === undefined);
+	});
+}
+
+for (const ending of ["failure", "dispose"] as const) {
+	test(`${ending} withdraws queued asks without presenting them or starting their deadlines`, async () => {
+		const h = await fixture();
+		const presented: string[] = [];
+		const answers = ["first", "second", "third"].map(id =>
+			routeAskDialog(
+				question(id),
+				{
+					onTimeoutStart: () => {
+						presented.push(id);
+					},
+				},
+				async () => ({ kind: "chat" }),
+			),
+		);
+		await until(
+			() => h.screen().includes("2 more waiting") && h.calls.some(call => call[4] === "session.raise_layer"),
+		);
+		if (ending === "failure") h.eventsFailed.resolve();
+		else await h.dispose();
+		expect(await Promise.all(answers)).toEqual(
+			ending === "failure"
+				? [{ kind: "chat" }, { kind: "chat" }, { kind: "chat" }]
+				: [undefined, undefined, undefined],
+		);
+		expect(presented).toEqual(["first"]);
+		expect(h.widgets.get("rex-ask-wait")).toBeUndefined();
+	});
+}
+
+test("public ask signals withdraw active and queued asks and expose only the owning main session", async () => {
+	expect(askHostSessionId()).toBeUndefined();
+	const h = await fixture();
+	expect(askHostSessionId()).toBe("main-session");
+	const active = new AbortController();
+	const queued = new AbortController();
+	const first = requestOperatorAsk({
+		question: "Active?",
+		source: { agent: "Main" },
+		options: [{ label: "Yes" }],
+		allowFreeText: true,
+		signal: active.signal,
+	});
+	const second = requestOperatorAsk({
+		question: "Queued?",
+		source: { agent: "Peer", sessionId: "foreign-session" },
+		allowFreeText: true,
+		signal: queued.signal,
+	});
+	await until(() => h.screen().includes("Active?") && h.screen().includes("1 more waiting"));
+	queued.abort();
+	expect(await second).toEqual({ cancelled: true });
+	await until(() => h.screen().includes("0 more waiting"));
+	active.abort();
+	expect(await first).toEqual({ cancelled: true });
+	await until(() => h.widgets.get("rex-ask-wait") === undefined);
+	await h.dispose();
+	expect(askHostSessionId()).toBeUndefined();
+});
+
+test("the inline editor fallback receives the public ask cancellation signal", async () => {
+	const abort = new AbortController();
+	const result = Promise.withResolvers<string | undefined>();
+	let presentedSignal: AbortSignal | undefined;
+	const ui = {
+		setWidget() {},
+		editor: (_title: string, _prefill: string | undefined, options: { signal?: AbortSignal } | undefined) => {
+			presentedSignal = options?.signal;
+			options?.signal?.addEventListener("abort", () => result.resolve(undefined), { once: true });
+			return result.promise;
+		},
+	} as unknown as ExtensionUIContext;
+	const service = startAskPane({
+		settings: Settings.isolated(),
+		ui,
+		source: () => ({ agent: "Main", sessionId: "inline-main" }),
+	});
+	cleanups.push(() => service.dispose());
+	const answer = requestOperatorAsk({
+		question: "Inline?",
+		source: { agent: "Main" },
+		allowFreeText: true,
+		signal: abort.signal,
+	});
+	expect(presentedSignal).toBe(abort.signal);
+	abort.abort();
+	expect(await answer).toEqual({ cancelled: true });
+});
+
+test("a foreign source does not inherit the main session role or title", async () => {
+	const h = await fixture();
+	const abort = new AbortController();
+	const answer = h.ui.askDialog!(question("foreign"), {
+		source: { agent: "Peer", sessionId: "foreign-session" },
+		signal: abort.signal,
+	});
+	await until(() => h.screen().includes("Choose foreign?"));
+	expect(h.screen()).toContain("Peer · foreign-session");
+	expect(h.screen()).not.toContain("Release");
+	expect(h.screen()).not.toContain("Peer · main");
+	abort.abort();
+	expect(await answer).toBeUndefined();
+});
+
+test("answering an ask during a queued focus returns false without focusing the closed pane", async () => {
+	const h = await fixture();
+	const abort = new AbortController();
+	const answer = h.ui.askDialog!(question("focus-race"), { signal: abort.signal });
+	await until(() => h.screen().includes("Choose focus-race?"));
+	expect(await focusAskPane()).toBe(true);
+	const focusedBefore = h.calls.filter(call => call[4] === "session.focus_block").length;
+	const paused = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	h.beforeRequest(async args => {
+		if (args[4] === "session.raise_layer") {
+			paused.resolve();
+			await resume.promise;
+		}
+	});
+	const focused = focusAskPane();
+	await paused.promise;
+	abort.abort();
+	expect(await answer).toBeUndefined();
+	resume.resolve();
+	expect(await focused).toBe(false);
+	expect(h.calls.filter(call => call[4] === "session.focus_block").length).toBe(focusedBefore);
+});
+
+test("a panel float is raised below the pending ask after a Rex view change", async () => {
+	const h = await fixture();
+	const abort = new AbortController();
+	const answer = h.ui.askDialog!(question("layer-order"), { signal: abort.signal });
+	await until(() => h.screen().includes("Choose layer-order?"));
+	expect(await focusAskPane()).toBe(true);
+	const raisesBefore = h.calls.filter(call => call[4] === "session.raise_layer").length;
+	h.cover();
+	await until(() => !h.covered());
+	expect(h.calls.filter(call => call[4] === "session.raise_layer").length).toBe(raisesBefore + 1);
+	abort.abort();
+	expect(await answer).toBeUndefined();
+});

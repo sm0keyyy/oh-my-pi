@@ -11,6 +11,7 @@ export function followActiveWindow(
 	sessionId: string,
 	onChange: (windowId: string) => void,
 	run?: RexRunner,
+	onViewChanged?: () => void,
 ): { dispose(): void; failed?: Promise<void> } {
 	const abort = new AbortController();
 	const failure = Promise.withResolvers<void>();
@@ -27,6 +28,14 @@ export function followActiveWindow(
 		)
 			return;
 		const event = envelope.payload.event;
+		if (
+			isRecord(event) &&
+			typeof event.type === "string" &&
+			(event.type === "session_view_changed" || event.type.startsWith("layer_"))
+		) {
+			onViewChanged?.();
+			return;
+		}
 		if (
 			!isRecord(event) ||
 			event.type !== "active_window_changed" ||

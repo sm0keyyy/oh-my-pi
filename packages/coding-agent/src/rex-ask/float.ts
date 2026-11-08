@@ -33,10 +33,36 @@ export class AskFloat extends Container {
 		if (this.#active !== ask) {
 			this.#release();
 			this.#active = ask;
+			// Strip source prefixes only in the view; submitted results retain the wire question.
+			const agent = ask.options.source?.agent;
+			const prefix = agent ? `${agent}: ` : undefined;
+			const questions = ask.questions.map(question =>
+				prefix
+					? {
+							...question,
+							question: question.question.startsWith(prefix)
+								? question.question.slice(prefix.length)
+								: question.question,
+							header:
+								question.header === agent
+									? undefined
+									: question.header?.startsWith(prefix)
+										? question.header.slice(prefix.length)
+										: question.header,
+						}
+					: question,
+			);
 			this.#dialog = new AskDialogComponent(
-				ask.questions,
+				questions,
 				{
-					onSubmit: result => ask.finish(result),
+					onSubmit: result =>
+						ask.finish({
+							...result,
+							results: result.results.map((item, index) => ({
+								...item,
+								question: ask.questions[index]!.question,
+							})),
+						}),
 					onCancel: () => ask.finish(undefined),
 					onPrompt: async (prompt, prefill) =>
 						(await this.#openPrompt(prompt.title, prompt.question, prefill))?.text,

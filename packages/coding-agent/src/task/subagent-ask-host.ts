@@ -114,13 +114,11 @@ class AskHost implements SubagentAskHost {
 				};
 				return this.#enqueue(
 					agentId,
-					askPaneAvailable()
-						? questions
-						: questions.map(question => ({
-								...question,
-								question: `${displayName}: ${question.question}`,
-								header: question.header ? `${displayName}: ${question.header}` : displayName,
-							})),
+					questions.map(question => ({
+						...question,
+						question: `${displayName}: ${question.question}`,
+						header: question.header ? `${displayName}: ${question.header}` : displayName,
+					})),
 					options,
 				);
 			},

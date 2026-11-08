@@ -30,6 +30,11 @@ export function startAskPane(input: { settings: Settings; ui: ExtensionUIContext
 	};
 }
 
+/** The owning omp main-session id, not the Rex session id. */
+export function askHostSessionId(): string | undefined {
+	return current?.source().sessionId;
+}
+
 export function askPaneAvailable(): boolean {
 	return current?.pane.available() ?? false;
 }
@@ -46,24 +51,25 @@ export async function routeAskDialog(
 	if (!service) return inline();
 	const answer = await service.pane.request(questions, {
 		...options,
-		source: { ...service.source(), ...options?.source },
+		source: options?.source ?? service.source(),
 	});
 	return answer ? answer.result : options?.signal?.aborted ? undefined : inline();
 }
 
 export async function requestOperatorAsk(req: OperatorAskRequest): Promise<OperatorAskAnswer> {
 	const ui = current?.ui;
-	if (!ui) return { cancelled: true };
+	if (!ui || req.signal?.aborted) return { cancelled: true };
 	if (ui.askDialog) {
 		const result = await ui.askDialog([{ id: "operator", question: req.question, options: req.options ?? [] }], {
 			source: req.source,
 			context: req.context,
+			signal: req.signal,
 		});
 		if (!result || result.kind !== "submit") return { cancelled: true };
 		const answer = result.results[0];
 		if (!answer) return { cancelled: true };
 		return { answer: answer.customInput ?? answer.selectedOptions.join(", ") };
 	}
-	const answer = await ui.editor(req.question);
+	const answer = await ui.editor(req.question, undefined, { signal: req.signal });
 	return answer === undefined ? { cancelled: true } : { answer };
 }

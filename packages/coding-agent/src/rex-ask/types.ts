@@ -20,6 +20,7 @@ export interface OperatorAskRequest {
 	source: AskSource;
 	options?: { label: string; description?: string }[];
 	allowFreeText: true;
+	signal?: AbortSignal;
 }
 
 export type OperatorAskAnswer = { answer: string } | { cancelled: true };

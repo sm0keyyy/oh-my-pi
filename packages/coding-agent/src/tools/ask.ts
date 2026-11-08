@@ -808,6 +808,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 		const richAskDialog = extensionUi.askDialog;
 		if (richAskDialog) {
+			const sourceAgent = AgentRegistry.global().get(this.session.getAgentId?.() ?? "Main");
 			try {
 				const showRichDialog = () =>
 					richAskDialog(
@@ -829,10 +830,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							acceptImages: true,
 							source: params.source ?? {
 								agent: this.session.getAgentId?.() ?? (isSubagent ? "Subagent" : "Main"),
-								role:
-									AgentRegistry.global().get(this.session.getAgentId?.() ?? "Main")?.history?.agent ??
-									(isSubagent ? "subagent" : "main"),
+								role: sourceAgent?.history?.agent ?? (isSubagent ? "subagent" : "main"),
 								sessionId: this.session.getSessionId?.() ?? undefined,
+								sessionLabel:
+									this.session.sessionManager?.getSessionName?.() ??
+									sourceAgent?.session?.sessionManager.getSessionName(),
 							},
 							context: params.context,
 						},

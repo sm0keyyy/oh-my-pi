@@ -54,7 +54,8 @@ it.skipIf(!binary)(
 		const run = createBdRunner(binary!);
 		const runner: BdRunner = async (argv, options) => {
 			if (argv.includes("init")) {
-				expect(options.cwd === repo || options.cwd === globalDir).toBe(true);
+				const cwd = await fs.realpath(options.cwd);
+				expect(cwd === (await fs.realpath(repo)) || cwd === (await fs.realpath(globalDir))).toBe(true);
 				const info = vcs.gitInfo(options.cwd);
 				expect(info).not.toBeNull();
 				expect(await fs.realpath(info!.repoRoot)).toBe(await fs.realpath(options.cwd));

@@ -213,7 +213,7 @@ export class TanCommandController {
 						// The fork inherits the parent's todo list via session entries;
 						// its reminders would drag the tan back onto the parent's task.
 						// Clear runtime state and persist an empty edit so reloads agree.
-						clone.setTodoPhases([]);
+						clone.resetTodoPhases([]);
 						cloneManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
 						const injectContextSwitch = () => {
 							clone?.agent.appendMessage({

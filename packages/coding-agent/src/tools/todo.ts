@@ -11,6 +11,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
+import { BeadsUnavailableError, type TodoStore } from "../beads";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
@@ -19,10 +20,17 @@ import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
-	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
+	if (
+		!isRecord(value) ||
+		typeof value.name !== "string" ||
+		!Array.isArray(value.tasks) ||
+		(value.id !== undefined && typeof value.id !== "string")
+	)
+		return false;
 	return value.tasks.every(
 		task =>
 			isRecord(task) &&
+			(task.id === undefined || typeof task.id === "string") &&
 			typeof task.content === "string" &&
 			(task.status === "pending" ||
 				task.status === "in_progress" ||
@@ -42,7 +50,8 @@ export function isTodoPhase(value: unknown): value is TodoPhase {
 export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | undefined {
 	if (result.isError || !isRecord(result.details)) return undefined;
 	const { op, phases } = result.details;
-	if (op === "view" || !Array.isArray(phases) || !phases.every(isTodoPhase)) return undefined;
+	if (op === "view" || op === "ready" || op === "file" || !Array.isArray(phases) || !phases.every(isTodoPhase))
+		return undefined;
 	return phases;
 }
 
@@ -50,7 +59,9 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 // Schema
 // =============================================================================
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
+const TodoOp = type(
+	'"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view" | "ready" | "adopt" | "file"',
+);
 
 const InitListEntry = type({
 	phase: type("string"),
@@ -60,13 +71,16 @@ const InitListEntry = type({
 const todoSchema = type({
 	op: TodoOp,
 	"list?": InitListEntry.array().describe("phases for init"),
-	"task?": type("string").describe("verbatim task content"),
+	"task?": type("string").describe("bead ID or verbatim task content"),
 	"phase?": type("string"),
 	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
 	// and both enforce non-empty with op-specific errors. A stray `items: []` on
 	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
 	"items?": type("string").array().describe("tasks for flat init or append"),
 	"reason?": type("string").describe("blocker note for block"),
+	"id?": type("string").describe("bead to adopt"),
+	"on?": type("string").describe("dependency bead ID or exact task content"),
+	"priority?": type("0 | 1 | 2 | 3 | 4").describe("priority for file; defaults to 2"),
 });
 
 type TodoParams = TodoSchema;
@@ -78,9 +92,16 @@ type TodoOpEntryValue = TodoParams;
 // State helpers
 // =============================================================================
 
-function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoItem; phase: TodoPhase } | undefined {
+export function resolveTodoTarget(
+	phases: readonly TodoPhase[],
+	ref: string,
+): { task: TodoItem; phase: TodoPhase } | undefined {
 	for (const phase of phases) {
-		const task = phase.tasks.find(t => t.content === content);
+		const task = phase.tasks.find(task => task.id === ref);
+		if (task) return { task, phase };
+	}
+	for (const phase of phases) {
+		const task = phase.tasks.find(task => task.content === ref);
 		if (task) return { task, phase };
 	}
 	return undefined;
@@ -91,13 +112,11 @@ function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefin
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	return task.blocker !== undefined
-		? { content: task.content, status: task.status, blocker: task.blocker }
-		: { content: task.content, status: task.status };
+	return { ...task, ...(task.notes ? { notes: [...task.notes] } : {}) };
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+	return phases.map(phase => ({ ...phase, tasks: phase.tasks.map(cloneTask) }));
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -118,14 +137,14 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 			if (task.status !== "completed") continue;
 			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
 			if (previousStatus && previousStatus !== "completed") {
-				transitions.push({ phase: phase.name, content: task.content });
+				transitions.push({ phase: phase.name, content: task.content, ...(task.id ? { id: task.id } : {}) });
 			}
 		}
 	}
 	return transitions;
 }
 
-function normalizeInProgressTask(phases: TodoPhase[]): void {
+export function normalizeInProgressTask(phases: TodoPhase[]): void {
 	const orderedTasks = phases.flatMap(phase => phase.tasks);
 	if (orderedTasks.length === 0) return;
 
@@ -195,7 +214,8 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 		isError?: boolean;
 	};
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
-	if (message.details?.op === "view") return undefined;
+	if (message.details?.op === "view" || message.details?.op === "ready" || message.details?.op === "file")
+		return undefined;
 	const phases = message.details?.phases;
 	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
 }
@@ -266,12 +286,10 @@ function resolveTaskOrError(
 		errors.push("Missing task content");
 		return undefined;
 	}
-	const hit = findTaskByContent(phases, content);
+	const hit = resolveTodoTarget(phases, content);
 	if (!hit) {
 		if (/^task-\d+$/.test(content)) {
-			errors.push(
-				`Task "${content}" not found. Tasks are referenced by content, not by IDs — pass the task's full text from the previous result.`,
-			);
+			errors.push(`Task "${content}" not found. Pass a bead ID or the task's full text from the previous result.`);
 		} else {
 			const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 			const hint = totalTasks === 0 ? " (todo list is empty — was it replaced or not yet created?)" : "";
@@ -358,7 +376,7 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	const seen = new Set<string>();
 	let hasDuplicate = false;
 	for (const content of entry.items) {
-		if (seen.has(content) || findTaskByContent(phases, content)) {
+		if (seen.has(content) || resolveTodoTarget(phases, content)) {
 			errors.push(`Task "${content}" already exists`);
 			hasDuplicate = true;
 		}
@@ -465,6 +483,11 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return removeTasks(phases, entry, errors);
 		case "append":
 			return appendItems(phases, entry, errors);
+		case "ready":
+		case "adopt":
+		case "file":
+			errors.push(`${entry.op} requires the todo tool's beads store`);
+			return phases;
 		case "view":
 			return phases;
 	}
@@ -509,13 +532,6 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
-	const errors: string[] = [];
-	const next = applyEntry(phases, params, errors);
-	normalizeInProgressTask(next);
-	return { phases: next, errors };
-}
-
 /** Apply an array of `todo`-style ops to existing phases. Used by /todo slash command. */
 export function applyOpsToPhases(
 	currentPhases: TodoPhase[],
@@ -553,14 +569,16 @@ export function phasesToMarkdown(phases: TodoPhase[]): string {
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
-		out.push(`# ${phases[i].name}`);
+		out.push(`# ${phases[i].name}${phases[i].id ? ` <!-- bead: ${phases[i].id} -->` : ""}`);
 		for (const task of phases[i].tasks) {
 			// A blocked task's reason rides in a trailing HTML comment: invisible in
 			// rendered markdown, unambiguous to parse back (task content can't
 			// contain the comment delimiters), so the note survives `/todo edit` and
 			// export/import round-trips.
 			const blockerNote = task.status === "blocked" && task.blocker ? ` <!-- blocker: ${task.blocker} -->` : "";
-			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}`);
+			out.push(
+				`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}${task.id ? ` <!-- bead: ${task.id} -->` : ""}`,
+			);
 		}
 	}
 	return `${out.join("\n")}\n`;
@@ -583,6 +601,17 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	const errors: string[] = [];
 	const phases: TodoPhase[] = [];
 	let currentPhase: TodoPhase | undefined;
+	const idLines = new Map<string, number>();
+	const acceptId = (id: string | undefined, line: number): boolean => {
+		if (!id) return true;
+		const firstLine = idLines.get(id);
+		if (firstLine !== undefined) {
+			errors.push(`Line ${line}: duplicate bead ID "${id}", first used on line ${firstLine}`);
+			return false;
+		}
+		idLines.set(id, line);
+		return true;
+	};
 
 	const lines = md.split(/\r?\n/);
 	for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -593,7 +622,9 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 
 		const headingMatch = /^#{1,6}\s+(.+?)\s*$/.exec(trimmed);
 		if (headingMatch) {
-			currentPhase = { name: headingMatch[1].trim(), tasks: [] };
+			const bead = /^(.*?)\s*<!--\s*bead:\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\s*-->$/.exec(headingMatch[1]);
+			if (!acceptId(bead?.[2], lineNum + 1)) continue;
+			currentPhase = { name: (bead?.[1] ?? headingMatch[1]).trim(), tasks: [], ...(bead ? { id: bead[2] } : {}) };
 			phases.push(currentPhase);
 			continue;
 		}
@@ -615,13 +646,16 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 			}
 			// Recover a blocked task's reason from its trailing HTML comment (see
 			// phasesToMarkdown), then strip the comment from the visible content.
-			const rawContent = taskMatch[2].trim();
+			const bead = /^(.*?)\s*<!--\s*bead:\s*([a-zA-Z0-9][a-zA-Z0-9_.-]*)\s*-->$/.exec(taskMatch[2].trim());
+			if (!acceptId(bead?.[2], lineNum + 1)) continue;
+			const rawContent = (bead?.[1] ?? taskMatch[2]).trim();
 			const blockerMatch = /^(.*?)\s*<!--\s*blocker:\s*(.*?)\s*-->$/.exec(rawContent);
-			if (status === "blocked" && blockerMatch) {
-				currentPhase.tasks.push({ content: blockerMatch[1].trim(), status, blocker: blockerMatch[2].trim() });
-			} else {
-				currentPhase.tasks.push({ content: rawContent, status });
-			}
+			currentPhase.tasks.push({
+				content: blockerMatch ? blockerMatch[1].trim() : rawContent,
+				status,
+				...(status === "blocked" && blockerMatch ? { blocker: blockerMatch[2].trim() } : {}),
+				...(bead ? { id: bead[2] } : {}),
+			});
 			continue;
 		}
 
@@ -687,7 +721,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		}`,
 	);
 	for (const phase of phases) {
-		lines.push(`  ${phase.name}:`);
+		lines.push(`  ${phase.name}${phase.id ? ` [${phase.id}]` : ""}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
 			const tag =
@@ -700,7 +734,7 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 								? ` (blocked: ${task.blocker})`
 								: " (blocked)"
 							: "";
-			lines.push(`    - ${checkbox} ${task.content}${tag}`);
+			lines.push(`    - ${checkbox} ${task.content}${tag}${task.id ? ` [${task.id}]` : ""}`);
 		}
 	}
 	return lines.join("\n");
@@ -735,37 +769,119 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		await this.session.flushTodoPhases?.();
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const store = this.session.getTodoStore?.();
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
+		const errors: string[] = [];
+		let op: TodoOperation | undefined;
+		let updated = clonePhases(previousPhases);
+		let readOnly = false;
+		let extra: string | undefined;
 		if (typeof resolved === "string") {
-			return {
-				content: [{ type: "text", text: resolved }],
-				details: { phases: previousPhases, storage },
-				isError: true,
-			};
+			errors.push(resolved);
+		} else {
+			op = resolved.op;
+			readOnly = op === "view" || op === "ready" || op === "file";
+			try {
+				if (op === "ready") {
+					const ready = await this.#requireStore(store).ready(10);
+					extra = ready.length
+						? ready.map(bead => `${bead.id} [P${bead.priority}] ${bead.title}`).join("\n")
+						: "No ready beads.";
+				} else if (op === "file") {
+					if (!resolved.task?.trim()) throw new BeadsUnavailableError("file requires a task title");
+					const id = await this.#requireStore(store).file({
+						title: resolved.task,
+						priority: resolved.priority ?? 2,
+						description: resolved.reason,
+						discoveredFrom: previousPhases
+							.flatMap(phase => phase.tasks)
+							.find(task => task.status === "in_progress")?.id,
+					});
+					extra = `Filed bead ${id}.`;
+				} else if (op === "adopt") {
+					if (!resolved.id) throw new BeadsUnavailableError("adopt requires a bead id");
+					const bead = await this.#requireStore(store).load(resolved.id);
+					if ("tasks" in bead) {
+						const existing = updated.find(phase => phase.id === bead.id);
+						const ids = new Set(updated.flatMap(phase => phase.tasks.map(task => task.id)));
+						const tasks = bead.tasks.filter(task => !ids.has(task.id));
+						if (existing) existing.tasks.push(...tasks);
+						else updated.push({ ...bead, tasks });
+					} else if (!updated.some(phase => phase.tasks.some(task => task.id === bead.id))) {
+						const { parentId, ...task } = bead;
+						let phase: TodoPhase | undefined;
+						if (parentId) {
+							phase = updated.find(phase => phase.id === parentId);
+							if (!phase) {
+								const parent = await this.#requireStore(store).load(parentId);
+								if (!("tasks" in parent)) throw new BeadsUnavailableError(`Parent ${parentId} is not an epic`);
+								phase = { id: parentId, name: parent.name, tasks: [] };
+								updated.push(phase);
+							}
+						} else {
+							const name = resolved.phase ?? "Adopted";
+							phase = findPhaseByName(updated, name);
+							if (!phase) {
+								phase = { name, tasks: [] };
+								updated.push(phase);
+							}
+						}
+						phase.tasks.push(task);
+					}
+				} else if ((op === "block" || op === "unblock") && resolved.on) {
+					const available = this.#requireStore(store);
+					const targets = getTaskTargets(updated, resolved, errors);
+					if (!resolved.task && !resolved.phase) errors.push(`${op} requires a task or phase target`);
+					if (targets.some(task => !task.id)) errors.push("Dependency targets need bead IDs; sync the list first");
+					if (!errors.length) {
+						const on = resolveTodoTarget(updated, resolved.on)?.task.id ?? resolved.on;
+						for (const task of targets) {
+							if (task.id) await available.dependency(task.id, on, op === "block" ? "add" : "remove");
+						}
+						await this.session.refreshTodoPhases?.();
+						updated = clonePhases(this.session.getTodoPhases?.() ?? updated);
+					}
+				} else if (!readOnly) {
+					updated = applyEntry(updated, resolved, errors);
+				}
+			} catch (error) {
+				if (!(error instanceof BeadsUnavailableError)) throw error;
+				errors.push(error.message);
+			}
 		}
-		const entry = resolved;
-		const op = entry.op;
-		// Pure-view calls are reads: no normalization, no state write.
-		const readOnly = op === "view";
-		const { phases: updated, errors } = readOnly
-			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry);
-		// A batch with any error is discarded wholesale: persisting a
-		// half-applied batch makes the natural retry hit "already exists" for
-		// the ops that did land. State and rendered summary stay at previous.
 		const failed = errors.length > 0;
+		if (!readOnly && !failed) {
+			// Older embedders have no tracker queue to apply the advance rule.
+			if (!this.session.flushTodoPhases) normalizeInProgressTask(updated);
+			this.session.setTodoPhases?.(updated, { advance: true });
+			await this.session.flushTodoPhases?.();
+			updated = clonePhases(this.session.getTodoPhases?.() ?? updated);
+		}
 		const effective = failed ? previousPhases : updated;
-		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
-		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const details: TodoToolDetails = { op, phases: effective, storage };
+		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, effective);
+		const beads = store?.info;
+		const details: TodoToolDetails = { op, phases: effective, storage, ...(beads ? { beads } : {}) };
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
-
+		const text = extra ?? formatSummary(effective, errors, readOnly);
 		return {
-			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
+			content: [
+				{
+					type: "text",
+					text: `${beads?.state === "pending" ? "Beads offline: changes stay in this session.\n" : ""}${text}`,
+				},
+			],
 			details,
-			isError: errors.length > 0 ? true : undefined,
+			isError: failed ? true : undefined,
 		};
+	}
+
+	#requireStore(store: TodoStore | undefined): TodoStore {
+		if (!store || store.info.state !== "synced") {
+			throw new BeadsUnavailableError(store?.info.reason ?? "Beads is unavailable; use the session todo operations");
+		}
+		return store;
 	}
 }

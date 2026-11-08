@@ -1,13 +1,19 @@
 import type { Agent, AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message, Model, TextContent, ToolChoice } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
+import { openTodoStore, type TodoBeadsInfo, type TodoStore } from "../beads";
 import type { Settings } from "../config/settings";
 import eagerTaskPrompt from "../prompts/system/eager-task.md" with { type: "text" };
 import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
 import postCompactionTodoPrompt from "../prompts/system/post-compaction-todo.md" with { type: "text" };
 import todoDoneNudgePrompt from "../prompts/system/todo-done-nudge.md" with { type: "text" };
-import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
+import {
+	getLatestTodoPhasesFromEntries,
+	isTodoPhase,
+	normalizeInProgressTask,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -83,6 +89,7 @@ export interface TodoTrackerHost {
 	settings: Settings;
 	model(): Model | undefined;
 	agentKind(): "main" | "sub";
+	cwd?(): string;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	scheduleAgentContinue(options: { source: string; generation?: number }): void;
 	promptGeneration(): number;
@@ -95,6 +102,13 @@ export interface TodoTrackerHost {
 	prewalkWillHandoff(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
 	judgeTodoDone(input: TodoDoneInput, signal: AbortSignal): Promise<boolean | undefined>;
+}
+
+interface TodoCommit {
+	previous: TodoPhase[];
+	assigned: TodoPhase[];
+	epoch: number;
+	revision: number;
 }
 
 /** Owns canonical todo state, eager preludes, and completion reminders. */
@@ -110,8 +124,43 @@ export class TodoTracker {
 	readonly #changedFiles = new Set<string>();
 	readonly #doneNudged = new Set<string>();
 
-	constructor(host: TodoTrackerHost) {
+	#store: TodoStore | undefined;
+	#storeCwd: string | undefined;
+	#storeSessionId: string;
+	#queue: Promise<void> = Promise.resolve();
+	#epoch = 0;
+	#revision = 0;
+	#base: TodoPhase[] | undefined;
+	#syncState: "pending" | "synced" | undefined;
+	readonly #commits = new Set<TodoCommit>();
+	#lastRefreshAt = -Infinity;
+	#lastRefreshRevision = -1;
+	readonly #listeners = new Set<(phases: readonly TodoPhase[]) => void>();
+	constructor(host: TodoTrackerHost, store?: TodoStore) {
 		this.#host = host;
+		this.#store = store;
+		this.#storeCwd = host.cwd?.() ?? host.sessionManager.getCwd();
+		this.#storeSessionId = host.sessionManager.getSessionId();
+	}
+
+	get store(): TodoStore {
+		const cwd = this.#host.cwd?.() ?? this.#host.sessionManager.getCwd();
+		const sessionId = this.#host.sessionManager.getSessionId();
+		if (!this.#store || this.#storeCwd !== cwd || this.#storeSessionId !== sessionId) {
+			this.#storeCwd = cwd;
+			this.#storeSessionId = sessionId;
+			this.#store = openTodoStore({
+				cwd,
+				settings: this.#host.settings,
+				agentKind: this.#host.agentKind(),
+				notice: (level, message) => {
+					void this.#host
+						.emitSessionEvent({ type: "notice", level, message, source: "beads" })
+						.catch(error => logger.warn("beads: notice failed", { error: String(error) }));
+				},
+			});
+		}
+		return this.#store;
 	}
 
 	/** Returns a defensive clone of the current todo phases. */
@@ -119,8 +168,16 @@ export class TodoTracker {
 		return this.#clonePhases(this.#phases);
 	}
 
-	/** Replaces todo phases with a defensive clone. */
+	/** Replaces local state without writing beads. Invalidates an earlier async refresh. */
 	setPhases(phases: TodoPhase[]): void {
+		this.#epoch++;
+		this.#base = undefined;
+		this.#syncState = undefined;
+		this.#replacePhases(phases);
+	}
+
+	#replacePhases(phases: TodoPhase[]): void {
+		this.#revision++;
 		this.#phases = this.#clonePhases(phases);
 		const current = this.#currentTask();
 		if (current?.key !== this.#currentTaskKey) {
@@ -132,11 +189,178 @@ export class TodoTracker {
 		// bridged call — so the nudge budget re-arms on the progress it
 		// rations. Views, failed batches, and unchanged reads never arrive.
 		this.#midRunNudgeCount = 0;
+		for (const listener of this.#listeners) {
+			try {
+				listener(this.phases);
+			} catch (error) {
+				logger.warn("todo: subscriber failed", { error: String(error) });
+			}
+		}
 	}
 
-	/** Rehydrates todo phases from the current transcript branch. */
-	syncFromBranch(): void {
-		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
+	/** Rehydrates a branch without replaying its mutations against beads. */
+	syncFromBranch(refresh = true, options?: { discardPending?: boolean }): void {
+		const branch = this.#host.sessionManager.getBranch();
+		const phases = getLatestTodoPhasesFromEntries(branch);
+		if (!Bun.deepEquals(phases, this.#phases)) this.setPhases(phases);
+		this.#base = undefined;
+		this.#syncState = undefined;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "custom" || entry.customType !== "todo_beads_sync" || !isRecord(entry.data)) continue;
+			if (entry.data.state === "pending" && Array.isArray(entry.data.base) && entry.data.base.every(isTodoPhase)) {
+				this.#base = this.#clonePhases(entry.data.base);
+				this.#syncState = "pending";
+			} else if (entry.data.state === "synced") {
+				this.#syncState = "synced";
+			}
+			break;
+		}
+		if (options?.discardPending && this.#syncState === "pending") {
+			this.#base = undefined;
+			this.#persistSync({ state: "synced" });
+		}
+		// History changes rebase a pending store before a later writer can use its old base.
+		if (options?.discardPending || (refresh && this.#syncState !== "pending" && this.store.info.state !== "pending"))
+			void this.refresh();
+	}
+
+	/** Commits writers through identity assignment; agent tools opt into auto-advance. */
+	commit(next: TodoPhase[], options?: { advance?: boolean }): void {
+		const store = this.store;
+		const previous = this.phases;
+		const assigned = store.assignIds(previous, next);
+		if (options?.advance) normalizeInProgressTask(assigned);
+		this.#replacePhases(assigned);
+		const commit: TodoCommit = { previous, assigned, epoch: this.#epoch, revision: this.#revision };
+		this.#commits.add(commit);
+		this.#queue = this.#queue
+			.then(async () => {
+				if (commit.epoch !== this.#epoch) return;
+				const identities = assigned
+					.flatMap(phase => [phase, ...phase.tasks])
+					.map(value => ({ value, id: value.id }));
+				let info = await store.write(this.#syncState === "pending" ? (this.#base ?? previous) : previous, assigned);
+				if (commit.epoch !== this.#epoch) return;
+				this.#applyRemintedIds(identities, commit.epoch);
+				let synced: TodoPhase[] | undefined;
+				if (info.state === "synced") {
+					const result = await store.refresh(assigned, undefined);
+					info = result.info;
+					synced = result.phases;
+				}
+				if (commit.epoch !== this.#epoch) return;
+				if (info.state === "pending") this.#base ??= previous;
+				else if (info.state === "synced") this.#base = this.#clonePhases(synced ?? assigned);
+				if (commit.revision === this.#revision) this.#replacePhases(synced ?? assigned);
+				this.#persistSync(info);
+				if (info.state !== "off") this.#persistPhases();
+			})
+			.catch(error => logger.error("todo: commit failed", { error: String(error) }))
+			.finally(() => {
+				this.#commits.delete(commit);
+			});
+	}
+
+	#applyRemintedIds(before: readonly { value: { id?: string }; id?: string }[], epoch: number): void {
+		const changes = new Map<string, string>();
+		for (const { value, id } of before) {
+			if (id && value.id && id !== value.id) changes.set(id, value.id);
+		}
+		if (changes.size === 0) return;
+		const remap = (phases: TodoPhase[]): void => {
+			for (const phase of phases) {
+				if (phase.id) phase.id = changes.get(phase.id) ?? phase.id;
+				for (const task of phase.tasks) {
+					if (task.id) task.id = changes.get(task.id) ?? task.id;
+				}
+			}
+		};
+		remap(this.#phases);
+		if (this.#base) remap(this.#base);
+		for (const queued of this.#commits) {
+			if (queued.epoch !== epoch) continue;
+			remap(queued.previous);
+			remap(queued.assigned);
+		}
+		const previousRevision = this.#revision;
+		this.#replacePhases(this.#phases);
+		for (const queued of this.#commits) {
+			if (queued.epoch === epoch && queued.revision === previousRevision) queued.revision = this.#revision;
+		}
+	}
+
+	async flush(): Promise<TodoBeadsInfo> {
+		let queue: Promise<void>;
+		do {
+			queue = this.#queue;
+			await queue;
+		} while (queue !== this.#queue);
+		return this.store.info;
+	}
+
+	/** Refreshes after queued writes; pending lists reconcile at explicit load/prompt boundaries. */
+	async refresh(options?: { maxAgeMs?: number }): Promise<void> {
+		const epoch = this.#epoch;
+		const store = this.store;
+		const revision = this.#revision;
+		const rebasePhases = this.#syncState !== "pending" && store.info.state === "pending" ? this.phases : undefined;
+		this.#queue = this.#queue
+			.then(async () => {
+				if (epoch !== this.#epoch) return;
+				if (revision !== this.#revision && !rebasePhases) return;
+				if (
+					options?.maxAgeMs !== undefined &&
+					store.info.state === "synced" &&
+					this.#syncState !== "pending" &&
+					this.#lastRefreshRevision === this.#revision &&
+					Date.now() - this.#lastRefreshAt < options.maxAgeMs
+				)
+					return;
+				const pending = this.#syncState === "pending" || store.info.state === "pending";
+				const phases = rebasePhases ?? this.#phases;
+				const base =
+					this.#syncState === "pending" ? this.#base : store.info.state === "pending" ? phases : undefined;
+				const result = await store.refresh(phases, base);
+				if (epoch !== this.#epoch || revision !== this.#revision) return;
+				this.#replacePhases(result.phases);
+				if (result.info.state === "synced") {
+					this.#base = this.phases;
+					this.#lastRefreshAt = Date.now();
+					this.#lastRefreshRevision = this.#revision;
+					if (pending) this.#persistPhases();
+				}
+				this.#persistSync(result.info);
+			})
+			.catch(error => logger.error("todo: refresh failed", { error: String(error) }));
+		await this.#queue;
+	}
+
+	subscribe(listener: (phases: readonly TodoPhase[]) => void): () => void {
+		this.#listeners.add(listener);
+		return () => {
+			this.#listeners.delete(listener);
+		};
+	}
+
+	#persistPhases(): void {
+		if (
+			JSON.stringify(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch())) ===
+			JSON.stringify(this.#phases)
+		)
+			return;
+		this.#host.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: this.phases });
+	}
+
+	#persistSync(info: TodoBeadsInfo): void {
+		if (info.state === "off" || info.state === this.#syncState) return;
+		this.#syncState = info.state;
+		this.#host.sessionManager.appendCustomEntry(
+			"todo_beads_sync",
+			info.state === "pending"
+				? { state: "pending", base: this.#clonePhases(this.#base ?? this.#phases) }
+				: { state: "synced" },
+		);
 	}
 
 	/** Returns a defensive clone suitable for snapshots and branch state. */
@@ -329,7 +553,7 @@ export class TodoTracker {
 						(task): task is TodoItem & { status: "pending" | "in_progress" } =>
 							task.status === "pending" || task.status === "in_progress",
 					)
-					.map(task => ({ content: task.content, status: task.status })),
+					.map(task => ({ content: task.content, status: task.status, ...(task.id ? { id: task.id } : {}) })),
 			}))
 			.filter(phase => phase.tasks.length > 0);
 		const incomplete = incompleteByPhase.flatMap(phase => phase.tasks);

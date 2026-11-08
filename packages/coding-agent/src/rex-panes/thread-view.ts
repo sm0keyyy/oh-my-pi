@@ -3,11 +3,17 @@ import type { Terminal } from "@oh-my-pi/pi-tui/terminal";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { IrcBus } from "../irc/bus";
 import type { AgentSession } from "../session/agent-session";
-import { buildAgentThread, readAgentThread, type ThreadItem } from "../threads";
+import {
+	AgentThreadProjection,
+	MAX_THREAD_BYTES,
+	MAX_THREAD_ITEMS,
+	readAgentThreadPage,
+	threadItemBytes,
+	type ThreadCursor,
+	type ThreadItem,
+} from "../threads";
 
-const MAX_THREAD_BYTES = 1024 * 1024;
-const MAX_THREAD_ITEMS = 1000;
-
+/** /older replaces the current file-backed page; /latest returns to the live tail. */
 export class ThreadView {
 	readonly tui: TUI;
 	readonly #input = new Input();
@@ -23,6 +29,22 @@ export class ThreadView {
 	#notice = "";
 	#liveIrc: (ThreadItem & { wakeRelay?: boolean })[] = [];
 	#visible = false;
+	#before?: ThreadCursor;
+	#older?: ThreadCursor;
+	#peakRetainedBytes = 0;
+
+	get peakRetainedBytes(): number {
+		return this.#peakRetainedBytes;
+	}
+
+	async loadOlder(): Promise<void> {
+		await this.#loading;
+		if (this.#disposed || !this.#older) return;
+		this.#before = this.#older;
+		this.#older = undefined;
+		this.#items = [];
+		await this.refresh();
+	}
 
 	constructor(
 		readonly agentId: string,
@@ -34,6 +56,15 @@ export class ThreadView {
 		this.tui = new TUI(terminal, false, { embedded: true });
 		this.#input.onSubmit = text => {
 			this.#input.setValue("");
+			if (text.trim() === "/older") {
+				void this.loadOlder();
+				return;
+			}
+			if (text.trim() === "/latest") {
+				this.#before = this.#older = undefined;
+				void this.refresh();
+				return;
+			}
 			onSubmit(text);
 		};
 		this.tui.addChild({
@@ -108,11 +139,24 @@ export class ThreadView {
 				await this.#session?.settleInFlightMessagePersistence();
 				if (this.#disposed) return;
 				const file = this.#session?.sessionManager.getSessionFile() ?? this.sessionFile;
-				const items = file
-					? (await readAgentThread(this.agentId, file, this.rootSessionFile)).items
-					: this.#session
-						? buildAgentThread(this.agentId, this.#session.sessionManager.getEntries())
-						: [];
+				const before = this.#before;
+				let items: ThreadItem[] = [];
+				if (file) {
+					const page = await readAgentThreadPage(this.agentId, file, this.rootSessionFile, {
+						before,
+						shouldContinue: () => !this.#disposed && this.#before === before,
+					});
+					if (this.#before !== before) continue;
+					items = page.items;
+					this.#older = page.older;
+					this.#peakRetainedBytes = Math.max(this.#peakRetainedBytes, page.peakRetainedBytes);
+				} else if (this.#session) {
+					const projection = new AgentThreadProjection(this.agentId, item => {
+						items.push(item);
+						items = boundedItems(items);
+					});
+					for (const entry of this.#session.sessionManager.getEntries()) projection.child(entry);
+				}
 				if (this.#disposed) return;
 				this.#liveIrc = this.#liveIrc.filter(
 					live =>
@@ -130,7 +174,7 @@ export class ThreadView {
 										item.text === live.text)),
 						),
 				);
-				this.#items = boundedItems([...items, ...this.#liveIrc].sort((a, b) => a.ts - b.ts));
+				this.#items = boundedItems((before ? items : [...items, ...this.#liveIrc]).sort((a, b) => a.ts - b.ts));
 				this.repaint();
 			}
 		} catch (error) {
@@ -168,6 +212,8 @@ export class ThreadView {
 					return wrapTextWithAnsi(replaceTabs(sanitizeText(`${label}: ${text}`)), width);
 				});
 		if (lines.length === 0) lines.push("No thread messages yet");
+		if (this.#older) lines.push("Older history: /older");
+		if (this.#before) lines.push("Viewing older history · /latest");
 		lines.push(
 			truncateToWidth(
 				this.#finished ? "finished — type to revive · /live /thread" : "Thread · /live /thread",
@@ -199,8 +245,7 @@ function boundedItems(items: readonly ThreadItem[]): ThreadItem[] {
 	let start = items.length;
 	while (start > 0 && items.length - start < MAX_THREAD_ITEMS) {
 		const item = items[start - 1]!;
-		const text = item.kind === "ask" ? item.questions.join("\n") : item.text;
-		bytes += Buffer.byteLength(text);
+		bytes += threadItemBytes(item);
 		if (bytes > MAX_THREAD_BYTES) break;
 		start--;
 	}

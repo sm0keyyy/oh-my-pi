@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
 import * as path from "node:path";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings, resetSettingsForTest } from "../../src/config/settings";
 import { IrcBus } from "../../src/irc/bus";
 import { AgentRegistry } from "../../src/registry/agent-registry";
@@ -173,3 +174,66 @@ test.each(["broadcast", "wake-relay"] as const)(
 		}
 	},
 );
+
+test("opening a Thread over 100 MiB child and parent files retains at most 1 MiB and pages older history", async () => {
+	using dir = TempDir.createSync("@omp-thread-view-");
+	const child = `${dir.path()}/child.jsonl`;
+	const parent = `${dir.path()}/parent.jsonl`;
+	const payload = "x".repeat(64 * 1024);
+	for (const file of [child, parent]) {
+		const writer = Bun.file(file).writer();
+		try {
+			writer.write(`${JSON.stringify({ type: "session", id: "thread", timestamp: "2026-01-01T00:00:00Z" })}\n`);
+			for (let index = 0; index < 1600; index++) {
+				writer.write(
+					`${JSON.stringify({
+						type: "message",
+						id: `message-${index}`,
+						timestamp: new Date(1767225600000 + index).toISOString(),
+						message:
+							file === child && index % 50 === 0
+								? { role: "user", content: `${payload}:message-${index / 50}` }
+								: {
+										role: "toolResult",
+										toolName: "bash",
+										toolCallId: `bash-${index}`,
+										content: [{ type: "text", text: payload }],
+									},
+					})}\n`,
+				);
+				await writer.flush();
+			}
+		} finally {
+			await writer.end();
+		}
+		expect(Bun.file(file).size).toBeGreaterThan(100 * 1024 * 1024);
+	}
+	const terminal = new VirtualTerminal(100, 24);
+	const submitted: string[] = [];
+	const thread = new ThreadView("Alpha", terminal, child, parent, text => submitted.push(text));
+	try {
+		thread.setVisible(true);
+		await thread.setSession(null);
+		await terminal.waitForRender(() => terminal.getViewport().join("\n").includes(":message-31"));
+		expect(thread.peakRetainedBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(thread.peakRetainedBytes).toBeGreaterThan(800 * 1024);
+		terminal.sendInput("/older");
+		terminal.sendInput("\r");
+		await terminal.waitForRender(() => {
+			const screen = terminal.getViewport().join("\n");
+			return screen.includes("Viewing older history") && /:message-\d+/.test(screen);
+		});
+		const older = terminal.getViewport().join("\n");
+		expect(older).not.toContain(":message-31");
+		expect(older).toMatch(/:message-\d+/);
+		await thread.loadOlder();
+		await terminal.waitForRender(() => terminal.getViewport().join("\n").includes(":message-3"));
+		expect(thread.peakRetainedBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(submitted).toEqual([]);
+		terminal.sendInput("/latest");
+		terminal.sendInput("\r");
+		await terminal.waitForRender(() => terminal.getViewport().join("\n").includes(":message-31"));
+	} finally {
+		thread.dispose();
+	}
+}, 120_000);

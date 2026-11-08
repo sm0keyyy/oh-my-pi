@@ -549,6 +549,65 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class ReopenOutcome:
+    ok: bool
+    reason: Literal["already-open", "agent-gone", "panel-off", "unknown-block"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class RunbookOutcome:
+    ok: bool
+    job_id: str | None = None
+    reason: Literal["unknown-runbook", "unknown-step", "running", "owner-gone"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ThreadItem:
+    """Thread item. The server enforces kind-specific fields; SDK generators do not dispatch on kind."""
+    kind: Literal["brief", "operator", "reply", "result", "irc-in", "irc-out", "ask", "answer"]
+    ts: float
+    text: str | None = None
+    entry_id: str | None = None
+    from_: str | None = None
+    to: str | None = None
+    message_id: str | None = None
+    questions: tuple[str, ...] | None = None
+    tool_call_id: str | None = None
+    timed_out: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class AgentThread:
+    agent_id: str
+    session_file: str
+    items: tuple[ThreadItem, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class UsageWindow:
+    kind: str
+    label: str
+    used_percent: float
+    reset_at: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class UsageProvider:
+    id: str
+    label: str
+    windows: tuple[UsageWindow, ...]
+    plan: str | None = None
+    today_tokens: float | None = None
+    unavailable: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class UsageSnapshot:
+    updated_at: str
+    providers: tuple[UsageProvider, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
@@ -1760,6 +1819,26 @@ class TogglePaneResult:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class PaneCrashedResult:
+    known: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class ViewMarkdownResult:
+    opened: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class GetSubagentThreadResult:
+    thread: AgentThread
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class GetUsageResult:
+    snapshot: UsageSnapshot | None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class LiveConnectResult:
     voice: str
     sdp_answer: str
@@ -1804,6 +1883,9 @@ RpcNotification: TypeAlias = ReadyEvent | PromptResultEvent | SessionSettledEven
 
 MessageContent: TypeAlias = str | list[UserContent]
 """Message content: plain text or content blocks."""
+
+
+RunbookAll: TypeAlias = Literal["all"]
 
 
 parse_text_content = cast("Decoder[TextContent]", open_record("type", frozenset({"text"})))
@@ -2008,6 +2090,78 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
         priority=optional(payload, "priority", decode_int, path),
         thinking=optional(payload, "thinking", parse_thinking_config, path),
         compat=optional(payload, "compat", decode_json_object, path),
+    )
+
+
+def parse_reopen_outcome(value: object, path: str = "ReopenOutcome") -> ReopenOutcome:
+    payload = expect_object(value, path)
+    return ReopenOutcome(
+        ok=required(payload, "ok", decode_bool, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["already-open", "agent-gone", "panel-off", "unknown-block"]]', literal(frozenset({"already-open", "agent-gone", "panel-off", "unknown-block"}))), path),
+    )
+
+
+def parse_runbook_outcome(value: object, path: str = "RunbookOutcome") -> RunbookOutcome:
+    payload = expect_object(value, path)
+    return RunbookOutcome(
+        ok=required(payload, "ok", decode_bool, path),
+        job_id=optional(payload, "jobId", decode_str, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["unknown-runbook", "unknown-step", "running", "owner-gone"]]', literal(frozenset({"unknown-runbook", "unknown-step", "running", "owner-gone"}))), path),
+    )
+
+
+def parse_thread_item(value: object, path: str = "ThreadItem") -> ThreadItem:
+    payload = expect_object(value, path)
+    return ThreadItem(
+        kind=required(payload, "kind", cast('Decoder[Literal["brief", "operator", "reply", "result", "irc-in", "irc-out", "ask", "answer"]]', literal(frozenset({"brief", "operator", "reply", "result", "irc-in", "irc-out", "ask", "answer"}))), path),
+        ts=required(payload, "ts", decode_float, path),
+        text=optional(payload, "text", decode_str, path),
+        entry_id=optional(payload, "entryId", decode_str, path),
+        from_=optional(payload, "from", decode_str, path),
+        to=optional(payload, "to", decode_str, path),
+        message_id=optional(payload, "messageId", decode_str, path),
+        questions=optional(payload, "questions", array(decode_str), path),
+        tool_call_id=optional(payload, "toolCallId", decode_str, path),
+        timed_out=optional(payload, "timedOut", decode_bool, path),
+    )
+
+
+def parse_agent_thread(value: object, path: str = "AgentThread") -> AgentThread:
+    payload = expect_object(value, path)
+    return AgentThread(
+        agent_id=required(payload, "agentId", decode_str, path),
+        session_file=required(payload, "sessionFile", decode_str, path),
+        items=required(payload, "items", array(parse_thread_item), path),
+    )
+
+
+def parse_usage_window(value: object, path: str = "UsageWindow") -> UsageWindow:
+    payload = expect_object(value, path)
+    return UsageWindow(
+        kind=required(payload, "kind", decode_str, path),
+        label=required(payload, "label", decode_str, path),
+        used_percent=required(payload, "usedPercent", decode_float, path),
+        reset_at=optional(payload, "resetAt", decode_str, path),
+    )
+
+
+def parse_usage_provider(value: object, path: str = "UsageProvider") -> UsageProvider:
+    payload = expect_object(value, path)
+    return UsageProvider(
+        id=required(payload, "id", decode_str, path),
+        label=required(payload, "label", decode_str, path),
+        windows=required(payload, "windows", array(parse_usage_window), path),
+        plan=optional(payload, "plan", decode_str, path),
+        today_tokens=optional(payload, "todayTokens", decode_float, path),
+        unavailable=optional(payload, "unavailable", decode_bool, path),
+    )
+
+
+def parse_usage_snapshot(value: object, path: str = "UsageSnapshot") -> UsageSnapshot:
+    payload = expect_object(value, path)
+    return UsageSnapshot(
+        updated_at=required(payload, "updatedAt", decode_str, path),
+        providers=required(payload, "providers", array(parse_usage_provider), path),
     )
 
 
@@ -3375,6 +3529,34 @@ def parse_toggle_pane_result(value: object, path: str = "TogglePaneResult") -> T
     )
 
 
+def parse_pane_crashed_result(value: object, path: str = "PaneCrashedResult") -> PaneCrashedResult:
+    payload = expect_object(value, path)
+    return PaneCrashedResult(
+        known=required(payload, "known", decode_bool, path),
+    )
+
+
+def parse_view_markdown_result(value: object, path: str = "ViewMarkdownResult") -> ViewMarkdownResult:
+    payload = expect_object(value, path)
+    return ViewMarkdownResult(
+        opened=required(payload, "opened", decode_bool, path),
+    )
+
+
+def parse_get_subagent_thread_result(value: object, path: str = "GetSubagentThreadResult") -> GetSubagentThreadResult:
+    payload = expect_object(value, path)
+    return GetSubagentThreadResult(
+        thread=required(payload, "thread", parse_agent_thread, path),
+    )
+
+
+def parse_get_usage_result(value: object, path: str = "GetUsageResult") -> GetUsageResult:
+    payload = expect_object(value, path)
+    return GetUsageResult(
+        snapshot=required(payload, "snapshot", nullable(parse_usage_snapshot), path),
+    )
+
+
 def parse_live_connect_result(value: object, path: str = "LiveConnectResult") -> LiveConnectResult:
     payload = expect_object(value, path)
     return LiveConnectResult(
@@ -3624,8 +3806,8 @@ class WireClient:
         params["enabled"] = enabled
         return required(expect_object(self._command("set_review_dialog", params), "set_review_dialog"), "enabled", decode_bool, "set_review_dialog")
 
-    def toggle_pane(self, pane: Literal["todo", "agents"], *, shape: Literal["dock", "float"] | None = None) -> TogglePaneResult:
-        """Toggle a todo or agents pane in an interactive Rex TUI."""
+    def toggle_pane(self, pane: Literal["todo", "agents", "usage", "dashboard", "feed"], *, shape: Literal["dock", "float"] | None = None) -> TogglePaneResult:
+        """Toggle a todo, agents, usage, dashboard or feed pane in an interactive Rex TUI."""
         params: dict[str, object] = {}
         params["pane"] = pane
         if shape is not None:
@@ -3711,6 +3893,42 @@ class WireClient:
         params["subagentId"] = subagent_id
         params["message"] = message
         return parse_follow_up_subagent_outcome(self._command("follow_up_subagent", params), "follow_up_subagent")
+
+    def pane_crashed(self, block_id: str) -> PaneCrashedResult:
+        """Hold event reopening for a known crashed Rex pane."""
+        params: dict[str, object] = {}
+        params["blockId"] = block_id
+        return parse_pane_crashed_result(self._command("pane_crashed", params), "pane_crashed")
+
+    def reopen_pane(self, block_id: str) -> ReopenOutcome:
+        """Reopen a crashed subagent pane or enabled panel."""
+        params: dict[str, object] = {}
+        params["blockId"] = block_id
+        return parse_reopen_outcome(self._command("reopen_pane", params), "reopen_pane")
+
+    def view_markdown(self, path: str) -> ViewMarkdownResult:
+        """Open an operator-selected markdown file for comments on the main session."""
+        params: dict[str, object] = {}
+        params["path"] = path
+        return parse_view_markdown_result(self._command("view_markdown", params), "view_markdown")
+
+    def get_subagent_thread(self, subagent_id: str) -> GetSubagentThreadResult:
+        """Read an owned subagent's thread from its transcript."""
+        params: dict[str, object] = {}
+        params["subagentId"] = subagent_id
+        return parse_get_subagent_thread_result(self._command("get_subagent_thread", params), "get_subagent_thread")
+
+    def run_runbook_step(self, runbook_id: str, step: int | RunbookAll) -> RunbookOutcome:
+        """Run a registered runbook step or all steps after an explicit operator request."""
+        params: dict[str, object] = {}
+        params["runbookId"] = runbook_id
+        params["step"] = step
+        return parse_runbook_outcome(self._command("run_runbook_step", params), "run_runbook_step")
+
+    def get_usage(self) -> GetUsageResult:
+        """Read the redacted CodexBar usage snapshot, or null before a snapshot is available."""
+        params: dict[str, object] = {}
+        return parse_get_usage_result(self._command("get_usage", params), "get_usage")
 
     def live_start(self, *, voice: str | None = None, instructions: str | None = None) -> str:
         """Start a live voice session bound to this session; returns the voice in use."""
@@ -4241,6 +4459,7 @@ __all__ = [
     "AgentMessage",
     "AgentSource",
     "AgentStartEvent",
+    "AgentThread",
     "AnthropicServerToolContent",
     "AskAnswer",
     "AskOption",
@@ -4312,6 +4531,8 @@ __all__ = [
     "FileMentionMessage",
     "FollowUpSubagentOutcome",
     "GetSessionLeaseResult",
+    "GetSubagentThreadResult",
+    "GetUsageResult",
     "Goal",
     "GoalModeState",
     "GoalOp",
@@ -4355,6 +4576,7 @@ __all__ = [
     "NotifyUiRequest",
     "OpenSessionResult",
     "OpenUrlUiRequest",
+    "PaneCrashedResult",
     "PromoteQueuedMessageResult",
     "PromptAck",
     "PromptError",
@@ -4368,6 +4590,7 @@ __all__ = [
     "ReadyEvent",
     "RedactedThinkingContent",
     "RemoveQueuedMessageResult",
+    "ReopenOutcome",
     "RestoredQueuedMessage",
     "RetryFallbackAppliedEvent",
     "RetryFallbackSucceededEvent",
@@ -4379,6 +4602,8 @@ __all__ = [
     "RpcSessionHost",
     "RpcSessionModel",
     "RpcSessionSnapshot",
+    "RunbookAll",
+    "RunbookOutcome",
     "SelectOptionDetail",
     "SelectUiRequest",
     "SessionChangedEvent",
@@ -4419,6 +4644,7 @@ __all__ = [
     "ThinkingLevel",
     "ThinkingLevelChangedEvent",
     "ThinkingLevelCycleResult",
+    "ThreadItem",
     "TodoAutoClearEvent",
     "TodoItem",
     "TodoPhase",
@@ -4442,8 +4668,12 @@ __all__ = [
     "UsageLimitLowPriority",
     "UsageLimitState",
     "UsageLimitWrapUp",
+    "UsageProvider",
+    "UsageSnapshot",
+    "UsageWindow",
     "UserContent",
     "UserMessage",
+    "ViewMarkdownResult",
     "WidgetPlacement",
     "parse_abort_and_restore_queue_result",
     "parse_abort_subagent_outcome",
@@ -4452,6 +4682,7 @@ __all__ = [
     "parse_agent_end_event",
     "parse_agent_message",
     "parse_agent_start_event",
+    "parse_agent_thread",
     "parse_anthropic_server_tool_content",
     "parse_ask_answer",
     "parse_ask_option",
@@ -4513,6 +4744,8 @@ __all__ = [
     "parse_file_mention_message",
     "parse_follow_up_subagent_outcome",
     "parse_get_session_lease_result",
+    "parse_get_subagent_thread_result",
+    "parse_get_usage_result",
     "parse_goal",
     "parse_goal_mode_state",
     "parse_goal_result",
@@ -4549,6 +4782,7 @@ __all__ = [
     "parse_notify_ui_request",
     "parse_open_session_result",
     "parse_open_url_ui_request",
+    "parse_pane_crashed_result",
     "parse_promote_queued_message_result",
     "parse_prompt_ack",
     "parse_prompt_error",
@@ -4559,6 +4793,7 @@ __all__ = [
     "parse_ready_event",
     "parse_redacted_thinking_content",
     "parse_remove_queued_message_result",
+    "parse_reopen_outcome",
     "parse_restored_queued_message",
     "parse_retry_fallback_applied_event",
     "parse_retry_fallback_succeeded_event",
@@ -4569,6 +4804,7 @@ __all__ = [
     "parse_rpc_session_host",
     "parse_rpc_session_model",
     "parse_rpc_session_snapshot",
+    "parse_runbook_outcome",
     "parse_select_option_detail",
     "parse_select_ui_request",
     "parse_session_changed_event",
@@ -4601,6 +4837,7 @@ __all__ = [
     "parse_thinking_content",
     "parse_thinking_level_changed_event",
     "parse_thinking_level_cycle_result",
+    "parse_thread_item",
     "parse_todo_auto_clear_event",
     "parse_todo_item",
     "parse_todo_phase",
@@ -4622,6 +4859,10 @@ __all__ = [
     "parse_usage_limit_low_priority",
     "parse_usage_limit_state",
     "parse_usage_limit_wrap_up",
+    "parse_usage_provider",
+    "parse_usage_snapshot",
+    "parse_usage_window",
     "parse_user_content",
     "parse_user_message",
+    "parse_view_markdown_result",
 ]

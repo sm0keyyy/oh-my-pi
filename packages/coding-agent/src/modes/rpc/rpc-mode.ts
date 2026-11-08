@@ -47,6 +47,11 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry } from "../../registry/agent-registry";
 import { followUpSubagent } from "../../rex-panes/pane-input";
 import { abortSubagent, stopSubagent } from "../../task/run-controls";
+import { markPaneCrashed, reopenCrashedPane } from "../../rex-panes/supervise";
+import { openMarkdownView } from "../../rex-review/markdown-view";
+import { runRunbook } from "../../runbook";
+import { readAgentThread } from "../../threads";
+import { usageSnapshot } from "../../usage";
 import {
 	type WordCompletionEngine,
 	type WordCompletionMethod,
@@ -2095,10 +2100,14 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 			return error(id, command.type, "The TUI no longer accepts RPC commands", "tui_owned");
 		if (
 			command.type === "toggle_pane" &&
-			((command.pane !== "todo" && command.pane !== "agents") ||
+			(!["todo", "agents", "usage", "dashboard", "feed"].includes(command.pane) ||
 				(command.shape !== undefined && command.shape !== "dock" && command.shape !== "float"))
 		) {
-			return error(id, command.type, "toggle_pane requires todo or agents, with dock or float shape");
+			return error(
+				id,
+				command.type,
+				"toggle_pane requires todo, agents, usage, dashboard or feed, with dock or float shape",
+			);
 		}
 		if (host.handleCommand && Object.hasOwn(SESSION_CHANGE_TYPES, command.type))
 			await stopDictationForSessionChange();
@@ -2428,6 +2437,65 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 
 			case "toggle_pane":
 				return error(id, "toggle_pane", "toggle_pane needs the interactive TUI in Rex");
+
+			case "pane_crashed":
+			case "reopen_pane":
+				if (typeof command.blockId !== "string" || !/^[a-zA-Z0-9:_-]{1,256}$/.test(command.blockId))
+					return error(id, command.type, "Invalid blockId");
+				return success(
+					id,
+					command.type,
+					command.type === "pane_crashed"
+						? { known: markPaneCrashed(command.blockId) }
+						: await reopenCrashedPane(command.blockId),
+				);
+
+			case "view_markdown":
+				if (
+					typeof command.path !== "string" ||
+					!command.path.trim() ||
+					command.path.length > 4096 ||
+					/[\p{Cc}]/u.test(command.path) ||
+					(!path.isAbsolute(command.path) && !command.path.startsWith("local://")) ||
+					(command.path.includes("://") && !command.path.startsWith("local://"))
+				)
+					return error(id, command.type, "Expected an absolute markdown path or local:// URI");
+				return success(id, command.type, { opened: await openMarkdownView(command.path, { kind: "main" }) });
+
+			case "run_runbook_step":
+				if (typeof command.runbookId !== "string" || !/^[a-zA-Z0-9-]{1,128}$/.test(command.runbookId))
+					return error(id, command.type, "Invalid runbookId");
+				if (
+					command.step !== "all" &&
+					(!Number.isSafeInteger(command.step) || command.step < 1 || command.step > 20)
+				)
+					return error(id, command.type, "Expected step 1 to 20 or all");
+				return success(id, command.type, await runRunbook(command.runbookId, command.step, "rpc"));
+
+			case "get_usage":
+				return success(id, command.type, { snapshot: usageSnapshot() ?? null });
+
+			case "get_subagent_thread": {
+				if (
+					!subagentRegistry ||
+					typeof command.subagentId !== "string" ||
+					!command.subagentId.trim() ||
+					command.subagentId.length > 256 ||
+					/[/\\\p{Cc}]/u.test(command.subagentId)
+				)
+					return error(id, command.type, "Unknown subagent");
+				let sessionFile: string;
+				try {
+					sessionFile =
+						ownedSubagentFile(subagentRegistry, command.subagentId, session.sessionFile) ??
+						subagentRegistry.resolveSessionFile({ subagentId: command.subagentId });
+				} catch {
+					return error(id, command.type, "Unknown subagent");
+				}
+				return success(id, command.type, {
+					thread: await readAgentThread(command.subagentId, sessionFile, session.sessionFile),
+				});
+			}
 
 			case "get_available_commands": {
 				return success(id, "get_available_commands", { commands: await getAvailableCommands() });

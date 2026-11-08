@@ -2132,6 +2132,275 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("SubagentStatus", s)
 }
 
+type ReopenOutcome struct {
+	Ok     bool                 `json:"ok"`
+	Reason *ReopenOutcomeReason `json:"reason,omitempty"`
+}
+
+func (v *ReopenOutcome) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ReopenOutcome", v.decodeFrom)
+}
+
+func (v *ReopenOutcome) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ReopenOutcome
+	d := fieldDecoder{raw: raw, owner: "ReopenOutcome"}
+	d.required("ok", &out.Ok)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ReopenOutcomeReason string
+
+const (
+	ReopenOutcomeReasonAlreadyOpen  ReopenOutcomeReason = "already-open"
+	ReopenOutcomeReasonAgentGone    ReopenOutcomeReason = "agent-gone"
+	ReopenOutcomeReasonPanelOff     ReopenOutcomeReason = "panel-off"
+	ReopenOutcomeReasonUnknownBlock ReopenOutcomeReason = "unknown-block"
+)
+
+func (v *ReopenOutcomeReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "ReopenOutcomeReason")
+	if err != nil {
+		return err
+	}
+	switch value := ReopenOutcomeReason(s); value {
+	case ReopenOutcomeReasonAlreadyOpen, ReopenOutcomeReasonAgentGone, ReopenOutcomeReasonPanelOff, ReopenOutcomeReasonUnknownBlock:
+		*v = value
+		return nil
+	}
+	return unknownValue("ReopenOutcomeReason", s)
+}
+
+type RunbookOutcome struct {
+	Ok     bool                  `json:"ok"`
+	JobID  *string               `json:"jobId,omitempty"`
+	Reason *RunbookOutcomeReason `json:"reason,omitempty"`
+}
+
+func (v *RunbookOutcome) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "RunbookOutcome", v.decodeFrom)
+}
+
+func (v *RunbookOutcome) decodeFrom(raw map[string]json.RawMessage) error {
+	var out RunbookOutcome
+	d := fieldDecoder{raw: raw, owner: "RunbookOutcome"}
+	d.required("ok", &out.Ok)
+	d.optional("jobId", &out.JobID)
+	d.optional("reason", &out.Reason)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type RunbookOutcomeReason string
+
+const (
+	RunbookOutcomeReasonUnknownRunbook RunbookOutcomeReason = "unknown-runbook"
+	RunbookOutcomeReasonUnknownStep    RunbookOutcomeReason = "unknown-step"
+	RunbookOutcomeReasonRunning        RunbookOutcomeReason = "running"
+	RunbookOutcomeReasonOwnerGone      RunbookOutcomeReason = "owner-gone"
+)
+
+func (v *RunbookOutcomeReason) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "RunbookOutcomeReason")
+	if err != nil {
+		return err
+	}
+	switch value := RunbookOutcomeReason(s); value {
+	case RunbookOutcomeReasonUnknownRunbook, RunbookOutcomeReasonUnknownStep, RunbookOutcomeReasonRunning, RunbookOutcomeReasonOwnerGone:
+		*v = value
+		return nil
+	}
+	return unknownValue("RunbookOutcomeReason", s)
+}
+
+type RunbookAll string
+
+const (
+	RunbookAllAll RunbookAll = "all"
+)
+
+func (v *RunbookAll) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "RunbookAll")
+	if err != nil {
+		return err
+	}
+	switch value := RunbookAll(s); value {
+	case RunbookAllAll:
+		*v = value
+		return nil
+	}
+	return unknownValue("RunbookAll", s)
+}
+
+// Thread item. The server enforces kind-specific fields; SDK generators do not dispatch on kind.
+type ThreadItem struct {
+	Kind       ThreadItemKind `json:"kind"`
+	Ts         float64        `json:"ts"`
+	Text       *string        `json:"text,omitempty"`
+	EntryID    *string        `json:"entryId,omitempty"`
+	From       *string        `json:"from,omitempty"`
+	To         *string        `json:"to,omitempty"`
+	MessageID  *string        `json:"messageId,omitempty"`
+	Questions  []string       `json:"questions,omitempty"`
+	ToolCallID *string        `json:"toolCallId,omitempty"`
+	TimedOut   *bool          `json:"timedOut,omitempty"`
+}
+
+func (v *ThreadItem) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ThreadItem", v.decodeFrom)
+}
+
+func (v *ThreadItem) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ThreadItem
+	d := fieldDecoder{raw: raw, owner: "ThreadItem"}
+	d.required("kind", &out.Kind)
+	d.required("ts", &out.Ts)
+	d.optional("text", &out.Text)
+	d.optional("entryId", &out.EntryID)
+	d.optional("from", &out.From)
+	d.optional("to", &out.To)
+	d.optional("messageId", &out.MessageID)
+	d.optional("questions", &out.Questions)
+	d.optional("toolCallId", &out.ToolCallID)
+	d.optional("timedOut", &out.TimedOut)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ThreadItemKind string
+
+const (
+	ThreadItemKindBrief    ThreadItemKind = "brief"
+	ThreadItemKindOperator ThreadItemKind = "operator"
+	ThreadItemKindReply    ThreadItemKind = "reply"
+	ThreadItemKindResult   ThreadItemKind = "result"
+	ThreadItemKindIrcIn    ThreadItemKind = "irc-in"
+	ThreadItemKindIrcOut   ThreadItemKind = "irc-out"
+	ThreadItemKindAsk      ThreadItemKind = "ask"
+	ThreadItemKindAnswer   ThreadItemKind = "answer"
+)
+
+func (v *ThreadItemKind) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "ThreadItemKind")
+	if err != nil {
+		return err
+	}
+	switch value := ThreadItemKind(s); value {
+	case ThreadItemKindBrief, ThreadItemKindOperator, ThreadItemKindReply, ThreadItemKindResult, ThreadItemKindIrcIn, ThreadItemKindIrcOut, ThreadItemKindAsk, ThreadItemKindAnswer:
+		*v = value
+		return nil
+	}
+	return unknownValue("ThreadItemKind", s)
+}
+
+type AgentThread struct {
+	AgentID     string       `json:"agentId"`
+	SessionFile string       `json:"sessionFile"`
+	Items       []ThreadItem `json:"items"`
+}
+
+func (v *AgentThread) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AgentThread", v.decodeFrom)
+}
+
+func (v *AgentThread) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AgentThread
+	d := fieldDecoder{raw: raw, owner: "AgentThread"}
+	d.required("agentId", &out.AgentID)
+	d.required("sessionFile", &out.SessionFile)
+	d.required("items", &out.Items)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UsageWindow struct {
+	Kind        string  `json:"kind"`
+	Label       string  `json:"label"`
+	UsedPercent float64 `json:"usedPercent"`
+	ResetAt     *string `json:"resetAt,omitempty"`
+}
+
+func (v *UsageWindow) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UsageWindow", v.decodeFrom)
+}
+
+func (v *UsageWindow) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UsageWindow
+	d := fieldDecoder{raw: raw, owner: "UsageWindow"}
+	d.required("kind", &out.Kind)
+	d.required("label", &out.Label)
+	d.required("usedPercent", &out.UsedPercent)
+	d.optional("resetAt", &out.ResetAt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UsageProvider struct {
+	ID          string        `json:"id"`
+	Label       string        `json:"label"`
+	Windows     []UsageWindow `json:"windows"`
+	Plan        *string       `json:"plan,omitempty"`
+	TodayTokens *float64      `json:"todayTokens,omitempty"`
+	Unavailable *bool         `json:"unavailable,omitempty"`
+}
+
+func (v *UsageProvider) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UsageProvider", v.decodeFrom)
+}
+
+func (v *UsageProvider) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UsageProvider
+	d := fieldDecoder{raw: raw, owner: "UsageProvider"}
+	d.required("id", &out.ID)
+	d.required("label", &out.Label)
+	d.required("windows", &out.Windows)
+	d.optional("plan", &out.Plan)
+	d.optional("todayTokens", &out.TodayTokens)
+	d.optional("unavailable", &out.Unavailable)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type UsageSnapshot struct {
+	UpdatedAt string          `json:"updatedAt"`
+	Providers []UsageProvider `json:"providers"`
+}
+
+func (v *UsageSnapshot) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "UsageSnapshot", v.decodeFrom)
+}
+
+func (v *UsageSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
+	var out UsageSnapshot
+	d := fieldDecoder{raw: raw, owner: "UsageSnapshot"}
+	d.required("updatedAt", &out.UpdatedAt)
+	d.required("providers", &out.Providers)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoItem struct {
 	Content string     `json:"content"`
 	Status  TodoStatus `json:"status"`
@@ -7817,6 +8086,82 @@ func (v *CancelSubagentResult) decodeFrom(raw map[string]json.RawMessage) error 
 	return nil
 }
 
+type PaneCrashedResult struct {
+	Known bool `json:"known"`
+}
+
+func (v *PaneCrashedResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "PaneCrashedResult", v.decodeFrom)
+}
+
+func (v *PaneCrashedResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out PaneCrashedResult
+	d := fieldDecoder{raw: raw, owner: "PaneCrashedResult"}
+	d.required("known", &out.Known)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type ViewMarkdownResult struct {
+	Opened bool `json:"opened"`
+}
+
+func (v *ViewMarkdownResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ViewMarkdownResult", v.decodeFrom)
+}
+
+func (v *ViewMarkdownResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ViewMarkdownResult
+	d := fieldDecoder{raw: raw, owner: "ViewMarkdownResult"}
+	d.required("opened", &out.Opened)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type GetSubagentThreadResult struct {
+	Thread AgentThread `json:"thread"`
+}
+
+func (v *GetSubagentThreadResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "GetSubagentThreadResult", v.decodeFrom)
+}
+
+func (v *GetSubagentThreadResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out GetSubagentThreadResult
+	d := fieldDecoder{raw: raw, owner: "GetSubagentThreadResult"}
+	d.required("thread", &out.Thread)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type GetUsageResult struct {
+	Snapshot *UsageSnapshot `json:"snapshot"`
+}
+
+func (v *GetUsageResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "GetUsageResult", v.decodeFrom)
+}
+
+func (v *GetUsageResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out GetUsageResult
+	d := fieldDecoder{raw: raw, owner: "GetUsageResult"}
+	d.nullable("snapshot", &out.Snapshot)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type LiveStartResult struct {
 	Voice string `json:"voice"`
 }
@@ -8404,7 +8749,7 @@ type TogglePaneCommand struct {
 	Shape *TogglePaneCommandShape `json:"shape,omitempty"`
 }
 
-// TogglePane sends "toggle_pane": Toggle a todo or agents pane in an interactive Rex TUI.
+// TogglePane sends "toggle_pane": Toggle a todo, agents, usage, dashboard or feed pane in an interactive Rex TUI.
 func (c Commands) TogglePane(ctx context.Context, p TogglePaneCommand) (TogglePaneResult, error) {
 	var out TogglePaneResult
 	err := c.call(ctx, "toggle_pane", p, 0, &out)
@@ -8414,8 +8759,11 @@ func (c Commands) TogglePane(ctx context.Context, p TogglePaneCommand) (TogglePa
 type TogglePaneCommandPane string
 
 const (
-	TogglePaneCommandPaneTodo   TogglePaneCommandPane = "todo"
-	TogglePaneCommandPaneAgents TogglePaneCommandPane = "agents"
+	TogglePaneCommandPaneTodo      TogglePaneCommandPane = "todo"
+	TogglePaneCommandPaneAgents    TogglePaneCommandPane = "agents"
+	TogglePaneCommandPaneUsage     TogglePaneCommandPane = "usage"
+	TogglePaneCommandPaneDashboard TogglePaneCommandPane = "dashboard"
+	TogglePaneCommandPaneFeed      TogglePaneCommandPane = "feed"
 )
 
 func (v *TogglePaneCommandPane) UnmarshalJSON(data []byte) error {
@@ -8424,7 +8772,7 @@ func (v *TogglePaneCommandPane) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch value := TogglePaneCommandPane(s); value {
-	case TogglePaneCommandPaneTodo, TogglePaneCommandPaneAgents:
+	case TogglePaneCommandPaneTodo, TogglePaneCommandPaneAgents, TogglePaneCommandPaneUsage, TogglePaneCommandPaneDashboard, TogglePaneCommandPaneFeed:
 		*v = value
 		return nil
 	}
@@ -8617,6 +8965,108 @@ type FollowUpSubagentCommand struct {
 func (c Commands) FollowUpSubagent(ctx context.Context, p FollowUpSubagentCommand) (FollowUpSubagentOutcome, error) {
 	var out FollowUpSubagentOutcome
 	err := c.call(ctx, "follow_up_subagent", p, 0, &out)
+	return out, err
+}
+
+// PaneCrashedCommand holds the parameters of "pane_crashed".
+type PaneCrashedCommand struct {
+	BlockID string `json:"blockId"`
+}
+
+// PaneCrashed sends "pane_crashed": Hold event reopening for a known crashed Rex pane.
+func (c Commands) PaneCrashed(ctx context.Context, p PaneCrashedCommand) (PaneCrashedResult, error) {
+	var out PaneCrashedResult
+	err := c.call(ctx, "pane_crashed", p, 0, &out)
+	return out, err
+}
+
+// ReopenPaneCommand holds the parameters of "reopen_pane".
+type ReopenPaneCommand struct {
+	BlockID string `json:"blockId"`
+}
+
+// ReopenPane sends "reopen_pane": Reopen a crashed subagent pane or enabled panel.
+func (c Commands) ReopenPane(ctx context.Context, p ReopenPaneCommand) (ReopenOutcome, error) {
+	var out ReopenOutcome
+	err := c.call(ctx, "reopen_pane", p, 0, &out)
+	return out, err
+}
+
+// ViewMarkdownCommand holds the parameters of "view_markdown".
+type ViewMarkdownCommand struct {
+	Path string `json:"path"`
+}
+
+// ViewMarkdown sends "view_markdown": Open an operator-selected markdown file for comments on the main session.
+func (c Commands) ViewMarkdown(ctx context.Context, p ViewMarkdownCommand) (ViewMarkdownResult, error) {
+	var out ViewMarkdownResult
+	err := c.call(ctx, "view_markdown", p, 0, &out)
+	return out, err
+}
+
+// GetSubagentThreadCommand holds the parameters of "get_subagent_thread".
+type GetSubagentThreadCommand struct {
+	SubagentID string `json:"subagentId"`
+}
+
+// GetSubagentThread sends "get_subagent_thread": Read an owned subagent's thread from its transcript.
+func (c Commands) GetSubagentThread(ctx context.Context, p GetSubagentThreadCommand) (GetSubagentThreadResult, error) {
+	var out GetSubagentThreadResult
+	err := c.call(ctx, "get_subagent_thread", p, 0, &out)
+	return out, err
+}
+
+// RunRunbookStepCommand holds the parameters of "run_runbook_step".
+type RunRunbookStepCommand struct {
+	RunbookID string              `json:"runbookId"`
+	Step      IntegerOrRunbookAll `json:"step"`
+}
+
+// RunRunbookStep sends "run_runbook_step": Run a registered runbook step or all steps after an explicit operator request.
+func (c Commands) RunRunbookStep(ctx context.Context, p RunRunbookStepCommand) (RunbookOutcome, error) {
+	var out RunbookOutcome
+	err := c.call(ctx, "run_runbook_step", p, 0, &out)
+	return out, err
+}
+
+// IntegerOrRunbookAll holds exactly one of its fields, chosen by the JSON kind of the value.
+type IntegerOrRunbookAll struct {
+	Integer    *int64
+	RunbookAll *RunbookAll
+}
+
+func (v IntegerOrRunbookAll) MarshalJSON() ([]byte, error) {
+	switch {
+	case v.Integer != nil:
+		return json.Marshal(*v.Integer)
+	case v.RunbookAll != nil:
+		return json.Marshal(*v.RunbookAll)
+	}
+	return nil, emptyUnion("IntegerOrRunbookAll")
+}
+
+func (v *IntegerOrRunbookAll) UnmarshalJSON(data []byte) error {
+	var out IntegerOrRunbookAll
+	var err error
+	switch jsonKind(data) {
+	case '0':
+		err = json.Unmarshal(data, &out.Integer)
+	case '{':
+		err = json.Unmarshal(data, &out.RunbookAll)
+	default:
+		return unexpectedKind("IntegerOrRunbookAll", data)
+	}
+	if err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// GetUsage sends "get_usage": Read the redacted CodexBar usage snapshot, or null before a snapshot is available.
+func (c Commands) GetUsage(ctx context.Context) (GetUsageResult, error) {
+	var out GetUsageResult
+	err := c.call(ctx, "get_usage", nil, 0, &out)
 	return out, err
 }
 

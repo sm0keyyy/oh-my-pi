@@ -214,8 +214,38 @@ export type RpcCommand =
 	| {
 			id?: string;
 			type: "toggle_pane";
-			pane: "todo" | "agents";
+			pane: "todo" | "agents" | "usage" | "dashboard" | "feed";
 			shape?: "dock" | "float";
+	  }
+	| {
+			id?: string;
+			type: "pane_crashed";
+			blockId: string;
+	  }
+	| {
+			id?: string;
+			type: "reopen_pane";
+			blockId: string;
+	  }
+	| {
+			id?: string;
+			type: "view_markdown";
+			path: string;
+	  }
+	| {
+			id?: string;
+			type: "get_subagent_thread";
+			subagentId: string;
+	  }
+	| {
+			id?: string;
+			type: "run_runbook_step";
+			runbookId: string;
+			step: number | "all";
+	  }
+	| {
+			id?: string;
+			type: "get_usage";
 	  }
 	| {
 			id?: string;

@@ -4,6 +4,7 @@
 		"test/local-fixture.ts",
 		"test/fixture-extension.ts",
 		"test/performance-fixture.ts",
+		"test/j-fixture.ts",
 		"../../types/assets"
 	],
 	"compilerOptions": { "noEmit": true, "types": ["bun"] }

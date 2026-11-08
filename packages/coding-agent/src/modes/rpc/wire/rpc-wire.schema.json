@@ -198,7 +198,7 @@
 			},
 			{
 				"name": "toggle_pane",
-				"doc": "Toggle a todo or agents pane in an interactive Rex TUI.",
+				"doc": "Toggle a todo, agents, usage, dashboard or feed pane in an interactive Rex TUI.",
 				"params": "TogglePaneParams",
 				"result": "TogglePaneResult",
 				"nullable": false,
@@ -366,6 +366,72 @@
 				"doc": "Send literal text to an idle, accepted, unparked subagent.",
 				"params": "FollowUpSubagentParams",
 				"result": "FollowUpSubagentOutcome",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "pane_crashed",
+				"doc": "Hold event reopening for a known crashed Rex pane.",
+				"params": "PaneCrashedParams",
+				"result": "PaneCrashedResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "reopen_pane",
+				"doc": "Reopen a crashed subagent pane or enabled panel.",
+				"params": "ReopenPaneParams",
+				"result": "ReopenOutcome",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "view_markdown",
+				"doc": "Open an operator-selected markdown file for comments on the main session.",
+				"params": "ViewMarkdownParams",
+				"result": "ViewMarkdownResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_subagent_thread",
+				"doc": "Read an owned subagent's thread from its transcript.",
+				"params": "GetSubagentThreadParams",
+				"result": "GetSubagentThreadResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "run_runbook_step",
+				"doc": "Run a registered runbook step or all steps after an explicit operator request.",
+				"params": "RunRunbookStepParams",
+				"result": "RunbookOutcome",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_usage",
+				"doc": "Read the redacted CodexBar usage snapshot, or null before a snapshot is available.",
+				"params": null,
+				"result": "GetUsageResult",
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
@@ -2110,6 +2176,157 @@
 		"SubagentStatus": {
 			"enum": ["pending", "running", "completed", "failed", "aborted"],
 			"type": "string"
+		},
+		"ReopenOutcome": {
+			"type": "object",
+			"properties": {
+				"ok": {
+					"type": "boolean"
+				},
+				"reason": {
+					"enum": ["already-open", "agent-gone", "panel-off", "unknown-block"],
+					"type": "string"
+				}
+			},
+			"required": ["ok"]
+		},
+		"RunbookOutcome": {
+			"type": "object",
+			"properties": {
+				"ok": {
+					"type": "boolean"
+				},
+				"jobId": {
+					"type": "string"
+				},
+				"reason": {
+					"enum": ["unknown-runbook", "unknown-step", "running", "owner-gone"],
+					"type": "string"
+				}
+			},
+			"required": ["ok"]
+		},
+		"RunbookAll": {
+			"const": "all"
+		},
+		"ThreadItem": {
+			"type": "object",
+			"properties": {
+				"kind": {
+					"enum": ["brief", "operator", "reply", "result", "irc-in", "irc-out", "ask", "answer"],
+					"type": "string"
+				},
+				"ts": {
+					"type": "number"
+				},
+				"text": {
+					"type": "string"
+				},
+				"entryId": {
+					"type": "string"
+				},
+				"from": {
+					"type": "string"
+				},
+				"to": {
+					"type": "string"
+				},
+				"messageId": {
+					"type": "string"
+				},
+				"questions": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"toolCallId": {
+					"type": "string"
+				},
+				"timedOut": {
+					"type": "boolean"
+				}
+			},
+			"required": ["kind", "ts"],
+			"description": "Thread item. The server enforces kind-specific fields; SDK generators do not dispatch on kind."
+		},
+		"AgentThread": {
+			"type": "object",
+			"properties": {
+				"agentId": {
+					"type": "string"
+				},
+				"sessionFile": {
+					"type": "string"
+				},
+				"items": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ThreadItem"
+					}
+				}
+			},
+			"required": ["agentId", "sessionFile", "items"]
+		},
+		"UsageWindow": {
+			"type": "object",
+			"properties": {
+				"kind": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"usedPercent": {
+					"type": "number"
+				},
+				"resetAt": {
+					"type": "string"
+				}
+			},
+			"required": ["kind", "label", "usedPercent"]
+		},
+		"UsageProvider": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string"
+				},
+				"label": {
+					"type": "string"
+				},
+				"windows": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/UsageWindow"
+					}
+				},
+				"plan": {
+					"type": "string"
+				},
+				"todayTokens": {
+					"type": "number"
+				},
+				"unavailable": {
+					"type": "boolean"
+				}
+			},
+			"required": ["id", "label", "windows"]
+		},
+		"UsageSnapshot": {
+			"type": "object",
+			"properties": {
+				"updatedAt": {
+					"type": "string"
+				},
+				"providers": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/UsageProvider"
+					}
+				}
+			},
+			"required": ["updatedAt", "providers"]
 		},
 		"TodoItem": {
 			"type": "object",
@@ -5779,7 +5996,7 @@
 			"type": "object",
 			"properties": {
 				"pane": {
-					"enum": ["todo", "agents"],
+					"enum": ["todo", "agents", "usage", "dashboard", "feed"],
 					"type": "string"
 				},
 				"shape": {
@@ -6043,6 +6260,104 @@
 				}
 			},
 			"required": ["subagentId", "message"]
+		},
+		"PaneCrashedParams": {
+			"type": "object",
+			"properties": {
+				"blockId": {
+					"type": "string"
+				}
+			},
+			"required": ["blockId"]
+		},
+		"PaneCrashedResult": {
+			"type": "object",
+			"properties": {
+				"known": {
+					"type": "boolean"
+				}
+			},
+			"required": ["known"]
+		},
+		"ReopenPaneParams": {
+			"type": "object",
+			"properties": {
+				"blockId": {
+					"type": "string"
+				}
+			},
+			"required": ["blockId"]
+		},
+		"ViewMarkdownParams": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				}
+			},
+			"required": ["path"]
+		},
+		"ViewMarkdownResult": {
+			"type": "object",
+			"properties": {
+				"opened": {
+					"type": "boolean"
+				}
+			},
+			"required": ["opened"]
+		},
+		"GetSubagentThreadParams": {
+			"type": "object",
+			"properties": {
+				"subagentId": {
+					"type": "string"
+				}
+			},
+			"required": ["subagentId"]
+		},
+		"GetSubagentThreadResult": {
+			"type": "object",
+			"properties": {
+				"thread": {
+					"$ref": "#/$defs/AgentThread"
+				}
+			},
+			"required": ["thread"]
+		},
+		"RunRunbookStepParams": {
+			"type": "object",
+			"properties": {
+				"runbookId": {
+					"type": "string"
+				},
+				"step": {
+					"anyOf": [
+						{
+							"type": "integer"
+						},
+						{
+							"$ref": "#/$defs/RunbookAll"
+						}
+					]
+				}
+			},
+			"required": ["runbookId", "step"]
+		},
+		"GetUsageResult": {
+			"type": "object",
+			"properties": {
+				"snapshot": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/UsageSnapshot"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["snapshot"]
 		},
 		"LiveStartParams": {
 			"type": "object",

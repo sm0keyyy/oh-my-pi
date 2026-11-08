@@ -344,7 +344,7 @@ function Session({ instanceId }: { instanceId: string }): ReactNode {
 			)}
 			<div className="body">
 				<main className="main">
-					<Transcript snapshot={snapshot} host={host} client={client} />
+					<Transcript snapshot={snapshot} host={host} client={client} runbookClient={client} />
 					{snapshot.notices.length > 0 && (
 						<details className="queue">
 							<summary>Notices · {snapshot.notices.length}</summary>

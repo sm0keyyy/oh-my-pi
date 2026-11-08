@@ -28,6 +28,9 @@ export interface Snapshot {
 	revision: number;
 	editorText?: { text: string; version: number };
 	history?: { olderCursor?: string; newer: boolean; loading: boolean };
+	entries?: RecordValue[];
+	usage?: RecordValue | null;
+	usageError?: string;
 }
 interface Pending {
 	command: string;
@@ -182,6 +185,11 @@ export class SessionClient {
 	#pageEvents: RecordValue[] | null = null;
 	#backwardPaging = false;
 	#readingHistory = false;
+	#entriesCursor?: string;
+	#entryParents = new Map<string, string>();
+	#runbookRuns = new Map<string, RecordValue>();
+	#entriesRequest = 0;
+	#entriesInFlight?: Promise<void>;
 	#resume = (event: Event): void => {
 		if (typeof document !== "undefined" && document.hidden) return;
 		if (
@@ -568,12 +576,65 @@ export class SessionClient {
 		const state = await this.request({ type: "get_state" }, 10_000);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
 		if (revision === this.#snapshot.revision) this.#setState(state);
-		const [stats, agents] = await Promise.all([
-			this.request({ type: "get_session_stats" }, 10_000),
-			this.request({ type: "get_subagents" }, 10_000),
-		]);
-		if (generation !== this.#generation || hydration !== this.#hydration) return;
-		this.#publish({ stats, agents: this.#mergeSubagents(agents.subagents) });
+		if (!this.#entriesInFlight) {
+			const inFlight = this.#refreshEntries(generation, hydration).finally(() => {
+				if (this.#entriesInFlight === inFlight) this.#entriesInFlight = undefined;
+			});
+			this.#entriesInFlight = inFlight;
+		}
+		const entries = this.#entriesInFlight.catch(error => {
+			if (generation === this.#generation && hydration === this.#hydration) this.#publish({ error: String(error) });
+		});
+		try {
+			const [stats, agents, usage] = await Promise.all([
+				this.request({ type: "get_session_stats" }, 10_000),
+				this.request({ type: "get_subagents" }, 10_000),
+				this.request({ type: "get_usage" }, 10_000).catch((error): RecordValue => ({ usageError: String(error) })),
+			]);
+			if (generation !== this.#generation || hydration !== this.#hydration) return;
+			this.#publish({
+				stats,
+				agents: this.#mergeSubagents(agents.subagents),
+				usage: isRecord(usage.snapshot) ? usage.snapshot : null,
+				usageError: text(usage.usageError),
+			});
+		} finally {
+			await entries;
+		}
+	}
+	async #refreshEntries(generation: number, hydration: number): Promise<void> {
+		const request = ++this.#entriesRequest;
+		const since = this.#entriesCursor;
+		let full = since === undefined;
+		const result = await this.request({ type: "get_entries", ...(since ? { since } : {}) }, since ? 10_000 : 0).catch(
+			error => {
+				if (!since || !isRecord(error) || error.code !== "unknown_since") throw error;
+				full = true;
+				return this.request({ type: "get_entries" }, 0);
+			},
+		);
+		if (generation !== this.#generation || hydration !== this.#hydration || request !== this.#entriesRequest) return;
+		const entries = records(result.entries ?? []);
+		if (full) {
+			this.#entryParents.clear();
+			this.#runbookRuns.clear();
+			this.#entriesCursor = undefined;
+		}
+		for (const entry of entries) {
+			const id = text(entry.id);
+			if (!id) continue;
+			this.#entryParents.set(id, text(entry.parentId));
+			if (entry.type === "custom" && entry.customType === "runbook-run") this.#runbookRuns.set(id, entry);
+			this.#entriesCursor = id;
+		}
+		const branch: RecordValue[] = [];
+		const visited = new Set<string>();
+		for (let id = text(result.leafId); id && !visited.has(id); id = this.#entryParents.get(id) ?? "") {
+			visited.add(id);
+			const run = this.#runbookRuns.get(id);
+			if (run) branch.push(run);
+		}
+		this.#publish({ entries: branch.reverse() });
 	}
 	#mergeSubagents(value: unknown): RecordValue[] {
 		const current = records(value);
@@ -632,7 +693,6 @@ export class SessionClient {
 			this.#readingHistory = false;
 			const events = this.#events ?? [];
 			this.#events = null;
-			if (state.sessionId !== this.#snapshot.state.sessionId) this.#publish({ agents: [] });
 			this.#setState(state);
 			this.#publish({
 				messages: page.messages,
@@ -684,6 +744,14 @@ export class SessionClient {
 		strings(state.queuedMessages.steering);
 		strings(state.queuedMessages.followUp);
 		records(state.todoPhases);
+		if (state.sessionId !== this.#snapshot.state.sessionId) {
+			this.#entriesCursor = undefined;
+			this.#entryParents.clear();
+			this.#runbookRuns.clear();
+			++this.#entriesRequest;
+			this.#entriesInFlight = undefined;
+			this.#publish({ agents: [], entries: [], usage: undefined, usageError: undefined });
+		}
 		this.#publish({ state });
 	}
 	#receive(frame: RecordValue): void {
@@ -754,7 +822,10 @@ export class SessionClient {
 				this.#events = this.#events.filter(event => !replaced.includes(text(event.type)));
 			}
 			if (frame.success) pending.resolve(isRecord(frame.data) ? frame.data : {});
-			else pending.reject(new Error(text(frame.error) || "The TUI refused the action"));
+			else
+				pending.reject(
+					Object.assign(new Error(text(frame.error) || "The TUI refused the action"), { code: text(frame.code) }),
+				);
 			return;
 		}
 		if (frame.type === "session_changed") {

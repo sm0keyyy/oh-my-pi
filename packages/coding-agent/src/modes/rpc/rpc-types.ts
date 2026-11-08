@@ -34,6 +34,10 @@ import type { RpcMessagesPage } from "./rpc-messages";
 import type { GoalModeState } from "../../goals/state";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import type { BtwHistoryRecord } from "../../session/btw-history";
+import type { ReopenOutcome } from "../../rex-panes/supervise";
+import type { RunOutcome } from "../../runbook";
+import type { AgentThread } from "../../threads";
+import type { UsageSnapshot } from "../../usage";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -89,7 +93,18 @@ export type RpcCommand =
 	| { id?: string; type: "stop_subagent"; subagentId: string; reason: string }
 	| { id?: string; type: "abort_subagent"; subagentId: string; reason?: string }
 	| { id?: string; type: "follow_up_subagent"; subagentId: string; message: string }
-	| { id?: string; type: "toggle_pane"; pane: "todo" | "agents"; shape?: "dock" | "float" }
+	| {
+			id?: string;
+			type: "toggle_pane";
+			pane: "todo" | "agents" | "usage" | "dashboard" | "feed";
+			shape?: "dock" | "float";
+	  }
+	| { id?: string; type: "pane_crashed"; blockId: string }
+	| { id?: string; type: "reopen_pane"; blockId: string }
+	| { id?: string; type: "view_markdown"; path: string }
+	| { id?: string; type: "get_subagent_thread"; subagentId: string }
+	| { id?: string; type: "run_runbook_step"; runbookId: string; step: number | "all" }
+	| { id?: string; type: "get_usage" }
 	// Live voice (GPT live bound to this session)
 	| { id?: string; type: "live_start"; voice?: string; instructions?: string }
 	| { id?: string; type: "live_connect"; sdpOffer: string; voice?: string; instructions?: string }
@@ -584,6 +599,12 @@ export type RpcResponse =
 			data: { ok: true } | { ok: false; reason: "unknown-agent" | "running" | "not-accepted" };
 	  }
 	| { id?: string; type: "response"; command: "toggle_pane"; success: true; data: { open: boolean } }
+	| { id?: string; type: "response"; command: "pane_crashed"; success: true; data: { known: boolean } }
+	| { id?: string; type: "response"; command: "reopen_pane"; success: true; data: ReopenOutcome }
+	| { id?: string; type: "response"; command: "view_markdown"; success: true; data: { opened: boolean } }
+	| { id?: string; type: "response"; command: "get_subagent_thread"; success: true; data: { thread: AgentThread } }
+	| { id?: string; type: "response"; command: "run_runbook_step"; success: true; data: RunOutcome }
+	| { id?: string; type: "response"; command: "get_usage"; success: true; data: { snapshot: UsageSnapshot | null } }
 
 	// Model
 	| {

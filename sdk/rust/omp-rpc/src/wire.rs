@@ -2881,6 +2881,86 @@ impl SubagentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReopenOutcome {
+	pub ok: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<ReopenOutcomeReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunbookOutcome {
+	pub ok: bool,
+	#[serde(rename = "jobId", default, skip_serializing_if = "Option::is_none")]
+	pub job_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<RunbookOutcomeReason>,
+}
+
+pub type RunbookAll = LitAll;
+
+/// Thread item. The server enforces kind-specific fields; SDK generators do not dispatch on kind.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ThreadItem {
+	pub kind: ThreadItemKind,
+	pub ts: f64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub text: Option<String>,
+	#[serde(rename = "entryId", default, skip_serializing_if = "Option::is_none")]
+	pub entry_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub from: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub to: Option<String>,
+	#[serde(rename = "messageId", default, skip_serializing_if = "Option::is_none")]
+	pub message_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub questions: Option<Vec<String>>,
+	#[serde(rename = "toolCallId", default, skip_serializing_if = "Option::is_none")]
+	pub tool_call_id: Option<String>,
+	#[serde(rename = "timedOut", default, skip_serializing_if = "Option::is_none")]
+	pub timed_out: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentThread {
+	#[serde(rename = "agentId")]
+	pub agent_id: String,
+	#[serde(rename = "sessionFile")]
+	pub session_file: String,
+	pub items: Vec<ThreadItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+	pub kind: String,
+	pub label: String,
+	#[serde(rename = "usedPercent")]
+	pub used_percent: f64,
+	#[serde(rename = "resetAt", default, skip_serializing_if = "Option::is_none")]
+	pub reset_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageProvider {
+	pub id: String,
+	pub label: String,
+	pub windows: Vec<UsageWindow>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub plan: Option<String>,
+	#[serde(rename = "todayTokens", default, skip_serializing_if = "Option::is_none")]
+	pub today_tokens: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub unavailable: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageSnapshot {
+	#[serde(rename = "updatedAt")]
+	pub updated_at: String,
+	pub providers: Vec<UsageProvider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
@@ -5540,6 +5620,57 @@ pub struct FollowUpSubagentParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneCrashedParams {
+	#[serde(rename = "blockId")]
+	pub block_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneCrashedResult {
+	pub known: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReopenPaneParams {
+	#[serde(rename = "blockId")]
+	pub block_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewMarkdownParams {
+	pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewMarkdownResult {
+	pub opened: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSubagentThreadParams {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSubagentThreadResult {
+	pub thread: AgentThread,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRunbookStepParams {
+	#[serde(rename = "runbookId")]
+	pub runbook_id: String,
+	pub step: IntegerOrRunbookAll,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetUsageResult {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub snapshot: Option<UsageSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveStartParams {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub voice: Option<String>,
@@ -6038,6 +6169,111 @@ impl AssistantErrorEventReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReopenOutcomeReason {
+	#[serde(rename = "already-open")]
+	AlreadyOpen,
+	#[serde(rename = "agent-gone")]
+	AgentGone,
+	#[serde(rename = "panel-off")]
+	PanelOff,
+	#[serde(rename = "unknown-block")]
+	UnknownBlock,
+}
+
+impl ReopenOutcomeReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::AlreadyOpen => "already-open",
+			Self::AgentGone => "agent-gone",
+			Self::PanelOff => "panel-off",
+			Self::UnknownBlock => "unknown-block",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RunbookOutcomeReason {
+	#[serde(rename = "unknown-runbook")]
+	UnknownRunbook,
+	#[serde(rename = "unknown-step")]
+	UnknownStep,
+	#[serde(rename = "running")]
+	Running,
+	#[serde(rename = "owner-gone")]
+	OwnerGone,
+}
+
+impl RunbookOutcomeReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::UnknownRunbook => "unknown-runbook",
+			Self::UnknownStep => "unknown-step",
+			Self::Running => "running",
+			Self::OwnerGone => "owner-gone",
+		}
+	}
+}
+
+/// The constant `"all"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitAll;
+
+impl Serialize for LitAll {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("all")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitAll {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("all") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"all\", got {value}")))
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThreadItemKind {
+	#[serde(rename = "brief")]
+	Brief,
+	#[serde(rename = "operator")]
+	Operator,
+	#[serde(rename = "reply")]
+	Reply,
+	#[serde(rename = "result")]
+	Result,
+	#[serde(rename = "irc-in")]
+	IrcIn,
+	#[serde(rename = "irc-out")]
+	IrcOut,
+	#[serde(rename = "ask")]
+	Ask,
+	#[serde(rename = "answer")]
+	Answer,
+}
+
+impl ThreadItemKind {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Brief => "brief",
+			Self::Operator => "operator",
+			Self::Reply => "reply",
+			Self::Result => "result",
+			Self::IrcIn => "irc-in",
+			Self::IrcOut => "irc-out",
+			Self::Ask => "ask",
+			Self::Answer => "answer",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
 	Active,
@@ -6283,6 +6519,12 @@ pub enum TogglePaneParamsPane {
 	Todo,
 	#[serde(rename = "agents")]
 	Agents,
+	#[serde(rename = "usage")]
+	Usage,
+	#[serde(rename = "dashboard")]
+	Dashboard,
+	#[serde(rename = "feed")]
+	Feed,
 }
 
 impl TogglePaneParamsPane {
@@ -6291,6 +6533,9 @@ impl TogglePaneParamsPane {
 		match self {
 			Self::Todo => "todo",
 			Self::Agents => "agents",
+			Self::Usage => "usage",
+			Self::Dashboard => "dashboard",
+			Self::Feed => "feed",
 		}
 	}
 }
@@ -6311,6 +6556,14 @@ impl TogglePaneParamsShape {
 			Self::Float => "float",
 		}
 	}
+}
+
+/// Untagged union: the first variant that decodes wins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum IntegerOrRunbookAll {
+	Integer(i64),
+	RunbookAll(RunbookAll),
 }
 
 fn default_queued_messages_state_live_steered() -> i64 {
@@ -6715,7 +6968,7 @@ impl Command for SetReviewDialogCommand {
 	}
 }
 
-/// Toggle a todo or agents pane in an interactive Rex TUI.
+/// Toggle a todo, agents, usage, dashboard or feed pane in an interactive Rex TUI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TogglePaneCommand {
 	pub pane: TogglePaneParamsPane,
@@ -6982,6 +7235,105 @@ impl Command for FollowUpSubagentCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<FollowUpSubagentOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Hold event reopening for a known crashed Rex pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneCrashedCommand {
+	#[serde(rename = "blockId")]
+	pub block_id: String,
+}
+
+impl Command for PaneCrashedCommand {
+	const NAME: &'static str = "pane_crashed";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = PaneCrashedResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<PaneCrashedResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Reopen a crashed subagent pane or enabled panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReopenPaneCommand {
+	#[serde(rename = "blockId")]
+	pub block_id: String,
+}
+
+impl Command for ReopenPaneCommand {
+	const NAME: &'static str = "reopen_pane";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ReopenOutcome;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ReopenOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Open an operator-selected markdown file for comments on the main session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewMarkdownCommand {
+	pub path: String,
+}
+
+impl Command for ViewMarkdownCommand {
+	const NAME: &'static str = "view_markdown";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ViewMarkdownResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ViewMarkdownResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read an owned subagent's thread from its transcript.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetSubagentThreadCommand {
+	#[serde(rename = "subagentId")]
+	pub subagent_id: String,
+}
+
+impl Command for GetSubagentThreadCommand {
+	const NAME: &'static str = "get_subagent_thread";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = GetSubagentThreadResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<GetSubagentThreadResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Run a registered runbook step or all steps after an explicit operator request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRunbookStepCommand {
+	#[serde(rename = "runbookId")]
+	pub runbook_id: String,
+	pub step: IntegerOrRunbookAll,
+}
+
+impl Command for RunRunbookStepCommand {
+	const NAME: &'static str = "run_runbook_step";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = RunbookOutcome;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<RunbookOutcome>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Read the redacted CodexBar usage snapshot, or null before a snapshot is available.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetUsageCommand {}
+
+impl Command for GetUsageCommand {
+	const NAME: &'static str = "get_usage";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = GetUsageResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<GetUsageResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

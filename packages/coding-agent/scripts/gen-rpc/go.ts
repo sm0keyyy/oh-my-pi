@@ -766,6 +766,8 @@ class GoEmitter {
 			if (!reached.has(name)) continue;
 			if (def.kind === "object") blocks.push(this.#objectBlock(def));
 			else if (def.type.kind === "enum") blocks.push(this.#enumBlock(name, def.doc, def.type.values));
+			else if (def.type.kind === "literal" && typeof def.type.value === "string")
+				blocks.push(this.#enumBlock(name, def.doc, [def.type.value]));
 			else if (unionMembers(def)) {
 				this.#claim(name, `union ${name}`);
 				blocks.push(this.#unionBlock(name, def.doc));

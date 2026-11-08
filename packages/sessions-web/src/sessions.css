@@ -830,6 +830,25 @@ a.btn {
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 }
+.runbook-card {
+	display: grid;
+	gap: var(--s2);
+	padding-block: var(--s3);
+}
+.runbook-card ol {
+	padding-inline-start: var(--s5);
+}
+.runbook-card li + li {
+	margin-block-start: var(--s3);
+}
+.runbook-card pre {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.runbook-card .btn {
+	min-height: 44px;
+	justify-self: start;
+}
 .custom-card {
 	min-width: 0;
 	border: 1px solid var(--border-strong);
@@ -1775,6 +1794,9 @@ body:has(.app) {
 	border: 1px solid var(--border-strong);
 	border-radius: var(--radius-xl);
 	background: var(--panel);
+}
+.panel-dialog > .transcript-pane {
+	height: 40dvh;
 }
 .panel-dialog::backdrop {
 	background: var(--backdrop);

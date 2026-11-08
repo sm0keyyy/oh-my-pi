@@ -1,0 +1,32 @@
+{
+	"source": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt",
+	"results": [
+		{
+			"width": 1440,
+			"thread": "Second reply.",
+			"usage": "Session 42%",
+			"run": "Exit 0",
+			"runAll": "Exit 0",
+			"subagentPaging": "isolated",
+			"overflow": false
+		},
+		{
+			"width": 768,
+			"thread": "Second reply.",
+			"usage": "Session 42%",
+			"run": "Exit 0",
+			"runAll": "Exit 0",
+			"subagentPaging": "isolated",
+			"overflow": false
+		},
+		{
+			"width": 390,
+			"thread": "Second reply.",
+			"usage": "Session 42%",
+			"run": "Exit 0",
+			"runAll": "Exit 0",
+			"subagentPaging": "isolated",
+			"overflow": false
+		}
+	]
+}

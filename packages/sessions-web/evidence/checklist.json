@@ -313,12 +313,12 @@
 			"phone": "pass",
 			"coverage": "browser at 1440, 768 and 390; subagent Messages cannot page main history",
 			"screenshots": [
-				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-messages-1440.png",
-				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-messages-390.png"
+				"packages/sessions-web/evidence/screenshots/get_subagent_messages-desktop.png",
+				"packages/sessions-web/evidence/screenshots/get_subagent_messages-phone.png"
 			],
 			"receipts": {
-				"desktop": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/0/subagentPaging",
-				"phone": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/2/subagentPaging"
+				"desktop": "packages/sessions-web/evidence/j-sessions-browser.json#/results/0/subagentPaging",
+				"phone": "packages/sessions-web/evidence/j-sessions-browser.json#/results/2/subagentPaging"
 			}
 		},
 		{

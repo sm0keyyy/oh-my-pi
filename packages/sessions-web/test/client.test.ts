@@ -1512,6 +1512,45 @@ test("entry polling appends runbook runs with the last journal id and resets an 
 	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["fresh"]);
 });
 
+test("overlapping refreshes share a slow full entries fetch and then use its cursor", async () => {
+	const cursors: unknown[] = [];
+	const fullRequested = Promise.withResolvers<void>();
+	let releaseFull = () => {};
+	let stats = 0;
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type === "get_entries") {
+			cursors.push(command.since);
+			if (command.since === undefined) {
+				releaseFull = () =>
+					respond({
+						entries: [
+							{ id: "run-1", parentId: null, type: "custom", customType: "runbook-run", data: {} },
+							{ id: "tail-1", parentId: "run-1", type: "message" },
+						],
+						leafId: "tail-1",
+					});
+				fullRequested.resolve();
+			} else respond({ entries: [], leafId: "tail-1" });
+			return true;
+		}
+		if (command.type === "get_session_stats") {
+			respond({ tokens: ++stats });
+			return true;
+		}
+	});
+	client.connect();
+	await fullRequested.promise;
+	const overlaps = Promise.all([client.refresh(), client.refresh()]);
+	await waitForSnapshot(client, snapshot => Number(snapshot.stats.tokens) >= 3);
+	expect(cursors).toEqual([undefined]);
+	releaseFull();
+	await overlaps;
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["run-1"]);
+	await client.refresh();
+	expect(cursors).toEqual([undefined, "tail-1"]);
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["run-1"]);
+});
+
 test("a pending or failed entries fetch does not block stats, agents or usage updates", async () => {
 	let update = false;
 	let rejectEntries = () => {};

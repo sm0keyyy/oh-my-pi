@@ -189,6 +189,7 @@ export class SessionClient {
 	#entryParents = new Map<string, string>();
 	#runbookRuns = new Map<string, RecordValue>();
 	#entriesRequest = 0;
+	#entriesInFlight?: Promise<void>;
 	#resume = (event: Event): void => {
 		if (typeof document !== "undefined" && document.hidden) return;
 		if (
@@ -575,7 +576,13 @@ export class SessionClient {
 		const state = await this.request({ type: "get_state" }, 10_000);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
 		if (revision === this.#snapshot.revision) this.#setState(state);
-		const entries = this.#refreshEntries(generation, hydration).catch(error => {
+		if (!this.#entriesInFlight) {
+			const inFlight = this.#refreshEntries(generation, hydration).finally(() => {
+				if (this.#entriesInFlight === inFlight) this.#entriesInFlight = undefined;
+			});
+			this.#entriesInFlight = inFlight;
+		}
+		const entries = this.#entriesInFlight.catch(error => {
 			if (generation === this.#generation && hydration === this.#hydration) this.#publish({ error: String(error) });
 		});
 		try {
@@ -740,6 +747,7 @@ export class SessionClient {
 			this.#entryParents.clear();
 			this.#runbookRuns.clear();
 			++this.#entriesRequest;
+			this.#entriesInFlight = undefined;
 			this.#publish({ agents: [], entries: [], usage: undefined, usageError: undefined });
 		}
 		this.#publish({ state });

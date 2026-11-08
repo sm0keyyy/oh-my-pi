@@ -76,7 +76,7 @@ export function startMainPaneRecord(session: AgentSession, env: NodeJS.ProcessEn
 			cancelExit = postmortem.register(
 				`rex-main-pane:${blockId}`,
 				reason => {
-					if (reason !== postmortem.Reason.SIGHUP && reason !== postmortem.Reason.SIGTERM) remove();
+					if (reason === postmortem.Reason.EXIT) remove();
 					dispose();
 				},
 				{ exitOnly: true },

@@ -88,6 +88,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 	tools: [
 		"Available Tools",
 		"Todos",
+		"Runbook",
 		"Grep & Browser",
 		"Computer",
 		"IDA Pro",

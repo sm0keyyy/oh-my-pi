@@ -5328,6 +5328,7 @@ export class AgentSession implements SettingsScope {
 					settings: this.settings,
 					registry: this.#modelRegistry,
 					sessionId,
+					hostSessionId: this.sessionManager.getSessionId(),
 					model: this.model,
 					metadataResolver: provider => this.agent.metadataForProvider(provider),
 					onUsage: journalJudgmentUsage(this.sessionManager),
@@ -5337,7 +5338,7 @@ export class AgentSession implements SettingsScope {
 					source: {
 						agent: this.#agentId ?? "Main",
 						role: this.#agentKind,
-						sessionId,
+						sessionId: this.sessionManager.getSessionId(),
 						sessionLabel: this.sessionName,
 					},
 					isCurrent: () =>
@@ -6737,6 +6738,7 @@ export class AgentSession implements SettingsScope {
 		const previousSessionId = this.sessionId;
 		const closedProviderSessions = this.#providerSessionState.size;
 		this.#closeAllProviderSessions("fresh session");
+		this.#abortProseCapture();
 		this.#freshProviderSessionId = Bun.randomUUIDv7();
 		this.#syncAgentSessionId();
 		this.#memory.rekeyForCurrentSessionId();
@@ -6820,6 +6822,7 @@ export class AgentSession implements SettingsScope {
 		// history server-side starts a brand-new exchange rather than resuming the
 		// context we just dropped (mirrors freshSession()).
 		this.#closeAllProviderSessions("reset context");
+		this.#abortProseCapture();
 		this.#freshProviderSessionId = Bun.randomUUIDv7();
 		this.#syncAgentSessionId();
 		this.#memory.rekeyForCurrentSessionId();

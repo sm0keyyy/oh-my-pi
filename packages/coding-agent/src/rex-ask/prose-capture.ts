@@ -14,6 +14,7 @@ const QUESTIONS = judgeQuestions(questionFile);
 
 interface ProseCaptureDeps extends ClassifyUnexpectedStopDeps {
 	agentKind: "main" | "sub";
+	hostSessionId: string;
 	source: { agent: string; role?: string; sessionId: string; sessionLabel?: string };
 	isCurrent(): boolean;
 	prompt(text: string, options: PromptOptions): Promise<boolean>;
@@ -22,14 +23,14 @@ interface ProseCaptureDeps extends ClassifyUnexpectedStopDeps {
 /** Optional post-turn capture; an unavailable judge must not create an ask. */
 export async function captureProseAsk(message: string, deps: ProseCaptureDeps): Promise<void> {
 	if (deps.agentKind !== "main" || !rexAskSettings.proseCapture.get(deps.settings)) return;
-	if (deps.sessionId !== askHostSessionId()) return;
+	if (deps.hostSessionId !== askHostSessionId()) return;
 	const text = message.trim();
 	const separator = /\r?\n[\t ]*\r?\n/g;
 	let paragraphStart = 0;
 	for (const match of text.matchAll(separator)) paragraphStart = match.index + match[0].length;
 	const paragraph = text.slice(paragraphStart).trim();
 	if (!ASK_PATTERN.test(text) && !paragraph.includes("?")) return;
-	if (deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId()) return;
+	if (deps.signal?.aborted || !deps.isCurrent() || deps.hostSessionId !== askHostSessionId()) return;
 
 	try {
 		const timeout = AbortSignal.timeout(8_000);
@@ -49,7 +50,12 @@ export async function captureProseAsk(message: string, deps: ProseCaptureDeps): 
 		const { answers } = await untilAborted(signal, () =>
 			judge.judge({ state, questions: { asks: QUESTIONS.asks } }, { signal }),
 		);
-		if (answers.asks.noul < 0.5 || deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId())
+		if (
+			answers.asks.noul < 0.5 ||
+			deps.signal?.aborted ||
+			!deps.isCurrent() ||
+			deps.hostSessionId !== askHostSessionId()
+		)
 			return;
 		const pending = requestOperatorAsk({
 			question: paragraph.slice(0, 500),
@@ -59,7 +65,12 @@ export async function captureProseAsk(message: string, deps: ProseCaptureDeps): 
 			signal: deps.signal,
 		});
 		const result = deps.signal ? await untilAborted(deps.signal, () => pending) : await pending;
-		if ("cancelled" in result || deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId())
+		if (
+			"cancelled" in result ||
+			deps.signal?.aborted ||
+			!deps.isCurrent() ||
+			deps.hostSessionId !== askHostSessionId()
+		)
 			return;
 		await deps.prompt(result.answer, { expandPromptTemplates: false, streamingBehavior: "followUp" });
 	} catch (error) {

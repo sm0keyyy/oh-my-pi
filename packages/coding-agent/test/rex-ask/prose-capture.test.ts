@@ -5,6 +5,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import * as judgment from "../../src/judgment";
 import * as asks from "../../src/rex-ask";
 import { captureProseAsk } from "../../src/rex-ask/prose-capture";
 import { rexAskSettings } from "../../src/rex-ask/settings";
@@ -87,6 +88,7 @@ describe("prose questions become operator asks", () => {
 			settings,
 			registry,
 			sessionId: "test-prose-capture",
+			hostSessionId: "test-prose-capture",
 			agentKind: "main" as const,
 			source: { agent: "Main", role: "coder", sessionId: "test-prose-capture", sessionLabel: "Watchdog" },
 			isCurrent: () => true,
@@ -97,7 +99,7 @@ describe("prose questions become operator asks", () => {
 		};
 	}
 
-	function mainSession(): AgentSession {
+	function mainSession(providerSessionId?: string): AgentSession {
 		const agent = new Agent({
 			initialState: {
 				model: getBundledModel("anthropic", "claude-sonnet-4-5"),
@@ -111,8 +113,9 @@ describe("prose questions become operator asks", () => {
 			sessionManager: SessionManager.inMemory("/tmp/prose-capture"),
 			settings,
 			modelRegistry: registry,
+			providerSessionId,
 		});
-		vi.spyOn(asks, "askHostSessionId").mockReturnValue(session.sessionId);
+		vi.spyOn(asks, "askHostSessionId").mockReturnValue(session.sessionManager.getSessionId());
 		return session;
 	}
 
@@ -145,6 +148,7 @@ describe("prose questions become operator asks", () => {
 			await captureProseAsk(`${question} (busy)`, {
 				...deps(),
 				sessionId: live.sessionId,
+				hostSessionId: live.sessionManager.getSessionId(),
 				prompt: (answer, options) => live.prompt(answer, options),
 			});
 			expect(live.getQueuedMessages()).toMatchObject({ followUp: ["/quit"], steering: [] });
@@ -152,6 +156,27 @@ describe("prose questions become operator asks", () => {
 			agent.state.isStreaming = false;
 		}
 	});
+
+	for (const identity of ["fresh", "reset", "override"] as const) {
+		it(`captures after ${identity} while keeping provider identity for Jev`, async () => {
+			const live = mainSession(identity === "override" ? "provider-session-override" : undefined);
+			const transcriptId = live.sessionManager.getSessionId();
+			if (identity === "fresh") expect(live.freshSession()).toBeDefined();
+			if (identity === "reset") expect(await live.resetSessionContext()).toBeDefined();
+			expect(live.sessionId).not.toBe(transcriptId);
+			const judge = vi.spyOn(judgment, "resolveJudge");
+			const delivered = Promise.withResolvers<void>();
+			vi.spyOn(live.agent, "prompt").mockImplementation(async () => delivered.resolve());
+			const message = createAssistantMessage(`${question} (${identity})`);
+			live.agent.emitExternalEvent({ type: "message_end", message });
+			live.agent.emitExternalEvent({ type: "agent_end", messages: [message] });
+			await untilAborted(AbortSignal.timeout(4_000), delivered.promise);
+			await live.waitForIdle();
+			expect(filed).toHaveLength(1);
+			expect(filed[0].source.sessionId).toBe(transcriptId);
+			expect(judge).toHaveBeenCalledWith(expect.objectContaining({ sessionId: live.sessionId }));
+		});
+	}
 
 	it("does not send a non-match to Jev and files nothing when Jev says no", async () => {
 		await captureProseAsk("Good night.", deps());
@@ -172,7 +197,7 @@ describe("prose questions become operator asks", () => {
 	});
 
 	it("does not capture a helper session even when its agentKind is main", async () => {
-		await captureProseAsk(question, { ...deps(), sessionId: "helper-session" });
+		await captureProseAsk(question, { ...deps(), hostSessionId: "helper-session" });
 		expect(judged).toEqual([]);
 		expect(filed).toEqual([]);
 	});
@@ -184,7 +209,7 @@ describe("prose questions become operator asks", () => {
 		expect(filed).toEqual([]);
 	});
 
-	for (const action of ["abort", "chat"] as const) {
+	for (const action of ["abort", "chat", "fresh"] as const) {
 		it(`${action} withdraws a pending capture and rejects its late answer`, async () => {
 			const live = mainSession();
 			const asked = Promise.withResolvers<Parameters<typeof asks.requestOperatorAsk>[0]>();
@@ -199,15 +224,16 @@ describe("prose questions become operator asks", () => {
 			live.agent.emitExternalEvent({ type: "agent_end", messages: [message] });
 			const pending = await untilAborted(AbortSignal.timeout(4_000), asked.promise);
 			if (action === "abort") await live.abort();
+			else if (action === "fresh") expect(live.freshSession()).toBeDefined();
 			else await live.prompt("Do it.");
 			expect(pending.signal?.aborted).toBe(true);
 			answer.resolve({ answer: "Stale float answer" });
 			await live.waitForIdle();
 			const dispatched: unknown = prompt.mock.calls.map(([messages]) => messages);
 			expect(dispatched).toEqual(
-				action === "abort"
-					? []
-					: [[expect.objectContaining({ role: "user", content: [{ type: "text", text: "Do it." }] })]],
+				action === "chat"
+					? [[expect.objectContaining({ role: "user", content: [{ type: "text", text: "Do it." }] })]]
+					: [],
 			);
 		});
 	}

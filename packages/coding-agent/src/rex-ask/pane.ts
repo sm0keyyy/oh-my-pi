@@ -32,6 +32,7 @@ export class AskPane {
 	#windowId = "";
 	#chain = Promise.resolve();
 	#disposed = false;
+	#raiseQueued = false;
 	readonly #run: RexRunner;
 
 	constructor(readonly options: AskPaneOptions) {
@@ -145,7 +146,14 @@ export class AskPane {
 			id => this.#follow(id),
 			undefined,
 			() => {
-				this.#chain = this.#chain.then(() => this.#raise(true)).catch(error => this.#fail(error));
+				if (this.#raiseQueued) return;
+				this.#raiseQueued = true;
+				this.#chain = this.#chain
+					.then(() => {
+						this.#raiseQueued = false;
+						return this.#raise(true);
+					})
+					.catch(error => this.#fail(error));
 			},
 		);
 		void this.#watch.failed?.then(() => this.#fail(new Error("Rex ask tab events unavailable")));
@@ -219,6 +227,7 @@ export class AskPane {
 		await this.#call("session.raise_layer", { layer_id: layer.layer_id });
 	}
 	async focus(): Promise<boolean> {
+		if (!this.#pane) await this.#opening;
 		const pane = this.#pane;
 		if (!pane) return false;
 		const focused = this.#chain.then(async () => {

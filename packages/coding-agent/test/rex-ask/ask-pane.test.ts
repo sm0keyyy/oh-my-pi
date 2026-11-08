@@ -536,3 +536,52 @@ test("a panel float is raised below the pending ask after a Rex view change", as
 	abort.abort();
 	expect(await answer).toBeUndefined();
 });
+
+test("focus waits for an opening float before focusing its ready block", async () => {
+	const h = await fixture();
+	const paused = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	h.beforeRequest(async args => {
+		if (args[4] === "session.new_layer") {
+			paused.resolve();
+			await resume.promise;
+		}
+	});
+	const abort = new AbortController();
+	const answer = h.ui.askDialog!(question("opening-focus"), { signal: abort.signal });
+	await paused.promise;
+	const focused = focusAskPane();
+	resume.resolve();
+	expect(await focused).toBe(true);
+	expect(h.focus.w1).toBe(ASK_BLOCK);
+	abort.abort();
+	expect(await answer).toBeUndefined();
+});
+
+test("a burst of view changes queues only one pending raise inspection", async () => {
+	const h = await fixture();
+	const abort = new AbortController();
+	const answer = h.ui.askDialog!(question("view-burst"), { signal: abort.signal });
+	await until(() => h.screen().includes("Choose view-burst?"));
+	expect(await focusAskPane()).toBe(true);
+	const paused = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	h.beforeRequest(async args => {
+		if (args[4] === "session.raise_layer") {
+			paused.resolve();
+			await resume.promise;
+		}
+	});
+	const firstFocus = focusAskPane();
+	await paused.promise;
+	const inspectionsBefore = h.calls.filter(call => call[0] === "session" && call[1] === "inspect").length;
+	for (let index = 0; index < 100; index++) h.cover();
+	resume.resolve();
+	expect(await firstFocus).toBe(true);
+	expect(await focusAskPane()).toBe(true);
+	// One coalesced view inspection and one inspection for the second explicit focus.
+	const inspectionsAfter = h.calls.filter(call => call[0] === "session" && call[1] === "inspect").length;
+	expect(inspectionsAfter - inspectionsBefore).toBe(2);
+	abort.abort();
+	expect(await answer).toBeUndefined();
+});

@@ -214,8 +214,17 @@ export const frameDefs = {
 		"prefill?": "string",
 		"promptStyle?": "boolean",
 	},
+	AskSource: { agent: "string", "role?": "string", "sessionId?": "string", "sessionLabel?": "string" },
 	AskUiRequest: doc(
-		{ type: UI, id: "string", method: "'ask'", questions: "AskQuestion[]", "timeout?": "number.integer" },
+		{
+			type: UI,
+			id: "string",
+			method: "'ask'",
+			questions: "AskQuestion[]",
+			"timeout?": "number.integer",
+			"source?": "AskSource",
+			"context?": "string",
+		},
 		"Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it.",
 	),
 	CancelUiRequest: doc(

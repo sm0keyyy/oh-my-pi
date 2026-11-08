@@ -1,6 +1,8 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolSession } from "../tools";
+import { askSourceSchema } from "../rex-ask/types";
+import { AgentRegistry } from "../registry/agent-registry";
 import {
 	buildResults,
 	formatAnswerText,
@@ -23,7 +25,7 @@ import {
 	waitForAnswer,
 } from "./queue";
 
-const askSchema = type({ questions: questionSchema.array() });
+const askSchema = type({ questions: questionSchema.array(), "source?": askSourceSchema, "context?": "string" });
 const resultSchema = type({ id: "string" });
 interface ResultDetails {
 	status?: string;
@@ -81,7 +83,17 @@ export class AskOperatorTool implements AgentTool<typeof askSchema, ResultDetail
 			// A host without session identity still gets a manually answerable request.
 		}
 		const origin = await originSessionId({ getSessionId: () => from, getSessionFile: this.session.getSessionFile });
-		await enqueueRequest(id, from, params.questions, origin);
+		const agent = this.session.getAgentId?.() ?? "Main";
+		const ref = AgentRegistry.global().get(agent);
+		await enqueueRequest(id, from, params.questions, origin, undefined, {
+			source: params.source ?? {
+				agent,
+				role: ref?.history?.agent ?? ref?.kind,
+				sessionId: from,
+				sessionLabel: ref?.session?.sessionManager.getSessionName(),
+			},
+			context: params.context,
+		});
 		return text(formatQueuedReturn(id), { status: "queued", id });
 	}
 }

@@ -1438,6 +1438,13 @@ export interface EditorUiRequest {
 	promptStyle?: boolean;
 }
 
+export interface AskSource {
+	agent: string;
+	role?: string;
+	sessionId?: string;
+	sessionLabel?: string;
+}
+
 /** Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it. */
 export interface AskUiRequest {
 	type: "extension_ui_request";
@@ -1445,6 +1452,8 @@ export interface AskUiRequest {
 	method: "ask";
 	questions: AskQuestion[];
 	timeout?: number;
+	source?: AskSource;
+	context?: string;
 }
 
 /** Close the dialog opened by request `targetId`; a later answer to it is ignored. */
@@ -1767,6 +1776,10 @@ export interface TogglePaneParams {
 
 export interface TogglePaneResult {
 	open: boolean;
+}
+
+export interface FocusAskPaneResult {
+	focused: boolean;
 }
 
 export interface GetAvailableCommandsResult {
@@ -2139,6 +2152,7 @@ export interface RpcWireCommands {
 	set_ask_dialog: { params: SetAskDialogParams; result: SetAskDialogResult };
 	set_review_dialog: { params: SetReviewDialogParams; result: SetReviewDialogResult };
 	toggle_pane: { params: TogglePaneParams; result: TogglePaneResult };
+	focus_ask_pane: { params: undefined; result: FocusAskPaneResult };
 	get_available_commands: { params: undefined; result: GetAvailableCommandsResult };
 	get_entries: { params: GetEntriesParams; result: SessionEntries };
 	get_tree: { params: undefined; result: SessionTree };

@@ -34,6 +34,7 @@ import {
 	getExtensionUISelectOptionLabel,
 	timedOutAskDialogResult,
 } from "../../extensibility/extensions";
+import { focusAskPane } from "../../rex-ask";
 import {
 	type BuiltSkillPromptMessage,
 	loadSkillPrompt,
@@ -1260,7 +1261,13 @@ export async function requestRpcAskDialog(
 		output,
 		opts,
 		undefined,
-		{ method: "ask", questions, timeout: dialogOptions?.timeout },
+		{
+			method: "ask",
+			questions,
+			timeout: dialogOptions?.timeout,
+			source: dialogOptions?.source,
+			context: dialogOptions?.context,
+		},
 		response => parseAskDialogResponse(response, questions, opts),
 	);
 	return timedOut ? timedOutAskDialogResult(questions) : result;
@@ -2437,6 +2444,8 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 
 			case "toggle_pane":
 				return error(id, "toggle_pane", "toggle_pane needs the interactive TUI in Rex");
+			case "focus_ask_pane":
+				return success(id, command.type, { focused: await focusAskPane() });
 
 			case "pane_crashed":
 			case "reopen_pane":

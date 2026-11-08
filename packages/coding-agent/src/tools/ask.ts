@@ -29,6 +29,8 @@ import { theme } from "@oh-my-pi/pi-tui/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import askHeadlessForkMessage from "../prompts/tools/ask-headless-fork.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
+import { AgentRegistry } from "../registry/agent-registry";
+import { askSourceSchema } from "../rex-ask/types";
 
 import type { ToolSession } from ".";
 import {
@@ -86,6 +88,8 @@ const QuestionItem = arkType({
 
 const askSchema = arkType({
 	questions: QuestionItem.array().atLeastLength(1),
+	"source?": askSourceSchema,
+	"context?": "string",
 });
 
 const askRecoveryTool = { name: "ask", description: "", parameters: askSchema };
@@ -819,7 +823,19 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							...(q.multi !== undefined ? { multi: q.multi } : {}),
 							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
 						})),
-						{ timeout: timeout ?? undefined, signal: dialogSignal, acceptImages: true },
+						{
+							timeout: timeout ?? undefined,
+							signal: dialogSignal,
+							acceptImages: true,
+							source: params.source ?? {
+								agent: this.session.getAgentId?.() ?? (isSubagent ? "Subagent" : "Main"),
+								role:
+									AgentRegistry.global().get(this.session.getAgentId?.() ?? "Main")?.history?.agent ??
+									(isSubagent ? "subagent" : "main"),
+								sessionId: this.session.getSessionId?.() ?? undefined,
+							},
+							context: params.context,
+						},
 					);
 				const richResult = await untilAborted(dialogSignal, showRichDialog);
 				if (!richResult) return cancelAsk();

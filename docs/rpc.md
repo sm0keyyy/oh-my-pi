@@ -205,6 +205,7 @@ Important edge behavior from runtime:
 - `{ id?, type: "abort_subagent", subagentId: string, reason?: string }`
 - `{ id?, type: "follow_up_subagent", subagentId: string, message: string }`
 - `{ id?, type: "toggle_pane", pane: "todo" | "agents", shape?: "dock" | "float" }`
+- `{ id?, type: "focus_ask_pane" }`
 
 ### Model
 
@@ -1245,6 +1246,19 @@ responses carry an operation result in `data`; a refused operation returns
 A host without native pane support returns a failed command response with
 `error: "toggle_pane needs the interactive TUI in Rex"`. Toggling a pane does
 not answer a pending extension dialog.
+
+`focus_ask_pane` returns `{ focused: boolean }`. It raises and focuses the
+pending operator ask float, or returns `false` when no float is open.
+The palette-only Rex action `omp: answer ask` sends this command.
+
+With `rexAsk.float` enabled (the default), main asks, subagent asks and
+operator-queue interviews share one oldest-first float. The float follows
+the active Rex tab and opens in front without taking keyboard focus.
+The chat shows `Waiting on the operator (ask pane)` instead of an inline
+dialog. Outside Rex, or when the float cannot open, the inline dialog remains
+available. A sessions-web answer and a float answer race; the first answer
+cancels the other surface. Ask requests can include optional `source`
+(`agent`, `role`, `sessionId`, `sessionLabel`) and `context` fields.
 
 ### Side questions (`/btw`)
 

@@ -4695,6 +4695,17 @@ pub struct EditorUiRequest {
 	pub prompt_style: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskSource {
+	pub agent: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub role: Option<String>,
+	#[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+	pub session_id: Option<String>,
+	#[serde(rename = "sessionLabel", default, skip_serializing_if = "Option::is_none")]
+	pub session_label: Option<String>,
+}
+
 /// Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AskUiRequest {
@@ -4702,6 +4713,10 @@ pub struct AskUiRequest {
 	pub questions: Vec<AskQuestion>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub timeout: Option<i64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<AskSource>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub context: Option<String>,
 }
 
 /// Close the dialog opened by request `targetId`; a later answer to it is ignored.
@@ -5493,6 +5508,11 @@ pub struct TogglePaneParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TogglePaneResult {
 	pub open: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FocusAskPaneResult {
+	pub focused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6983,6 +7003,20 @@ impl Command for TogglePaneCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<TogglePaneResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Focus the pending operator ask in the floating Rex pane.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FocusAskPaneCommand {}
+
+impl Command for FocusAskPaneCommand {
+	const NAME: &'static str = "focus_ask_pane";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = FocusAskPaneResult;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<FocusAskPaneResult>(data.unwrap_or_else(|| Value::Object(Map::new())))
 	}
 }
 

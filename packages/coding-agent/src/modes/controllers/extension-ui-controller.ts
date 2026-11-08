@@ -57,6 +57,7 @@ import type { RpcSocketServer } from "../rpc/rpc-socket";
 import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 import { approvalAnswerForChoice, approvalChoiceLabels, approvalOnceLabel } from "../../tools/approval";
 import { createReviewOverlay } from "../../rex-review/review-pane";
+import { routeAskDialog } from "../../rex-ask";
 
 const MAX_WIDGET_LINES = 10;
 
@@ -923,7 +924,10 @@ export class ExtensionUiController {
 		const normalized = normalizeDialogQuestions(questions);
 		return this.#raceRpcDialog(
 			normalized.map(question => question.question).join("\n"),
-			signal => this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
+			signal =>
+				routeAskDialog(normalized, { ...dialogOptions, signal }, () =>
+					this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
+				),
 			(ui, signal) => ui.askDialog?.(normalized, { ...dialogOptions, signal }),
 			dialogOptions,
 		);

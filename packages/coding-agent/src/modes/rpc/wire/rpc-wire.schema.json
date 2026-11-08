@@ -208,6 +208,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "focus_ask_pane",
+				"doc": "Focus the pending operator ask in the floating Rex pane.",
+				"params": null,
+				"result": "FocusAskPaneResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "get_available_commands",
 				"doc": "List the slash-command catalog.",
 				"params": null,
@@ -5028,6 +5039,24 @@
 			},
 			"required": ["type", "id", "method", "title"]
 		},
+		"AskSource": {
+			"type": "object",
+			"properties": {
+				"agent": {
+					"type": "string"
+				},
+				"role": {
+					"type": "string"
+				},
+				"sessionId": {
+					"type": "string"
+				},
+				"sessionLabel": {
+					"type": "string"
+				}
+			},
+			"required": ["agent"]
+		},
 		"AskUiRequest": {
 			"type": "object",
 			"properties": {
@@ -5048,6 +5077,12 @@
 				},
 				"timeout": {
 					"type": "integer"
+				},
+				"source": {
+					"$ref": "#/$defs/AskSource"
+				},
+				"context": {
+					"type": "string"
 				}
 			},
 			"required": ["type", "id", "method", "questions"],
@@ -6014,6 +6049,15 @@
 				}
 			},
 			"required": ["open"]
+		},
+		"FocusAskPaneResult": {
+			"type": "object",
+			"properties": {
+				"focused": {
+					"type": "boolean"
+				}
+			},
+			"required": ["focused"]
 		},
 		"GetAvailableCommandsResult": {
 			"type": "object",

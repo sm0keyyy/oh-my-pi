@@ -3,6 +3,7 @@ import { type } from "@oh-my-pi/omptype";
 import { isEnoent, logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { writeFileAtomically } from "../utils/atomic-file";
 import { ensureDirs, entryPath, envMilliseconds, isSafeId, queuePaths, type QueuePaths } from "./paths";
+import { askSourceSchema, type AskSource } from "../rex-ask/types";
 
 export const questionSchema = type({
 	id: "string",
@@ -20,6 +21,8 @@ const pendingSchema = type({
 	"enqueueOrder?": "number",
 	"session?": "string",
 	questions: questionSchema.array(),
+	"source?": askSourceSchema,
+	"context?": "string",
 });
 export type PendingInterview = typeof pendingSchema.infer;
 export interface Answer {
@@ -64,6 +67,7 @@ export async function enqueueRequest(
 	questions: AskQuestion[],
 	session?: string,
 	paths = queuePaths(),
+	metadata?: { source?: AskSource; context?: string },
 ): Promise<PendingInterview> {
 	const file = entryPath(paths.pending, id);
 	await ensureDirs(paths);
@@ -74,6 +78,7 @@ export async function enqueueRequest(
 		// Epoch milliseconds retain sub-millisecond precision across writer processes.
 		enqueueOrder: performance.timeOrigin + performance.now(),
 		questions,
+		...metadata,
 	};
 	if (session !== undefined) request.session = session;
 	await writeFileAtomically(file, JSON.stringify(request, null, 2));

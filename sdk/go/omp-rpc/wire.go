@@ -6414,11 +6414,38 @@ func (v EditorUiRequest) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"extension_ui_request","method":"editor"`, nil)
 }
 
+type AskSource struct {
+	Agent        string  `json:"agent"`
+	Role         *string `json:"role,omitempty"`
+	SessionID    *string `json:"sessionId,omitempty"`
+	SessionLabel *string `json:"sessionLabel,omitempty"`
+}
+
+func (v *AskSource) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "AskSource", v.decodeFrom)
+}
+
+func (v *AskSource) decodeFrom(raw map[string]json.RawMessage) error {
+	var out AskSource
+	d := fieldDecoder{raw: raw, owner: "AskSource"}
+	d.required("agent", &out.Agent)
+	d.optional("role", &out.Role)
+	d.optional("sessionId", &out.SessionID)
+	d.optional("sessionLabel", &out.SessionLabel)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 // Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it.
 type AskUiRequest struct {
 	ID        string        `json:"id"`
 	Questions []AskQuestion `json:"questions"`
 	Timeout   *int64        `json:"timeout,omitempty"`
+	Source    *AskSource    `json:"source,omitempty"`
+	Context   *string       `json:"context,omitempty"`
 }
 
 func (v *AskUiRequest) UnmarshalJSON(data []byte) error {
@@ -6433,6 +6460,8 @@ func (v *AskUiRequest) decodeFrom(raw map[string]json.RawMessage) error {
 	d.constant("method", "ask")
 	d.required("questions", &out.Questions)
 	d.optional("timeout", &out.Timeout)
+	d.optional("source", &out.Source)
+	d.optional("context", &out.Context)
 	if d.err != nil {
 		return d.err
 	}
@@ -7932,6 +7961,25 @@ func (v *TogglePaneResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type FocusAskPaneResult struct {
+	Focused bool `json:"focused"`
+}
+
+func (v *FocusAskPaneResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "FocusAskPaneResult", v.decodeFrom)
+}
+
+func (v *FocusAskPaneResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out FocusAskPaneResult
+	d := fieldDecoder{raw: raw, owner: "FocusAskPaneResult"}
+	d.required("focused", &out.Focused)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type GetAvailableCommandsResult struct {
 	Commands []AvailableSlashCommand `json:"commands"`
 }
@@ -8797,6 +8845,13 @@ func (v *TogglePaneCommandShape) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return unknownValue("TogglePaneCommandShape", s)
+}
+
+// FocusAskPane sends "focus_ask_pane": Focus the pending operator ask in the floating Rex pane.
+func (c Commands) FocusAskPane(ctx context.Context) (FocusAskPaneResult, error) {
+	var out FocusAskPaneResult
+	err := c.call(ctx, "focus_ask_pane", nil, 0, &out)
+	return out, err
 }
 
 // GetAvailableCommands sends "get_available_commands": List the slash-command catalog.

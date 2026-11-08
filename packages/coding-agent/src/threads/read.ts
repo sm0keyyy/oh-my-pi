@@ -67,12 +67,12 @@ export async function readAgentThreadPage(
 		agentId,
 		sessionFile,
 		rootSessionFile,
-		(item, discardIndex) => {
+		(item, discardIndex, sourceFile) => {
 			const cursor = { ts: item.ts, index: index++ };
 			if (options.before && compareCursor(cursor, options.before) >= 0) return;
 			const originalBytes = threadItemBytes(item);
 			if (originalBytes > MAX_THREAD_BYTES) {
-				const marker = `\n[Truncated thread entry: ${originalBytes} bytes; full entry in ${sessionFile}]`;
+				const marker = `\n[Truncated thread entry: ${originalBytes} bytes; full entry in ${sourceFile}]`;
 				// JSON escaping can use six bytes per character. Leave room for identity fields and the marker.
 				const text =
 					truncateHeadBytes(
@@ -118,7 +118,7 @@ async function projectThread(
 	agentId: string,
 	sessionFile: string,
 	rootSessionFile: string | undefined,
-	emit: (item: ThreadItem, discardIndex: () => void) => void,
+	emit: (item: ThreadItem, discardIndex: () => void, sourceFile: string) => void,
 	shouldContinue: () => boolean = () => true,
 	onIndexBytes: (bytes: number) => void = () => {},
 	indexLimit: () => number = () => MAX_INDEX_BYTES,
@@ -163,7 +163,7 @@ async function projectThread(
 	let parentRange: FileRange | undefined;
 	let parentCallRange: FileRange | undefined;
 	const fallbacks = new Map<"brief" | "result", { range: FileRange; source?: FileRange }>();
-	const projection = new AgentThreadProjection(agentId, item => emit(item, discardIndex), {
+	const projection = new AgentThreadProjection(agentId, item => emit(item, discardIndex, sessionFile), {
 		fileBacked: true,
 		onParentFallback(item) {
 			if (parentRange && (item.kind === "brief" || item.kind === "result")) {
@@ -260,7 +260,7 @@ async function projectThread(
 				},
 			});
 			recovered.parent(entry, source);
-			if (selected) emit(selected, discardIndex);
+			if (selected) emit(selected, discardIndex, rootSessionFile);
 		}
 	}
 }

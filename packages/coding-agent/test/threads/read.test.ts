@@ -98,12 +98,66 @@ describe("thread files", () => {
 		expect("text" in large.items[0]! && large.items[0].text).toMatch(
 			/large:[\s\S]*Truncated thread entry: 2097\d+ bytes/,
 		);
+		expect("text" in large.items[0]! && large.items[0].text).toContain(`full entry in ${file}`);
 		expect(large.peakRetainedBytes).toBeLessThanOrEqual(1024 * 1024);
 		expect(large.older).toBeDefined();
 		const oldest = await readAgentThreadPage("Alpha", file, undefined, { before: large.older });
 		expect(oldest.items).toHaveLength(1);
 		expect(oldest.items[0]).toMatchObject({ entryId: "oldest", kind: "brief" });
 		expect(oldest.older).toBeUndefined();
+	});
+
+	it("points oversized parent-only brief and result markers to the parent transcript", async () => {
+		using dir = TempDir.createSync("@omp-thread-parent-source-");
+		const child = `${dir.path()}/child.jsonl`;
+		const parent = `${dir.path()}/parent.jsonl`;
+		const timestamp = "2026-01-01T00:00:00Z";
+		const header = JSON.stringify({ type: "session", id: "parent-source", timestamp });
+		await Bun.write(child, `${header}\n`);
+		await Bun.write(
+			parent,
+			[
+				header,
+				JSON.stringify({
+					type: "message",
+					id: "parent-task",
+					timestamp,
+					message: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "task-call",
+								name: "task",
+								arguments: { tasks: [{ name: "Alpha", task: `brief:${"b".repeat(2 * 1024 * 1024)}` }] },
+							},
+						],
+					},
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "parent-result",
+					timestamp,
+					message: {
+						role: "toolResult",
+						toolName: "task",
+						toolCallId: "task-call",
+						content: [],
+						details: { results: [{ id: "Alpha", output: `result:${"r".repeat(2 * 1024 * 1024)}` }] },
+					},
+				}),
+			].join("\n"),
+		);
+		const page = await readAgentThreadPage("Alpha", child, parent);
+		expect(page.items.map(item => item.kind)).toEqual(["brief", "result"]);
+		for (const item of page.items) {
+			expect(item).toHaveProperty("text");
+			if (!("text" in item)) throw new Error("Expected a projected text entry");
+			expect(item.text).toContain("Truncated thread entry");
+			expect(item.text).toContain(`full entry in ${parent}`);
+			expect(item.text).not.toContain(`full entry in ${child}`);
+		}
+		expect(page.peakRetainedBytes).toBeLessThanOrEqual(1024 * 1024);
 	});
 
 	it.each(["child", "revived", "empty"])(

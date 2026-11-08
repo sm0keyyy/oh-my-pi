@@ -24,6 +24,36 @@ describe("team IRC", () => {
 		]);
 	});
 
+	it("does not recurse through dot transcript stems and still reads proper child directories", async () => {
+		using dir = TempDir.createSync("@omp-feed-dot-stems-");
+		const root = `${dir.path()}/root.jsonl`;
+		const header = `${JSON.stringify({ type: "session", id: "dot-stems", timestamp: new Date(start).toISOString() })}\n`;
+		await Bun.write(root, header);
+		for (const stem of ["", ".", "..", "Alpha", "Alpha/Beta"]) {
+			await Bun.write(
+				`${dir.path()}/root/${stem}.jsonl`,
+				header +
+					`${JSON.stringify({
+						type: "custom_message",
+						id: `irc-${stem}`,
+						timestamp: new Date(start).toISOString(),
+						customType: "irc:incoming",
+						details: { id: `irc-${stem}`, from: "Main", message: `history-${stem}` },
+					})}\n`,
+			);
+		}
+		let checks = 0;
+		const page = await readIrcFeedPage(root, { shouldContinue: () => ++checks < 100 });
+		expect(checks).toBeLessThan(100);
+		expect(page.items.map(item => item.text).sort()).toEqual([
+			"history-",
+			"history-.",
+			"history-..",
+			"history-Alpha",
+			"history-Alpha/Beta",
+		]);
+	});
+
 	it("streams descendant histories over 50 MiB into bounded pages and reads older entries from disk", async () => {
 		using dir = TempDir.createSync("@omp-feed-pages-");
 		const root = `${dir.path()}/root.jsonl`;

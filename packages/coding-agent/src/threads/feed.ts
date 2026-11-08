@@ -118,8 +118,11 @@ export async function readIrcFeedPage(rootSessionFile: string, options: FeedPage
 			)
 				continue;
 			const file = path.join(dir, entry.name);
-			await visit(file, entry.name.slice(0, -6));
-			const childDir = file.slice(0, -6);
+			const agentId = entry.name.slice(0, -6);
+			await visit(file, agentId);
+			// Dot stems name this directory or its parent, not an immediate child.
+			if (!agentId || agentId === "." || agentId === "..") continue;
+			const childDir = path.join(dir, agentId);
 			try {
 				if ((await fs.lstat(childDir)).isDirectory()) await descend(childDir);
 			} catch (error) {

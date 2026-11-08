@@ -15,6 +15,8 @@ import {
 import { Modal } from "./dialogs";
 import { Transcript } from "./transcript";
 
+import { ThreadView } from "./thread";
+import { UsageSection } from "./usage";
 export function todoPhasesForSave(phases: RecordValue[]): TodoPhase[] {
 	return phases.map(phase => ({
 		name: text(phase.name),
@@ -56,6 +58,8 @@ export function Rail({
 	const [result, setResult] = useState<{ title: string; value: unknown } | null>(null);
 	const [agent, setAgent] = useState<RecordValue | null>(null);
 	const [agentMessages, setAgentMessages] = useState<Message[]>([]);
+	const [agentEntries, setAgentEntries] = useState<RecordValue[]>([]);
+	const [agentView, setAgentView] = useState<"messages" | "thread">("messages");
 	const [steer, setSteer] = useState("");
 	const [phases, setPhases] = useState<RecordValue[] | null>(null);
 	const [branches, setBranches] = useState<RecordValue[] | null>(null);
@@ -65,13 +69,15 @@ export function Rail({
 		if (selectedAgentId) setAgent({ id: selectedAgentId });
 	}, [selectedAgentId]);
 	useEffect(() => {
-		if (!agent) return;
+		if (!agent || agentView !== "messages") return;
 		let cancelled = false;
 		const load = async () => {
 			try {
 				const result = await client.request({ type: "get_subagent_messages", subagentId: text(agent.id) });
-				if (!cancelled)
+				if (!cancelled) {
 					setAgentMessages(records(result.messages).map((message, i) => messageOf(message, `agent-${i}`)));
+					setAgentEntries(records(result.entries ?? []));
+				}
 			} catch (error) {
 				if (!cancelled) setError(String(error));
 			}
@@ -82,7 +88,7 @@ export function Rail({
 			cancelled = true;
 			clearInterval(timer);
 		};
-	}, [agent, client]);
+	}, [agent, agentView, client]);
 	const state = snapshot.state;
 	const model = isRecord(state.model) ? state.model : {};
 	const context = isRecord(state.contextUsage) ? state.contextUsage : {};
@@ -265,6 +271,7 @@ export function Rail({
 									className="btn"
 									type="button"
 									onClick={() => {
+										setAgentView("messages");
 										setAgent(agent);
 										setAgentMessages([]);
 									}}
@@ -275,6 +282,7 @@ export function Rail({
 									className="btn"
 									type="button"
 									onClick={() => {
+										setAgentView("messages");
 										setAgent(agent);
 										void client
 											.request({ type: "get_subagent_messages", subagentId: text(agent.id) })
@@ -289,6 +297,17 @@ export function Rail({
 									Messages
 								</button>
 								<button
+									className="btn"
+									type="button"
+									style={{ minHeight: 44 }}
+									onClick={() => {
+										setAgentView("thread");
+										setAgent(agent);
+									}}
+								>
+									Thread
+								</button>
+								<button
 									className="btn btn-stop"
 									type="button"
 									onClick={() => act({ type: "cancel_subagent", subagentId: text(agent.id) })}
@@ -300,6 +319,7 @@ export function Rail({
 					))}
 				</div>
 			</details>
+			<UsageSection snapshot={snapshot} />
 			<details className="rail-sec" open>
 				<summary>Status</summary>
 				<div className="rail-body">
@@ -632,40 +652,68 @@ export function Rail({
 						onAgentClose();
 					}}
 				>
-					<div className="dlg-q">
-						<form
-							onSubmit={event => {
-								event.preventDefault();
-								act({ type: "steer_subagent", subagentId: text(agent.id), message: steer });
-								setSteer("");
-							}}
-						>
-							<label className="field">
-								Steer agent
-								<textarea value={steer} onChange={event => setSteer(event.target.value)} required />
-							</label>
-							<button type="submit" className="btn btn-primary">
-								Send steer
-							</button>
-						</form>
+					<div className="dlg-q actions">
 						<button
-							type="button"
 							className="btn"
-							onClick={() => {
-								void client
-									.request({ type: "get_subagent_messages", subagentId: text(agent.id) })
-									.then(result =>
-										setAgentMessages(
-											records(result.messages).map((message, i) => messageOf(message, `agent-${i}`)),
-										),
-									)
-									.catch(error => setError(String(error)));
-							}}
+							type="button"
+							aria-pressed={agentView === "messages"}
+							onClick={() => setAgentView("messages")}
 						>
-							Refresh agent messages
+							Messages
+						</button>
+						<button
+							className="btn"
+							type="button"
+							aria-pressed={agentView === "thread"}
+							onClick={() => setAgentView("thread")}
+						>
+							Thread
 						</button>
 					</div>
-					<Transcript snapshot={{ ...snapshot, messages: transcript, tools: {} }} host={host} />
+					{agentView === "thread" ? (
+						<ThreadView key={text(agent.id)} client={client} subagentId={text(agent.id)} />
+					) : (
+						<>
+							<div className="dlg-q">
+								<form
+									onSubmit={event => {
+										event.preventDefault();
+										act({ type: "steer_subagent", subagentId: text(agent.id), message: steer });
+										setSteer("");
+									}}
+								>
+									<label className="field">
+										Steer agent
+										<textarea value={steer} onChange={event => setSteer(event.target.value)} required />
+									</label>
+									<button type="submit" className="btn btn-primary">
+										Send steer
+									</button>
+								</form>
+								<button
+									type="button"
+									className="btn"
+									onClick={() => {
+										void client
+											.request({ type: "get_subagent_messages", subagentId: text(agent.id) })
+											.then(result =>
+												setAgentMessages(
+													records(result.messages).map((message, i) => messageOf(message, `agent-${i}`)),
+												),
+											)
+											.catch(error => setError(String(error)));
+									}}
+								>
+									Refresh agent messages
+								</button>
+							</div>
+							<Transcript
+								snapshot={{ ...snapshot, messages: transcript, entries: agentEntries, tools: {} }}
+								host={host}
+								client={client}
+							/>
+						</>
+					)}
 				</Modal>
 			)}
 			{phases && (

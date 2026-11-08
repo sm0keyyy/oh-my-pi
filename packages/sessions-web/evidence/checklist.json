@@ -1,5 +1,5 @@
 {
-	"allowed": 77,
+	"allowed": 83,
 	"rows": [
 		{
 			"command": "live_connect",
@@ -773,6 +773,69 @@
 			"receipts": {
 				"desktop": "packages/sessions-web/evidence/review-fixes-browser.json#/0/commands/6",
 				"phone": "packages/sessions-web/evidence/review-fixes-browser.json#/1/commands/6"
+			}
+		},
+		{
+			"command": "pane_crashed",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "supervisor RPC test/rpc-j-commands.test.ts",
+			"screenshots": []
+		},
+		{
+			"command": "reopen_pane",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "supervisor RPC test/rpc-j-commands.test.ts",
+			"screenshots": []
+		},
+		{
+			"command": "view_markdown",
+			"desktop": "not-run",
+			"phone": "not-run",
+			"coverage": "operator path validation RPC test/rpc-j-commands.test.ts",
+			"screenshots": []
+		},
+		{
+			"command": "get_subagent_thread",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "J browser Thread view at 1440, 768 and 390",
+			"screenshots": [
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-thread-1440.png",
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-thread-390.png"
+			],
+			"receipts": {
+				"desktop": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/0",
+				"phone": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/2"
+			}
+		},
+		{
+			"command": "run_runbook_step",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "J browser Run and Run all at 1440, 768 and 390; six admitted jobs",
+			"screenshots": [
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-runbook-1440.png",
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-runbook-390.png"
+			],
+			"receipts": {
+				"desktop": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/0",
+				"phone": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/2"
+			}
+		},
+		{
+			"command": "get_usage",
+			"desktop": "pass",
+			"phone": "pass",
+			"coverage": "J browser Usage section at 1440, 768 and 390; redacted payload",
+			"screenshots": [
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-usage-1440.png",
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-usage-390.png"
+			],
+			"receipts": {
+				"desktop": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/0",
+				"phone": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/2"
 			}
 		}
 	],

@@ -2,6 +2,7 @@ import puppeteer from "puppeteer-core";
 import type { ElementHandle, Page } from "puppeteer-core";
 import * as path from "node:path";
 import { installHttpProbe } from "./http-probe";
+import { isRecord } from "@oh-my-pi/web-render";
 
 type Frame = {
 	id?: string;
@@ -757,7 +758,199 @@ export async function runSessionsRpcAcceptance(page: Page, base: string, root: s
 	return results;
 }
 
-if (import.meta.main) {
+export async function runJSessionsAcceptance(page: Page, root: string, evidence: string) {
+	const fixture = Bun.spawn([process.execPath, path.join(import.meta.dir, "j-fixture.ts")], {
+		cwd: root,
+		stdout: "pipe",
+		stderr: "inherit",
+		timeout: 600000,
+	});
+	let base = "";
+	const reader = fixture.stdout.getReader();
+	try {
+		let output = "";
+		while (!base) {
+			const chunk = await reader.read();
+			if (chunk.done) throw new Error("J fixture exited before READY");
+			output += new TextDecoder().decode(chunk.value);
+			base = /READY (http:\/\/127\.0\.0\.1:\d+)/.exec(output)?.[1] ?? "";
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const instanceId = "0123456789abcdef";
+	const receipts = async () =>
+		(await (await fetch(`${base}/fixture/receipts`)).json()) as {
+			commands: Record<string, unknown>[];
+			responses: Record<string, unknown>[];
+			deliveries: string[];
+		};
+	const runAndWait = async (label: string) => {
+		const before = (await receipts()).responses.filter(frame => frame.command === "run_runbook_step").length;
+		await page.$eval(
+			".runbook-card",
+			(node, label) => {
+				const button = [...node.querySelectorAll("button")].find(button => button.textContent?.trim() === label);
+				if (!button || button.disabled) throw new Error(`Run control unavailable: ${label}`);
+				button.click();
+			},
+			label,
+		);
+		const deadline = Date.now() + 30_000;
+		while (true) {
+			const response = (await receipts()).responses.filter(frame => frame.command === "run_runbook_step")[before];
+			if (response) {
+				if (response.success !== true || !isRecord(response.data) || response.data.ok !== true)
+					throw new Error(`Run refused: ${JSON.stringify(response)}`);
+				break;
+			}
+			if (Date.now() >= deadline) throw new Error("Run response did not arrive");
+			await Bun.sleep(50);
+		}
+		await page.waitForSelector(".runbook-card > button:not(:disabled)");
+	};
+	const results = [];
+	try {
+		for (const width of [1440, 768, 390]) {
+			await page.setViewport({ width, height: 1000, isMobile: width === 390, hasTouch: width === 390 });
+			await page.goto(`${base}/session/${instanceId}`);
+			await page.waitForSelector(".runbook-card button:not(:disabled)");
+			if ((await receipts()).commands.some(command => command.type === "run_runbook_step") && results.length === 0)
+				throw new Error("Runbook ran before a Run press");
+			const panels = async (open: boolean) => {
+				const trigger = await page.$('[aria-label="Panels"]');
+				if (trigger && (await trigger.boundingBox())) {
+					if (open && !(await page.$("dialog[open]"))) await trigger.click();
+					if (!open && (await page.$("dialog[open]"))) await page.keyboard.press("Escape");
+				}
+			};
+			await panels(true);
+			await page.waitForFunction(() =>
+				[...document.querySelectorAll(".rail")].some(
+					node => node.getBoundingClientRect().width > 0 && node.textContent?.includes("Session 42%"),
+				),
+			);
+			await page.screenshot({ path: path.join(evidence, `sessions-usage-${width}.png`) });
+			await page.$$eval(".agent .agent-act", nodes => {
+				const top = [...document.querySelectorAll("dialog[open]")].at(-1);
+				const node = nodes.find(node => node.getBoundingClientRect().width > 0 && (!top || top.contains(node)));
+				const button = [...(node?.querySelectorAll("button") ?? [])].find(
+					button => button.textContent?.trim() === "Thread",
+				);
+				if (!button) throw new Error("Visible Thread button missing");
+				button.click();
+			});
+			await page.waitForFunction(() =>
+				[...document.querySelectorAll('[aria-label="Subagent thread"]')].some(
+					node =>
+						node.getBoundingClientRect().width > 0 &&
+						getComputedStyle(node).visibility === "visible" &&
+						node.textContent?.includes("Second reply."),
+				),
+			);
+			await page.screenshot({ path: path.join(evidence, `sessions-thread-${width}.png`) });
+			await page.keyboard.press("Escape");
+			await panels(false);
+			await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+			await page.waitForSelector(".runbook-card li:first-child button:not(:disabled)");
+			await runAndWait("Run step 1");
+			await page.waitForFunction(
+				() =>
+					document.querySelector(".runbook-card")?.textContent?.includes("j-browser-run") &&
+					document.querySelector(".runbook-card")?.textContent?.includes("Exit 0"),
+			);
+			await page.waitForSelector(".runbook-card > button:not(:disabled)");
+			await runAndWait("Run all");
+			await page.waitForFunction(() => {
+				const steps = [...document.querySelectorAll(".runbook-card li")];
+				return steps.length === 2 && steps.every(node => node.textContent?.includes("Exit 0"));
+			});
+			await page.screenshot({ path: path.join(evidence, `sessions-runbook-${width}.png`) });
+			const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+			if (overflow) throw new Error(`Horizontal page overflow at ${width}`);
+			const inspection = process.argv.includes("--inspect")
+				? await Bun.spawn(
+						[
+							"node",
+							process.env.SESSIONS_INSPECTOR ??
+								path.join(
+									process.env.HOME ?? "",
+									".omp/agent/skills/design-taste-frontend/scripts/inspect.mjs",
+								),
+							"--app",
+							`${base}/session/${instanceId}`,
+							"--widths",
+							String(width),
+							"--allow",
+							"few-pictures,still-page",
+							"--out",
+							path.join(evidence, `sessions-inspect-${width}`),
+						],
+						{ stdout: "inherit", stderr: "inherit", timeout: 120000 },
+					).exited
+				: undefined;
+			results.push({
+				width,
+				thread: "Second reply.",
+				usage: "Session 42%",
+				run: "Exit 0",
+				runAll: "Exit 0",
+				overflow,
+				inspection,
+			});
+		}
+		const { commands, responses, deliveries } = await receipts();
+		if (!deliveries.some(text => text.includes("j-browser-all")))
+			throw new Error("Run all did not deliver its result");
+		if (JSON.stringify(responses.filter(frame => frame.command === "get_usage")).includes("@"))
+			throw new Error("Usage identity leaked");
+		return {
+			results,
+			commands: commands.filter(command =>
+				["run_runbook_step", "get_subagent_thread", "get_usage"].includes(String(command.type)),
+			),
+			responses: responses.filter(frame =>
+				["run_runbook_step", "get_subagent_thread", "get_usage"].includes(String(frame.command)),
+			),
+		};
+	} catch (error) {
+		await page.screenshot({ path: path.join(evidence, "sessions-failure.png") });
+		await Bun.write(path.join(evidence, "sessions-failure-receipts.json"), JSON.stringify(await receipts(), null, 2));
+		console.error("J browser failure", error, await page.evaluate(() => document.body.textContent));
+		throw error;
+	} finally {
+		await page.goto("about:blank");
+		await fetch(`${base}/fixture/shutdown`);
+		await fixture.exited;
+	}
+}
+
+if (import.meta.main && !process.argv.includes("--sessions-rpc")) {
+	const root = path.resolve(import.meta.dir, "../../..");
+	const receipt =
+		process.env.SESSIONS_J_RECEIPT ??
+		path.resolve(root, "../../../scratch/rex-subagent-panes/receipts/j/sessions.txt");
+	await Bun.write(receipt, "Browser acceptance started\n");
+	const browser = await puppeteer.launch({
+		executablePath: process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		headless: true,
+		protocolTimeout: 30000,
+	});
+	try {
+		const page = await browser.newPage();
+		page.on("pageerror", error => console.error("Browser page error", error));
+		const result = await runJSessionsAcceptance(page, root, path.dirname(receipt));
+		const output = JSON.stringify(result, null, 2);
+		await Bun.write(receipt, output + "\n");
+		console.log(output);
+		if (result.results.some(row => row.inspection !== undefined && row.inspection !== 0)) process.exitCode = 1;
+	} catch (error) {
+		await Bun.write(receipt, `FAIL: ${String(error)}\n`);
+		throw error;
+	} finally {
+		await browser.close();
+	}
+} else if (import.meta.main) {
 	const root = path.resolve(import.meta.dir, "../../..");
 	const fixture = Bun.spawn([process.execPath, path.join(import.meta.dir, "local-fixture.ts")], {
 		cwd: root,

@@ -1,7 +1,12 @@
 {
 	"extends": "../tsconfig.workspace.json",
 	"include": ["src", "scripts", "test"],
-	"exclude": ["test/local-fixture.ts", "test/fixture-extension.ts", "test/performance-fixture.ts"],
+	"exclude": [
+		"test/local-fixture.ts",
+		"test/fixture-extension.ts",
+		"test/performance-fixture.ts",
+		"test/j-fixture.ts"
+	],
 	"compilerOptions": {
 		"jsx": "react-jsx",
 		"lib": ["ES2024", "DOM", "DOM.Iterable"],

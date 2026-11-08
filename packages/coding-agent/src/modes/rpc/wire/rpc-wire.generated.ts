@@ -396,6 +396,60 @@ export type AgentSource = "bundled" | "user" | "project";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
+export interface ReopenOutcome {
+	ok: boolean;
+	reason?: "already-open" | "agent-gone" | "panel-off" | "unknown-block";
+}
+
+export interface RunbookOutcome {
+	ok: boolean;
+	jobId?: string;
+	reason?: "unknown-runbook" | "unknown-step" | "running" | "owner-gone";
+}
+
+export type RunbookAll = "all";
+
+/** Thread item. The server enforces kind-specific fields; SDK generators do not dispatch on kind. */
+export interface ThreadItem {
+	kind: "brief" | "operator" | "reply" | "result" | "irc-in" | "irc-out" | "ask" | "answer";
+	ts: number;
+	text?: string;
+	entryId?: string;
+	from?: string;
+	to?: string;
+	messageId?: string;
+	questions?: string[];
+	toolCallId?: string;
+	timedOut?: boolean;
+}
+
+export interface AgentThread {
+	agentId: string;
+	sessionFile: string;
+	items: ThreadItem[];
+}
+
+export interface UsageWindow {
+	kind: string;
+	label: string;
+	usedPercent: number;
+	resetAt?: string;
+}
+
+export interface UsageProvider {
+	id: string;
+	label: string;
+	windows: UsageWindow[];
+	plan?: string;
+	todayTokens?: number;
+	unavailable?: boolean;
+}
+
+export interface UsageSnapshot {
+	updatedAt: string;
+	providers: UsageProvider[];
+}
+
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
@@ -1707,7 +1761,7 @@ export interface SetReviewDialogResult {
 }
 
 export interface TogglePaneParams {
-	pane: "todo" | "agents";
+	pane: "todo" | "agents" | "usage" | "dashboard" | "feed";
 	shape?: "dock" | "float";
 }
 
@@ -1801,6 +1855,43 @@ export interface AbortSubagentParams {
 export interface FollowUpSubagentParams {
 	subagentId: string;
 	message: string;
+}
+
+export interface PaneCrashedParams {
+	blockId: string;
+}
+
+export interface PaneCrashedResult {
+	known: boolean;
+}
+
+export interface ReopenPaneParams {
+	blockId: string;
+}
+
+export interface ViewMarkdownParams {
+	path: string;
+}
+
+export interface ViewMarkdownResult {
+	opened: boolean;
+}
+
+export interface GetSubagentThreadParams {
+	subagentId: string;
+}
+
+export interface GetSubagentThreadResult {
+	thread: AgentThread;
+}
+
+export interface RunRunbookStepParams {
+	runbookId: string;
+	step: number | RunbookAll;
+}
+
+export interface GetUsageResult {
+	snapshot: UsageSnapshot | null;
 }
 
 export interface LiveStartParams {
@@ -2063,6 +2154,12 @@ export interface RpcWireCommands {
 	stop_subagent: { params: StopSubagentParams; result: StopSubagentOutcome };
 	abort_subagent: { params: AbortSubagentParams; result: AbortSubagentOutcome };
 	follow_up_subagent: { params: FollowUpSubagentParams; result: FollowUpSubagentOutcome };
+	pane_crashed: { params: PaneCrashedParams; result: PaneCrashedResult };
+	reopen_pane: { params: ReopenPaneParams; result: ReopenOutcome };
+	view_markdown: { params: ViewMarkdownParams; result: ViewMarkdownResult };
+	get_subagent_thread: { params: GetSubagentThreadParams; result: GetSubagentThreadResult };
+	run_runbook_step: { params: RunRunbookStepParams; result: RunbookOutcome };
+	get_usage: { params: undefined; result: GetUsageResult };
 	live_start: { params: LiveStartParams; result: LiveStartResult };
 	live_connect: { params: LiveConnectParams; result: LiveConnectResult };
 	live_stop: { params: undefined; result: undefined };

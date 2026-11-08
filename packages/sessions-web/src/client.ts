@@ -28,6 +28,9 @@ export interface Snapshot {
 	revision: number;
 	editorText?: { text: string; version: number };
 	history?: { olderCursor?: string; newer: boolean; loading: boolean };
+	entries?: RecordValue[];
+	usage?: RecordValue | null;
+	usageError?: string;
 }
 interface Pending {
 	command: string;
@@ -568,12 +571,20 @@ export class SessionClient {
 		const state = await this.request({ type: "get_state" }, 10_000);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
 		if (revision === this.#snapshot.revision) this.#setState(state);
-		const [stats, agents] = await Promise.all([
+		const [stats, agents, entries, usage] = await Promise.all([
 			this.request({ type: "get_session_stats" }, 10_000),
 			this.request({ type: "get_subagents" }, 10_000),
+			this.request({ type: "get_entries" }, 10_000),
+			this.request({ type: "get_usage" }, 10_000).catch((error): RecordValue => ({ usageError: String(error) })),
 		]);
 		if (generation !== this.#generation || hydration !== this.#hydration) return;
-		this.#publish({ stats, agents: this.#mergeSubagents(agents.subagents) });
+		this.#publish({
+			stats,
+			agents: this.#mergeSubagents(agents.subagents),
+			entries: records(entries.entries ?? []),
+			usage: isRecord(usage.snapshot) ? usage.snapshot : null,
+			usageError: text(usage.usageError),
+		});
 	}
 	#mergeSubagents(value: unknown): RecordValue[] {
 		const current = records(value);
@@ -632,7 +643,8 @@ export class SessionClient {
 			this.#readingHistory = false;
 			const events = this.#events ?? [];
 			this.#events = null;
-			if (state.sessionId !== this.#snapshot.state.sessionId) this.#publish({ agents: [] });
+			if (state.sessionId !== this.#snapshot.state.sessionId)
+				this.#publish({ agents: [], entries: [], usage: undefined, usageError: undefined });
 			this.#setState(state);
 			this.#publish({
 				messages: page.messages,

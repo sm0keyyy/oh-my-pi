@@ -5,6 +5,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { messageText, text, type Message, type Snapshot, type SessionClient } from "./client";
 import { renderCustomMessage } from "./custom-message";
 import { ScrollFollow } from "./scroll-follow";
+import { RunbookCard } from "./runbook";
 
 const TranscriptList = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> & { context?: TranscriptContext }>(
 	({ context: _context, ...props }, ref) => <div {...props} ref={ref} className="transcript transcript-virtual" />,
@@ -149,19 +150,26 @@ export function Transcript({
 													}
 												: undefined;
 										return (
-											<ToolView
-												key={text(block.id)}
-												name={text(block.name)}
-												args={block.arguments}
-												result={toolResult}
-												running={
-													!result &&
-													active?.type !== "tool_execution_end" &&
-													snapshot.state.isStreaming === true
-												}
-												partial={active ? messageText(active.partialResult) : undefined}
-												host={host}
-											/>
+											<div key={text(block.id)}>
+												<ToolView
+													name={text(block.name)}
+													args={block.arguments}
+													result={toolResult}
+													running={
+														!result &&
+														active?.type !== "tool_execution_end" &&
+														snapshot.state.isStreaming === true
+													}
+													partial={active ? messageText(active.partialResult) : undefined}
+													host={host}
+												/>
+												<RunbookCard
+													name={text(block.name)}
+													result={toolResult}
+													entries={snapshot.entries ?? []}
+													client={client}
+												/>
+											</div>
 										);
 									}
 									return null;

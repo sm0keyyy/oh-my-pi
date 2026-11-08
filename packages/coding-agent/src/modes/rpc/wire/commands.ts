@@ -120,8 +120,8 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	},
 	{
 		name: "toggle_pane",
-		doc: "Toggle a todo or agents pane in an interactive Rex TUI.",
-		params: { pane: "'todo' | 'agents'", "shape?": "'dock' | 'float'" },
+		doc: "Toggle a todo, agents, usage, dashboard or feed pane in an interactive Rex TUI.",
+		params: { pane: "'todo' | 'agents' | 'usage' | 'dashboard' | 'feed'", "shape?": "'dock' | 'float'" },
 		result: { open: "boolean" },
 	},
 	{
@@ -214,6 +214,41 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		doc: "Send literal text to an idle, accepted, unparked subagent.",
 		params: { subagentId: "string", message: "string" },
 		result: "FollowUpSubagentOutcome",
+	},
+	{
+		name: "pane_crashed",
+		doc: "Hold event reopening for a known crashed Rex pane.",
+		params: { blockId: "string" },
+		result: { known: "boolean" },
+	},
+	{
+		name: "reopen_pane",
+		doc: "Reopen a crashed subagent pane or enabled panel.",
+		params: { blockId: "string" },
+		result: "ReopenOutcome",
+	},
+	{
+		name: "view_markdown",
+		doc: "Open an operator-selected markdown file for comments on the main session.",
+		params: { path: "string" },
+		result: { opened: "boolean" },
+	},
+	{
+		name: "get_subagent_thread",
+		doc: "Read an owned subagent's thread from its transcript.",
+		params: { subagentId: "string" },
+		result: { thread: "AgentThread" },
+	},
+	{
+		name: "run_runbook_step",
+		doc: "Run a registered runbook step or all steps after an explicit operator request.",
+		params: { runbookId: "string", step: "number.integer | RunbookAll" },
+		result: "RunbookOutcome",
+	},
+	{
+		name: "get_usage",
+		doc: "Read the redacted CodexBar usage snapshot, or null before a snapshot is available.",
+		result: { snapshot: "UsageSnapshot | null" },
 	},
 	{
 		name: "live_start",

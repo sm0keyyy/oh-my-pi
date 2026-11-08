@@ -5,6 +5,9 @@ import { readSseEvents } from "../../utils/src/stream";
 import { ReplayJournal } from "../../sessions-gateway/src/replay";
 import { FrameDecoder, messageOf, SessionClient, sortSessions, type RecordValue, type Snapshot } from "../src/client";
 import { Rail, todoPhasesForSave } from "../src/rail";
+import { ToolView } from "@oh-my-pi/web-render";
+import { RunbookCard } from "../src/runbook";
+import { UsageSection } from "../src/usage";
 
 const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
 class TestEventSource extends EventTarget {
@@ -1433,3 +1436,78 @@ test.each(["different", "same"] as const)(
 		}
 	},
 );
+
+test("runbook cards rebuild output from run entries while the legacy renderer has no Run controls", async () => {
+	const details = {
+		runbookId: "book-1",
+		title: "Verify the Mac",
+		steps: [{ title: "Print", command: "printf marker", host: "mac" }],
+	};
+	const result = { content: [{ type: "text", text: "Runbook book-1 shown" }], details };
+	const entries = [
+		{
+			type: "custom",
+			customType: "runbook-run",
+			data: { runbookId: "book-1", steps: [{ n: 1, host: "mac", exitCode: 7, tail: "failed marker" }] },
+		},
+	];
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type === "get_entries") {
+			respond({ entries });
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.refresh();
+	const card = renderToStaticMarkup(
+		createElement(RunbookCard, { name: "runbook", result, entries: client.getSnapshot().entries ?? [], client }),
+	);
+	expect(card).toContain("Run step 1");
+	expect(card).toContain("Run all");
+	expect(card).toContain("Exit 7");
+	expect(card).toContain("failed marker");
+	const mounted = renderToStaticMarkup(
+		createElement(RunbookCard, {
+			name: "write",
+			result: { ...result, details: { xdev: { tool: "runbook", inner: details } } },
+			entries,
+		}),
+	);
+	expect(mounted).toContain("failed marker");
+	const legacy = renderToStaticMarkup(createElement(ToolView, { name: "runbook", args: {}, result }));
+	expect(legacy).not.toContain("Run step 1");
+	expect(legacy).not.toContain("Run all");
+});
+
+test("usage section renders provider windows and unavailable state without identity fields", async () => {
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type === "get_usage") {
+			respond({
+				snapshot: {
+					updatedAt: "2026-11-07T00:00:00Z",
+					providers: [
+						{
+							id: "codex",
+							label: "Codex",
+							plan: "Pro",
+							windows: [{ kind: "session", label: "Session", usedPercent: 42, resetAt: "2026-11-08T00:00:00Z" }],
+							todayTokens: 1234,
+						},
+					],
+				},
+			});
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await client.refresh();
+	const html = renderToStaticMarkup(createElement(UsageSection, { snapshot: client.getSnapshot() }));
+	expect(html).toContain("Session 42%");
+	expect(html).toContain("1,234");
+	expect(html).not.toContain("@");
+	expect(
+		renderToStaticMarkup(createElement(UsageSection, { snapshot: { ...client.getSnapshot(), usage: null } })),
+	).toContain("No CodexBar snapshot");
+});

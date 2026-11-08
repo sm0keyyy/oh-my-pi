@@ -8,6 +8,7 @@ import { Rail, todoPhasesForSave } from "../src/rail";
 import { ToolView } from "@oh-my-pi/web-render";
 import { RunbookCard } from "../src/runbook";
 import { UsageSection } from "../src/usage";
+import { Transcript } from "../src/transcript";
 
 const originalEventSource = Object.getOwnPropertyDescriptor(globalThis, "EventSource");
 class TestEventSource extends EventTarget {
@@ -1437,6 +1438,220 @@ test.each(["different", "same"] as const)(
 	},
 );
 
+test("entry polling appends runbook runs with the last journal id and resets an unknown cursor once", async () => {
+	const cursors: unknown[] = [];
+	let stage = 0;
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_entries") {
+			cursors.push(command.since);
+			if (stage === 2 && command.since) {
+				stream.send(
+					JSON.stringify({
+						type: "response",
+						id: command.id,
+						command: command.type,
+						success: false,
+						code: "unknown_since",
+						error: "Unknown entries cursor",
+					}),
+				);
+			} else {
+				respond(
+					stage === 0
+						? {
+								entries: [
+									{ id: "message-1", parentId: null, type: "message", message: { content: "Not retained" } },
+									{ id: "run-1", parentId: "message-1", type: "custom", customType: "runbook-run", data: {} },
+									{ id: "tail-1", parentId: "run-1", type: "custom", customType: "another-kind", data: {} },
+								],
+								leafId: "tail-1",
+							}
+						: stage === 1
+							? {
+									entries: [
+										{ id: "run-2", parentId: "tail-1", type: "custom", customType: "runbook-run", data: {} },
+										{ id: "tail-2", parentId: "run-2", type: "message" },
+									],
+									leafId: "tail-2",
+								}
+							: {
+									entries:
+										stage === 2
+											? [
+													{
+														id: "fresh",
+														parentId: null,
+														type: "custom",
+														customType: "runbook-run",
+														data: {},
+													},
+												]
+											: [],
+									leafId: "fresh",
+								},
+				);
+			}
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.entries?.[0]?.id === "run-1");
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["run-1"]);
+	stage = 1;
+	await client.refresh();
+	expect(cursors.at(-1)).toBe("tail-1");
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["run-1", "run-2"]);
+	stage = 2;
+	const before = cursors.length;
+	await client.refresh();
+	expect(cursors.slice(before)).toEqual(["tail-2", undefined]);
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["fresh"]);
+	stage = 3;
+	await client.refresh();
+	expect(cursors.at(-1)).toBe("fresh");
+	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["fresh"]);
+});
+
+test("a pending or failed entries fetch does not block stats, agents or usage updates", async () => {
+	let update = false;
+	let rejectEntries = () => {};
+	const client = fixtureClient((stream, command, respond) => {
+		if (command.type === "get_entries") {
+			if (update)
+				rejectEntries = () =>
+					stream.send(
+						JSON.stringify({
+							type: "response",
+							id: command.id,
+							command: command.type,
+							success: false,
+							error: "Entries unavailable",
+						}),
+					);
+			else respond({ entries: [], leafId: null });
+			return true;
+		}
+		if (command.type === "get_session_stats") {
+			respond({ tokens: update ? 42 : 1 });
+			return true;
+		}
+		if (command.type === "get_subagents") {
+			respond({ subagents: update ? [{ id: "worker", status: "running" }] : [] });
+			return true;
+		}
+		if (command.type === "get_usage") {
+			respond({ snapshot: { updatedAt: update ? "new" : "old", providers: [] } });
+			return true;
+		}
+	});
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.stats.tokens === 1 && snapshot.entries !== undefined);
+	update = true;
+	const refresh = client.refresh();
+	await waitForSnapshot(client, snapshot => snapshot.stats.tokens === 42);
+	expect(client.getSnapshot().agents.map(agent => agent.id)).toEqual(["worker"]);
+	expect(client.getSnapshot().usage?.updatedAt).toBe("new");
+	rejectEntries();
+	await refresh;
+	expect(client.getSnapshot().error).toContain("Entries unavailable");
+	expect(client.getSnapshot().stats.tokens).toBe(42);
+});
+
+test("runbook cards follow the current leaf rather than abandoned branch results", async () => {
+	let leafId = "current";
+	const client = fixtureClient((_stream, command, respond) => {
+		if (command.type !== "get_entries") return;
+		respond({
+			entries: !command.since
+				? [
+						{ id: "root", parentId: null, type: "message" },
+						{
+							id: "abandoned",
+							parentId: "root",
+							type: "custom",
+							customType: "runbook-run",
+							data: {
+								runbookId: "book-1",
+								steps: [{ n: 1, host: "mac", exitCode: 7, tail: "abandoned output" }],
+							},
+						},
+						{ id: "branch-before-run", parentId: "root", type: "message" },
+						{
+							id: "current",
+							parentId: "branch-before-run",
+							type: "custom",
+							customType: "runbook-run",
+							data: { runbookId: "book-1", steps: [{ n: 1, host: "mac", exitCode: 0, tail: "current output" }] },
+						},
+					]
+				: [],
+			leafId,
+		});
+		return true;
+	});
+	const render = () =>
+		renderToStaticMarkup(
+			createElement(RunbookCard, {
+				name: "runbook",
+				result: {
+					content: [],
+					details: {
+						runbookId: "book-1",
+						title: "Branch run",
+						steps: [{ title: "Print", command: "printf marker", host: "mac" }],
+					},
+				},
+				entries: client.getSnapshot().entries ?? [],
+				client,
+			}),
+		);
+	client.connect();
+	await waitForSnapshot(client, snapshot => snapshot.entries?.[0]?.id === "current");
+	expect(render()).toContain("Exit 0");
+	expect(render()).toContain("current output");
+	expect(render()).not.toContain("abandoned output");
+	leafId = "branch-before-run";
+	await client.refresh();
+	expect(render()).toContain("Not run");
+	expect(render()).not.toContain("abandoned output");
+	expect(render()).not.toContain("current output");
+	leafId = "root";
+	await client.refresh();
+	expect(render()).toContain("Not run");
+	expect(render()).not.toContain("current output");
+});
+
+test("a runbook-only transcript client does not expose main transcript paging controls", () => {
+	const client = fixtureClient(() => {});
+	const snapshot = {
+		...client.getSnapshot(),
+		history: { olderCursor: "main-history", newer: true, loading: false },
+		messages: [
+			messageOf({ role: "assistant", content: [{ type: "toolCall", id: "book", name: "runbook" }] }, "book"),
+			messageOf(
+				{
+					role: "toolResult",
+					toolCallId: "book",
+					content: [],
+					details: {
+						runbookId: "book-1",
+						title: "Agent run",
+						steps: [{ title: "Print", command: "printf marker", host: "mac" }],
+					},
+				},
+				"result",
+			),
+		],
+	};
+	const html = renderToStaticMarkup(createElement(Transcript, { snapshot, host: {}, runbookClient: client }));
+	expect(html).toContain("Run step 1");
+	expect(html).not.toContain("Load older messages");
+	expect(html).not.toContain("Jump to latest");
+	const main = renderToStaticMarkup(createElement(Transcript, { snapshot, host: {}, client, runbookClient: client }));
+	expect(main).toContain("Load older messages");
+	expect(main).toContain("Jump to latest");
+});
+
 test("runbook cards rebuild output from run entries while the legacy renderer has no Run controls", async () => {
 	const details = {
 		runbookId: "book-1",
@@ -1446,6 +1661,8 @@ test("runbook cards rebuild output from run entries while the legacy renderer ha
 	const result = { content: [{ type: "text", text: "Runbook book-1 shown" }], details };
 	const entries = [
 		{
+			id: "run-1",
+			parentId: null,
 			type: "custom",
 			customType: "runbook-run",
 			data: { runbookId: "book-1", steps: [{ n: 1, host: "mac", exitCode: 7, tail: "failed marker" }] },
@@ -1453,12 +1670,12 @@ test("runbook cards rebuild output from run entries while the legacy renderer ha
 	];
 	const client = fixtureClient((_stream, command, respond) => {
 		if (command.type === "get_entries") {
-			respond({ entries });
+			respond({ entries: command.since ? [] : entries, leafId: "run-1" });
 			return true;
 		}
 	});
 	client.connect();
-	await waitForSnapshot(client, snapshot => snapshot.phase === "connected");
+	await waitForSnapshot(client, snapshot => snapshot.entries?.[0]?.id === "run-1");
 	await client.refresh();
 	const card = renderToStaticMarkup(
 		createElement(RunbookCard, { name: "runbook", result, entries: client.getSnapshot().entries ?? [], client }),

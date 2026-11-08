@@ -311,11 +311,15 @@
 			"command": "get_subagent_messages",
 			"desktop": "pass",
 			"phone": "pass",
-			"coverage": "browser",
+			"coverage": "browser at 1440, 768 and 390; subagent Messages cannot page main history",
 			"screenshots": [
-				"packages/sessions-web/evidence/screenshots/get_subagent_messages-desktop.png",
-				"packages/sessions-web/evidence/screenshots/get_subagent_messages-phone.png"
-			]
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-messages-1440.png",
+				"~/Developer/scratch/rex-subagent-panes/receipts/j/sessions-messages-390.png"
+			],
+			"receipts": {
+				"desktop": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/0/subagentPaging",
+				"phone": "~/Developer/scratch/rex-subagent-panes/receipts/j/sessions.txt#/results/2/subagentPaging"
+			}
 		},
 		{
 			"command": "cancel_subagent",

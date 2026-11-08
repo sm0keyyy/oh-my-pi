@@ -32,10 +32,12 @@ export function Transcript({
 	snapshot,
 	host,
 	client,
+	runbookClient,
 }: {
 	snapshot: Snapshot;
 	host: ToolRenderHost;
 	client?: SessionClient;
+	runbookClient?: SessionClient;
 }): ReactNode {
 	const virtuoso = useRef<VirtuosoHandle>(null);
 	const follower = useRef(new ScrollFollow());
@@ -167,7 +169,7 @@ export function Transcript({
 													name={text(block.name)}
 													result={toolResult}
 													entries={snapshot.entries ?? []}
-													client={client}
+													client={runbookClient}
 												/>
 											</div>
 										);
@@ -232,7 +234,7 @@ export function Transcript({
 					computeItemKey={(_index, message) => message.key}
 					components={{ List: TranscriptList, Header: TranscriptHeader }}
 					context={{
-						history: snapshot.history,
+						history: client ? snapshot.history : undefined,
 						loadOlder: () => {
 							detach();
 							void client?.loadOlder();
@@ -262,7 +264,7 @@ export function Transcript({
 						: "The transcript will appear after the Mac connects."}
 				</p>
 			)}
-			{(!following || snapshot.history?.newer) && (
+			{(!following || (client && snapshot.history?.newer)) && (
 				<button
 					className="btn jump-latest"
 					type="button"

@@ -822,7 +822,25 @@ export async function runJSessionsAcceptance(page: Page, root: string, evidence:
 				if (trigger && (await trigger.boundingBox())) {
 					if (open && !(await page.$("dialog[open]"))) await trigger.click();
 					if (!open && (await page.$("dialog[open]"))) await page.keyboard.press("Escape");
+					if (open) await page.waitForSelector("dialog[open] .rail");
 				}
+			};
+			const agentView = async (label: string) => {
+				await page.$$eval(
+					".agent .agent-act",
+					(nodes, label) => {
+						const top = [...document.querySelectorAll("dialog[open]")].at(-1);
+						const node = nodes.find(
+							node => node.getBoundingClientRect().width > 0 && (!top || top.contains(node)),
+						);
+						const button = [...(node?.querySelectorAll("button") ?? [])].find(
+							button => button.textContent?.trim() === label,
+						);
+						if (!button) throw new Error(`Visible ${label} button missing`);
+						button.click();
+					},
+					label,
+				);
 			};
 			await panels(true);
 			await page.waitForFunction(() =>
@@ -831,15 +849,7 @@ export async function runJSessionsAcceptance(page: Page, root: string, evidence:
 				),
 			);
 			await page.screenshot({ path: path.join(evidence, `sessions-usage-${width}.png`) });
-			await page.$$eval(".agent .agent-act", nodes => {
-				const top = [...document.querySelectorAll("dialog[open]")].at(-1);
-				const node = nodes.find(node => node.getBoundingClientRect().width > 0 && (!top || top.contains(node)));
-				const button = [...(node?.querySelectorAll("button") ?? [])].find(
-					button => button.textContent?.trim() === "Thread",
-				);
-				if (!button) throw new Error("Visible Thread button missing");
-				button.click();
-			});
+			await agentView("Thread");
 			await page.waitForFunction(() =>
 				[...document.querySelectorAll('[aria-label="Subagent thread"]')].some(
 					node =>
@@ -849,6 +859,39 @@ export async function runJSessionsAcceptance(page: Page, root: string, evidence:
 				),
 			);
 			await page.screenshot({ path: path.join(evidence, `sessions-thread-${width}.png`) });
+			await page.keyboard.press("Escape");
+			await page.waitForFunction(() => !document.querySelector('[aria-label="Subagent thread"]'));
+			await panels(true);
+			const mainPages = (await receipts()).commands.filter(command => command.type === "get_messages_page").length;
+			await agentView("Messages");
+			await page.waitForFunction(() => {
+				const modal = [...document.querySelectorAll("dialog[open]")].at(-1);
+				const transcript = modal?.querySelector('[aria-label="Transcript"]');
+				if (!transcript) return false;
+				const viewport = transcript.getBoundingClientRect();
+				return [...transcript.querySelectorAll(".entry")].some(entry => {
+					if (!entry.textContent?.includes("Second reply.")) return false;
+					const bounds = entry.getBoundingClientRect();
+					if (!bounds.height || bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) return false;
+					for (let node: Element | null = entry; node && node !== modal; node = node.parentElement) {
+						const style = getComputedStyle(node);
+						if (style.opacity === "0" || style.visibility === "hidden") return false;
+					}
+					return true;
+				});
+			});
+			await page.evaluate(() => {
+				const modal = [...document.querySelectorAll("dialog[open]")].at(-1);
+				if (
+					[...(modal?.querySelectorAll("button") ?? [])].some(button =>
+						["Load older messages", "Jump to latest"].includes(button.textContent?.trim() ?? ""),
+					)
+				)
+					throw new Error("Subagent modal exposes main transcript paging");
+			});
+			await page.screenshot({ path: path.join(evidence, `sessions-messages-${width}.png`) });
+			if ((await receipts()).commands.filter(command => command.type === "get_messages_page").length !== mainPages)
+				throw new Error("Subagent modal paged the main transcript");
 			await page.keyboard.press("Escape");
 			await panels(false);
 			await page.waitForFunction(() => !document.querySelector("dialog[open]"));
@@ -895,6 +938,7 @@ export async function runJSessionsAcceptance(page: Page, root: string, evidence:
 				usage: "Session 42%",
 				run: "Exit 0",
 				runAll: "Exit 0",
+				subagentPaging: "isolated",
 				overflow,
 				inspection,
 			});

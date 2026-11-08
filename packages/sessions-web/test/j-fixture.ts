@@ -33,6 +33,11 @@ const details = normalizeRunbook(
 	crypto.randomUUID(),
 );
 const messages: Message[] = [
+	...Array.from({ length: 55 }, (_, index): Message => ({
+		role: "user",
+		content: `Earlier main transcript message ${index + 1}`,
+		timestamp: index + 1,
+	})),
 	{
 		role: "assistant",
 		content: [{ type: "toolCall", id: "browser-book", name: "runbook", arguments: { ...details } }],
@@ -48,7 +53,7 @@ const messages: Message[] = [
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "toolUse",
-		timestamp: 1,
+		timestamp: 56,
 	},
 	{
 		role: "toolResult",
@@ -57,7 +62,7 @@ const messages: Message[] = [
 		content: [{ type: "text", text: "Runbook shown; no command has run." }],
 		details,
 		isError: false,
-		timestamp: 2,
+		timestamp: 57,
 	},
 ];
 for (const message of messages) {

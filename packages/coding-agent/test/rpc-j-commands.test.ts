@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as path from "node:path";
 import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../src/config/settings";
 import { createRpcConnection, type RpcHostAdapter } from "../src/modes/rpc/rpc-mode";
@@ -109,6 +110,16 @@ test("supervise RPC holds and reopens the requested pane; no host reports unknow
 	} finally {
 		unregister();
 	}
+}, 30000);
+
+test("markdown RPC rejects relative paths before opening operator files", async () => {
+	await using rpc = await harness();
+	const file = rpc.temp.join("view.md");
+	await Bun.write(file, "# Comments\n");
+	expect(await rpc.send({ type: "view_markdown", path: file })).toMatchObject({ data: { opened: false } });
+	const relative = path.relative(process.cwd(), file);
+	for (const candidate of [relative, `./${relative}`])
+		expect(await rpc.send({ type: "view_markdown", path: candidate })).toMatchObject({ success: false });
 }, 30000);
 
 test("runbook RPC requires an explicit command, validates the pick and passes admission outcomes through", async () => {

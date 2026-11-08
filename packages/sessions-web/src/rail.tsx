@@ -708,9 +708,15 @@ export function Rail({
 								</button>
 							</div>
 							<Transcript
-								snapshot={{ ...snapshot, messages: transcript, entries: agentEntries, tools: {} }}
+								snapshot={{
+									...snapshot,
+									messages: transcript,
+									entries: agentEntries,
+									history: undefined,
+									tools: {},
+								}}
 								host={host}
-								client={client}
+								runbookClient={client}
 							/>
 						</>
 					)}

@@ -2456,9 +2456,10 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 					!command.path.trim() ||
 					command.path.length > 4096 ||
 					/[\p{Cc}]/u.test(command.path) ||
+					(!path.isAbsolute(command.path) && !command.path.startsWith("local://")) ||
 					(command.path.includes("://") && !command.path.startsWith("local://"))
 				)
-					return error(id, command.type, "Expected a markdown path or local:// URI");
+					return error(id, command.type, "Expected an absolute markdown path or local:// URI");
 				return success(id, command.type, { opened: await openMarkdownView(command.path, { kind: "main" }) });
 
 			case "run_runbook_step":

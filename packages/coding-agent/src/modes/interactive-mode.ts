@@ -54,7 +54,7 @@ import { describeSegmentTrack, renderSegmentTrack, type TrackSegment } from "@oh
 import type { WorkingRowSpec } from "@oh-my-pi/pi-tui/components/loader";
 import { formatDoubleTap } from "@oh-my-pi/pi-tui/key-hint-format";
 import { thinkingLevelWord } from "@oh-my-pi/pi-tui/status-line/segments";
-import type { TspChecklistItem, TspChecklistPhase, TspSpan, TspText, TspTreeNode } from "@oh-my-pi/pi-wire";
+import type { TspText } from "@oh-my-pi/pi-wire";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	$env,
@@ -134,6 +134,7 @@ import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type:
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
+import type { AgentHubOverlayComponent } from "@oh-my-pi/pi-tui/overlays/agent-hub";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import type { AgentCostSnapshot } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
@@ -196,7 +197,6 @@ import { StreamRedactor } from "../stream/redactor";
 import {
 	FEED_MODEL_BADGE_WIDTH,
 	formatFeedModelBadge,
-	formatMoreItems,
 	formatStatusIcon,
 	isFeedModelBadgeEnabled,
 	previewLine,
@@ -218,9 +218,7 @@ import {
 	type TodoHudStateEntryData,
 } from "../tools/todo";
 import {
-	formatPhaseDisplayName,
 	isClosedTodo,
-	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
 	todoMatchesAnyDescription,
 } from "@oh-my-pi/pi-tui/tools/todo";
@@ -241,6 +239,9 @@ import type { EventBus } from "../utils/event-bus";
 import { startSubagentSurfaces } from "../rex-panes";
 import { subagentAskHostFor } from "../task/subagent-ask-host";
 import { type MainServices, startMainServices } from "./main-services";
+import { type PanelName, type RexPanels, startRexPanels } from "../rex-panes/panels";
+import { buildTodoHud, formatTodoLine, type TodoHudView } from "./components/todo-hud";
+import type { TodoEditor } from "./controllers/todo-command-controller";
 import { getEditorCommand, getEditorName, openInEditor } from "../utils/external-editor";
 import { openPath } from "../utils/open";
 import { resumeCommand } from "../utils/resume-command";
@@ -583,28 +584,6 @@ export function computeEditorMaxHeight(terminalRows: number): number {
 	const rows = Number.isFinite(terminalRows) && terminalRows > 0 ? terminalRows : EDITOR_FALLBACK_ROWS;
 	const comfortable = Math.max(EDITOR_MAX_HEIGHT_MIN, Math.min(EDITOR_MAX_HEIGHT_MAX, rows - EDITOR_RESERVED_ROWS));
 	return Math.max(EDITOR_MIN_RENDERED_ROWS, Math.min(comfortable, rows - EDITOR_MIN_CHROME_ROWS));
-}
-
-const HUD_NOTE_SUP_DIGITS: Record<string, string> = {
-	"0": "\u2070",
-	"1": "\u00b9",
-	"2": "\u00b2",
-	"3": "\u00b3",
-	"4": "\u2074",
-	"5": "\u2075",
-	"6": "\u2076",
-	"7": "\u2077",
-	"8": "\u2078",
-	"9": "\u2079",
-};
-
-function formatHudNoteMarker(count: number): string {
-	if (count <= 0) return "";
-	const sub = String(count)
-		.split("")
-		.map(d => HUD_NOTE_SUP_DIGITS[d] ?? d)
-		.join("");
-	return theme.fg("dim", chalk.italic(` \u207a${sub}`));
 }
 
 type GoalSubcommand = "set" | "show" | "pause" | "resume" | "drop" | "budget";
@@ -1451,6 +1430,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#todoPhasesOwner?: AgentSession;
 	#todoHudHidden = false;
+	readonly #todoPanelListeners = new Set<() => void>();
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -1616,7 +1596,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Agents count as the status-line badge counts them, from the agent
 		// registry: the observer registry only hears task-executor lifecycles,
 		// so an agent a peer message woke or revived would run without a segment.
-		const showAgents = cfgDisplayPinnedAgents.get(settings) !== "off";
+		const showAgents = cfgDisplayPinnedAgents.get(settings) !== "off" && !this.#rexPanels?.isOpen("agents");
 		this.#agentsSegment = agentsSegment(
 			this.#agentsSegment,
 			showAgents ? this.#runningSubagentCount : 0,
@@ -1731,6 +1711,17 @@ export class InteractiveMode implements InteractiveModeContext {
 	#streamPublisher: StreamPublisher | undefined;
 	#subagentSurfaces: { dispose(): Promise<void> } | undefined;
 	#mainServices: MainServices | undefined;
+	#rexPanels: RexPanels | undefined;
+
+	get rexPanels(): RexPanels {
+		return (this.#rexPanels ??= startRexPanels({ settings: this.settings, mode: this }));
+	}
+
+	toggleRexPanel(name: PanelName, shape?: "dock" | "float"): Promise<{ open: boolean }> {
+		if (this.embedded || this.collabGuest || this.#rpcSocketSuspended)
+			throw new Error("toggle_pane needs the interactive TUI in Rex");
+		return this.rexPanels.toggle(name, shape);
+	}
 	#recorder: SessionRecorder | undefined;
 	#recorderStarting = false;
 
@@ -2079,6 +2070,8 @@ export class InteractiveMode implements InteractiveModeContext {
 					}
 				}
 				switch (command.type) {
+					case "toggle_pane":
+						return response(await this.toggleRexPanel(command.pane, command.shape));
 					case "goal": {
 						if (command.op === "create" && !command.objective?.trim())
 							throw new Error("Goal objective must not be empty");
@@ -2207,6 +2200,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async suspendRpcSocket(): Promise<void> {
 		this.#rpcSocketSuspended = true;
+		await this.#rexPanels?.dispose();
+		this.#rexPanels = undefined;
 		const surfaces = this.#subagentSurfaces;
 		await surfaces?.dispose();
 		if (this.#subagentSurfaces === surfaces) this.#subagentSurfaces = undefined;
@@ -2765,6 +2760,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
+				await this.#rexPanels?.dispose();
 				await this.#mainServices?.dispose();
 				await this.#subagentSurfaces?.dispose();
 				await this.stopRpcSocket();
@@ -5182,24 +5178,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
-		const checkbox = theme.checkbox;
-		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
-		switch (todo.status) {
-			case "completed":
-				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) + marker;
-			case "in_progress":
-				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-			case "abandoned":
-				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
-			case "blocked":
-				return theme.fg("warning", `${prefix}${checkbox.unchecked} ${todo.content} (blocked)`) + marker;
-			default:
-				if (matched) return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
-		}
-	}
-
 	#getActiveSubagentDescriptions(): string[] {
 		const out: string[] = [];
 		for (const session of this.#observerRegistry.getSessions()) {
@@ -5356,14 +5334,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#modelCycleClearTimer.unref?.();
 	}
 
-	#getActivePhase(phases: TodoPhase[]): TodoPhase | undefined {
-		const nonEmpty = phases.filter(phase => phase.tasks.length > 0);
-		const active = nonEmpty.find(phase =>
-			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
-		);
-		return active ?? nonEmpty[nonEmpty.length - 1];
-	}
-
 	#scheduleObserverUiSync(kind: SessionObserverChangeKind): void {
 		if (kind !== "progress") {
 			this.#observerUiSyncNeedsTodoReconcile = true;
@@ -5409,214 +5379,46 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelSubagentPreviewTick();
 	}
 
+	todoHudView(expanded: boolean): TodoHudView | undefined {
+		return buildTodoHud(this.todoPhases, expanded, this.#getActiveSubagentDescriptions());
+	}
+
+	onTodoPanelChange(listener: () => void): () => void {
+		this.#todoPanelListeners.add(listener);
+		return () => this.#todoPanelListeners.delete(listener);
+	}
+
+	refreshRexPanelWidgets(): void {
+		this.#renderTodoList();
+		this.#renderSubagentList();
+		this.ui.requestRender();
+	}
+
+	editPanelTodos(editor: TodoEditor): Promise<void> {
+		return this.#todoCommandController.editTodos(editor);
+	}
+
+	createRexAgentsPanel(
+		tui: TUI,
+		done: () => void,
+		focusAgent: (id: string) => Promise<void>,
+	): AgentHubOverlayComponent {
+		return this.#selectorController.createAgentHub(this.#observerRegistry, tui, done, {
+			focusAgent,
+			closeOnFocus: false,
+		});
+	}
+
 	#renderTodoList(): void {
+		for (const listener of this.#todoPanelListeners) listener();
 		this.todoContainer.clear();
 		this.#todoHudNative = undefined;
-		const activeDescs = this.#getActiveSubagentDescriptions();
-		this.#todoHudSubagentKey = activeDescs.join("\n");
-		if (this.#todoHudHidden) return;
-		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return;
-		const expanded = this.todoExpanded;
-		const multiPhase = phases.length > 1;
-		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
-		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
-		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
-		const activeTaskCap = 5; // open tasks previewed for the active stage
-
-		// A pending todo "lights up" (accent) when an in-flight subagent is doing
-		// its work, matched by normalized content overlap.
-		const isMatched = (todo: TodoItem): boolean =>
-			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
-
-		// Task subtree for a phase. Collapsed runs the shared walking-viewport
-		// policy (completed/abandoned omitted, active work pulled to the head,
-		// then following pending tasks) so the HUD and the transient tool result
-		// can never disagree about the current work (#5873). Expanded lists all.
-		const renderTasks = (phase: TodoPhase): string[] => {
-			if (expanded) {
-				return renderTreeList(
-					{
-						items: phase.tasks,
-						expanded: true,
-						renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
-					},
-					theme,
-				);
-			}
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
-			return renderTreeList(
-				{
-					items: selection.items,
-					itemType: "task",
-					trailingSummary: selection.summary,
-					renderItem: todo => this.#formatTodoLine(todo, "", isMatched(todo)),
-				},
-				theme,
-			);
-		};
-
-		// One phase node. The active stage is highlighted with normal-brightness task
-		// progress; other stages render their whole row (name + progress) in the
-		// brighter muted gray. Overall progress lives in the tree spine (below).
-		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
-			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
-			// Closed, not just completed: the collapsed task window hides abandoned
-			// tasks too, so counting only completions leaves the phase reading stuck.
-			const done = phase.tasks.filter(isClosedTodo).length;
-			const progress = ` · ${done}/${phase.tasks.length}`;
-			if (!isActive) {
-				const header = theme.fg("muted", label) + theme.fg("dim", progress);
-				return expanded ? [header, ...renderTasks(phase)] : header;
-			}
-			const header = theme.bold(theme.fg("accent", label)) + theme.fg("dim", progress);
-			return [header, ...renderTasks(phase)];
-		};
-
-		// Collapsed: active stage + a bounded number of following stages, with a
-		// "… n more stages" row for anything past the cap. Expanded: every stage
-		// from the top. Roman numerals stay tied to the real phase index.
-		const baseIdx = expanded ? 0 : activeIdx;
-		const phaseSlice = expanded ? phases.slice(baseIdx) : phases.slice(baseIdx, baseIdx + 1 + subsequentStageCap);
-		const hiddenStages = phases.length - baseIdx - phaseSlice.length;
-
-		// Flatten the stage tree into content rows plus a per-row top-level spine
-		// glyph (`├─` for stage rows, `│` for continuations). The spine never
-		// closes downward — a short elbow tail (`└────`) ends the block instead,
-		// so spine + bend + tail form one continuous progress path.
-		const spineGlyphs: string[] = [];
-		const contentLines: string[] = [];
-		const pushBlock = (block: string | string[]): void => {
-			const rows = Array.isArray(block) ? block : [block];
-			if (rows.length === 0) return;
-			spineGlyphs.push(`${theme.tree.branch} `);
-			contentLines.push(replaceTabs(rows[0]!));
-			for (let i = 1; i < rows.length; i++) {
-				spineGlyphs.push(`${theme.tree.vertical}  `);
-				contentLines.push(replaceTabs(rows[i]!));
-			}
-		};
-		for (let i = 0; i < phaseSlice.length; i++) {
-			pushBlock(renderPhase(phaseSlice[i], baseIdx + i + 1, baseIdx + i === activeIdx));
-		}
-		if (hiddenStages > 0) {
-			pushBlock(theme.fg("muted", formatMoreItems(hiddenStages, "stage")));
-		}
-
-		// Closing tail: hook + a few horizontals. Every tail cell is 1 column in
-		// both glyph sets, so string slicing below splits it by visible cells.
-		const tailLen = 6;
-		const tail = theme.tree.hook + theme.tree.horizontal.repeat(Math.max(0, tailLen - visibleWidth(theme.tree.hook)));
-
-		// Overall progress (summed across every stage) fills the path in reading
-		// order: down the spine, around the bend, out along the tail.
-		// Clamp so partial progress lights at least one cell; a closed plan fills
-		// the entire path until the configured auto-clear removes the HUD.
-		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
-		const pathLen = contentLines.length + tailLen;
-		let filled = Math.round((closedTasks / totalTasks) * pathLen);
-		if (closedTasks > 0) filled = Math.max(filled, 1);
-		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
-
-		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
-		for (let i = 0; i < contentLines.length; i++) {
-			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
-		}
-		const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
-		lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
-		this.todoContainer.addChild(new Text(lines.join("\n"), 1, 0));
-
-		// Native: the same stage window as a tree, overall progress as a bar.
-		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
-			const done = todo.status === "completed";
-			const token =
-				todo.status === "completed"
-					? "success del"
-					: todo.status === "abandoned"
-						? "error del"
-						: todo.status === "blocked"
-							? "warning"
-							: todo.status === "in_progress" || isMatched(todo)
-								? "accent"
-								: "dim";
-			const label: TspSpan[] = [span(todo.status === "blocked" ? `${todo.content} (blocked)` : todo.content, token)];
-			const notes = todo.notes?.length ?? 0;
-			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
-			return { id, label, icon: done ? "check" : "circle" };
-		};
-		const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
-			const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
-			if (expanded) return phase.tasks.map(todo => describeTask(todo, index(todo)));
-			const selection = selectCollapsedTodos(phase.tasks, isMatched, activeTaskCap);
-			const nodes = selection.items.map(todo => describeTask(todo, index(todo)));
-			if (selection.summary) nodes.push({ id: `${phaseIndex}.more`, label: [span(selection.summary, "muted")] });
-			return nodes;
-		};
-		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
-			const phaseIndex = baseIdx + offset;
-			const isActive = phaseIndex === activeIdx;
-			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
-			const done = phase.tasks.filter(isClosedTodo).length;
-			const open = isActive || expanded;
-			return {
-				id: `${phaseIndex}`,
-				label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
-				open,
-				children: open ? describeTasks(phase, phaseIndex) : undefined,
-			};
-		});
-		if (hiddenStages > 0) {
-			phaseNodes.push({ id: "more", label: [span(formatMoreItems(hiddenStages, "stage"), "muted")] });
-		}
-		const fallback = node(
-			"col",
-			{ role: "omp.hud.todo" },
-			[
-				row(
-					[
-						text([span("TODO", "accent strong")]),
-						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
-					],
-					{ gap: "sm", align: "center" },
-				),
-				node("tree", { nodes: phaseNodes }),
-			],
-			"todo",
-		);
-		// A `checklist` HUD is a pill with the whole plan as its popover.
-		const checklistPhases: TspChecklistPhase[] = phases.map((phase, phaseIndex) => ({
-			id: `${phaseIndex}`,
-			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
-			collapsed: phase.tasks.every(isClosedTodo) || undefined,
-			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
-				const note = todo.blocker ?? todo.notes?.at(-1);
-				return {
-					id: `${phaseIndex}.${taskIndex}`,
-					text: todo.content,
-					status:
-						todo.status === "completed"
-							? "done"
-							: todo.status === "abandoned"
-								? "dropped"
-								: todo.status === "blocked"
-									? "blocked"
-									: todo.status === "in_progress" || isMatched(todo)
-										? "active"
-										: "pending",
-					note,
-				};
-			}),
-		}));
-		this.#todoHudNative = {
-			checklist: node(
-				"checklist",
-				{ phases: checklistPhases, mode: "hud", role: "omp.hud.todo" },
-				undefined,
-				"todo",
-			),
-			fallback,
-		};
+		this.#todoHudSubagentKey = this.#getActiveSubagentDescriptions().join("\n");
+		if (this.#todoHudHidden || this.#rexPanels?.isOpen("todo")) return;
+		const view = this.todoHudView(this.todoExpanded);
+		if (!view) return;
+		this.todoContainer.addChild(new Text(view.lines.join("\n"), 1, 0));
+		this.#todoHudNative = view.native;
 	}
 
 	isCompactTodoMode(): boolean {
@@ -5625,6 +5427,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	renderCompactStatusLine(width: number, childLines: readonly string[]): readonly string[] {
+		if (this.#rexPanels?.isOpen("todo")) return childLines;
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return childLines;
 
@@ -5638,7 +5441,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		const header = `${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}`;
 		const taskStr = activeTask
-			? this.#formatTodoLine(activeTask, "", isMatched(activeTask))
+			? formatTodoLine(activeTask, "", isMatched(activeTask))
 			: theme.fg("success", `${theme.checkbox.checked} done`);
 		const rightLine = `${header} ${theme.fg("dim", "·")} ${taskStr}`;
 
@@ -5760,6 +5563,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				tickMs: number | undefined;
 		  }
 		| undefined {
+		if (this.#rexPanels?.isOpen("agents")) return undefined;
 		const mode = cfgDisplayPinnedAgents.get(settings);
 		if (mode === "off") return undefined;
 		const sessions = this.#observerRegistry.getSessions();
@@ -8252,6 +8056,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.disposeEmbedded();
 			return;
 		}
+		void this.#rexPanels?.dispose();
 		const services = this.#mainServices;
 		this.#mainServices = undefined;
 		void services?.dispose();
@@ -8529,6 +8334,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Guests get goodbye and the registry entry disappears before the
 			// session is disposed, under the same still-closing progress notice.
 			await this.collabController.shutdown("host exited");
+			await this.#rexPanels?.dispose();
 			await this.#mainServices?.dispose();
 			await this.#subagentSurfaces?.dispose();
 			await this.stopRpcSocket();

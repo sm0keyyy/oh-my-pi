@@ -1538,6 +1538,7 @@ test("overlapping refreshes share a slow full entries fetch and then use its cur
 			return true;
 		}
 	});
+	const requests = vi.spyOn(client, "request");
 	client.connect();
 	await fullRequested.promise;
 	const overlaps = Promise.all([client.refresh(), client.refresh()]);
@@ -1549,6 +1550,10 @@ test("overlapping refreshes share a slow full entries fetch and then use its cur
 	await client.refresh();
 	expect(cursors).toEqual([undefined, "tail-1"]);
 	expect(client.getSnapshot().entries?.map(entry => entry.id)).toEqual(["run-1"]);
+	expect(requests.mock.calls.filter(([command]) => command.type === "get_entries")).toEqual([
+		[{ type: "get_entries" }, 0],
+		[{ type: "get_entries", since: "tail-1" }, 10_000],
+	]);
 });
 
 test("a pending or failed entries fetch does not block stats, agents or usage updates", async () => {

@@ -606,11 +606,13 @@ export class SessionClient {
 		const request = ++this.#entriesRequest;
 		const since = this.#entriesCursor;
 		let full = since === undefined;
-		const result = await this.request({ type: "get_entries", ...(since ? { since } : {}) }, 10_000).catch(error => {
-			if (!since || !isRecord(error) || error.code !== "unknown_since") throw error;
-			full = true;
-			return this.request({ type: "get_entries" }, 10_000);
-		});
+		const result = await this.request({ type: "get_entries", ...(since ? { since } : {}) }, since ? 10_000 : 0).catch(
+			error => {
+				if (!since || !isRecord(error) || error.code !== "unknown_since") throw error;
+				full = true;
+				return this.request({ type: "get_entries" }, 0);
+			},
+		);
 		if (generation !== this.#generation || hydration !== this.#hydration || request !== this.#entriesRequest) return;
 		const entries = records(result.entries ?? []);
 		if (full) {

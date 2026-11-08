@@ -3078,6 +3078,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		description: progress.description,
 		lastIntent: progress.lastIntent,
 		...(stopReason !== undefined ? { operatorStop: stopReason } : {}),
+		...(monitor.budgetStopRequested() ? { budgetStop: true as const } : {}),
 		exitCode,
 		output: stopNotice + truncatedOutput,
 		stderr,

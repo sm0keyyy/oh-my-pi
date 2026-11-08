@@ -2538,6 +2538,8 @@ export interface SingleResult {
 	abortReason?: string;
 	/** Operator wrap-up reason; a stopped run must not complete its linked todo. */
 	operatorStop?: string;
+	/** Request-budget wrap-up; a partial run must not complete its linked todo. */
+	budgetStop?: true;
 	/** Aggregated usage from the subprocess, accumulated incrementally from message_end events. */
 	usage?: Usage;
 	/** Output path for the task result */

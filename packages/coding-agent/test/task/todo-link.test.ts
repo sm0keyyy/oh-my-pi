@@ -16,6 +16,7 @@ import { TodoTracker } from "../../src/session/todo-tracker";
 import { TaskTool } from "../../src/task";
 import * as discovery from "../../src/task/discovery";
 import * as executor from "../../src/task/executor";
+import * as isolationRunner from "../../src/task/isolation-runner";
 import { formatTaskResultSummary } from "../../src/task/result-summary";
 import { stopSubagent } from "../../src/task/run-controls";
 import { cfgTaskBatch, cfgTaskEnableLsp, cfgTaskMaxRecursionDepth, cfgTaskPrewalk } from "../../src/task/settings";
@@ -189,9 +190,47 @@ describe("todo task links", () => {
 		});
 	}
 
+	for (const nested of [false, true]) {
+		it(`tick leaves the linked item open when the ${nested ? "nested patch apply" : "isolated merge"} fails`, async () => {
+			const fixture = await parent();
+			const before = fixture.tracker.phases;
+			fixture.session.settings = fixture.settings.overlay({
+				"task.isolation.enabled": true,
+				"task.isolation.apply": true,
+			});
+			vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot: fixture.root });
+			vi.spyOn(isolationRunner, "runIsolatedSubprocess").mockImplementation(async options =>
+				result(options.agentId, {
+					isolated: true,
+					patchPath: `${options.artifactsDir}/${options.agentId}.patch`,
+					...(nested
+						? { nestedPatches: [{ relativePath: "nested", patch: "nested changes" }] }
+						: {}),
+				}),
+			);
+			vi.spyOn(isolationRunner, "mergeIsolatedChanges").mockResolvedValue({
+				changesApplied: nested,
+				summary: "",
+				hadAnyChanges: true,
+				mergedBranchForNestedPatches: false,
+			});
+			vi.spyOn(isolationRunner, "applyEligibleNestedPatches").mockResolvedValue(
+				"\n\n<system-notification>Nested patch apply failed.</system-notification>",
+			);
+			const tool = await TaskTool.create(fixture.session);
+			const response = await tool.execute("unapplied", { task: "Build adapter", todo: fixture.id, isolated: true });
+			expect(response.details!.results[0]).toMatchObject({ todo: fixture.id, exitCode: 0 });
+			expect(fixture.tracker.phases).toEqual(before);
+			expect(fixture.remote.get(fixture.id)!.status).toBe("in_progress");
+			expect(text(response)).not.toContain("marked done.");
+		});
+	}
+
 	it("link resolves exact text or one unique match, but never an ambiguous or missing target", async () => {
 		const fixture = await parent();
-		vi.spyOn(executor, "runSubprocess").mockImplementation(async options => result(options.id));
+		vi.spyOn(executor, "runSubprocess").mockImplementation(async options =>
+			result(options.id, { description: "Build adapter and report" }),
+		);
 		const tool = await TaskTool.create(fixture.session);
 		for (const todo of ["Build adapter", undefined]) {
 			fixture.tracker.setPhases([{ name: "Build", tasks: [{ content: "Build adapter", status: "pending" }] }]);
@@ -215,6 +254,24 @@ describe("todo task links", () => {
 		expect(missing.details!.results[0]!.todo).toBeUndefined();
 		expect(text(missing)).toContain("Todo link missing-bead not found.");
 		expect(fixture.tracker.phases).toEqual(before);
+	});
+
+	it("link ignores a todo mentioned only in the brief, with an unrelated or absent short label", async () => {
+		const fixture = await parent();
+		let description: string | undefined = "Inspect dependencies";
+		vi.spyOn(executor, "runSubprocess").mockImplementation(async options => result(options.id, { description }));
+		const tool = await TaskTool.create(fixture.session);
+		const before = fixture.tracker.phases;
+		for (const label of ["Inspect dependencies", undefined]) {
+			description = label;
+			const response = await tool.execute("passing-mention", {
+				task: "Inspect dependencies.\nDo not Build adapter; that belongs to another task.",
+			});
+			expect(response.details!.results[0]!.todo).toBeUndefined();
+			expect(fixture.tracker.phases).toEqual(before);
+			expect(fixture.remote.get(fixture.id)!.status).toBe("in_progress");
+			expect(text(response)).not.toContain("marked done.");
+		}
 	});
 
 	it("link stays on its bead after a rename and repeated results do not reopen closed items", async () => {
@@ -291,76 +348,83 @@ describe("todo task links", () => {
 		expect(nestedStore.info.state).toBe("off");
 	});
 
-	it("subagent real session has no todo tool, an off store, and stop retains its partial output without a tick", async () => {
-		registerMockApi(SOURCE);
-		const fixture = await parent();
-		const auth = createInMemoryAuthStorage();
-		auth.keys.setRuntime("mock", "test-key");
-		cleanup.push(async () => {
-			auth.close();
-		});
-		const registry = new ModelRegistry(auth);
-		const started = Promise.withResolvers<void>();
-		let childTools: string[] = [];
-		let childStore: string | undefined;
-		let requests = 0;
-		const model = createMockModel({
-			handler: context => {
-				if (!context.tools?.some(tool => tool.name === "yield")) return { content: ["Adapter"] };
-				if (++requests === 1) {
-					const session = AgentRegistry.global().get("Stopped")!.session!;
-					childTools = session.getEnabledToolNames();
-					childStore = session.getTodoStore().info.state;
-					started.resolve();
-					return { content: ["Inspecting adapter."], delayMs: 10_000 };
-				}
-				return { content: [{ type: "toolCall", name: "yield", arguments: { data: "partial adapter summary" } }] };
-			},
-		});
-		const available = registry.getAvailable.bind(registry);
-		vi.spyOn(registry, "getAvailable").mockImplementation(kind => [model, ...available(kind)]);
-		vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
-			agents: [{ ...agent, tools: ["read", "todo"], model: ["mock/mock-model"] }],
-			projectAgentsDir: null,
-		});
-		fixture.session.authStorage = auth;
-		fixture.session.modelRegistry = registry;
-		fixture.session.enableMCP = false;
-		fixture.session.noContextFiles = true;
-		fixture.session.rules = [];
-		fixture.session.skills = [];
-		fixture.session.settings = fixture.settings.overlay({
-			"task.agentIdleTtlMs": 0,
-			"task.softRequestBudget": 0,
-			"task.structured": true,
-			"compaction.enabled": false,
-			"retry.enabled": false,
-			"todo.reminders": false,
-			"advisor.enabled": false,
-			modelRoles: { default: "mock/mock-model", tiny: "mock/mock-model" },
-		});
-		const tool = await TaskTool.create(fixture.session);
-		const running = tool.execute("stopped", { name: "Stopped", task: "Build adapter", todo: fixture.id });
-		await Promise.race([
-			started.promise,
-			running.then(response => {
-				throw new Error(`Task settled before startup: ${text(response)}`);
-			}),
-		]);
-		expect(stopSubagent("Stopped", "scope changed")).toEqual({ ok: true });
-		const response = await running;
-		const stopped = response.details!.results[0]!;
-		expect(childTools).not.toContain("todo");
-		expect(childStore).toBe("off");
-		expect(stopped.operatorStop).toBe("scope changed");
-		expect(stopped.exitCode).toBe(0);
-		expect(stopped.aborted).toBe(false);
-		expect(stopped.output).toContain("Stopped by operator: scope changed\n\n");
-		expect(text(response)).toContain(
-			formatTaskResultSummary(stopped, { totalDurationMs: response.details!.totalDurationMs }),
-		);
-		expect(text(response)).toContain("partial adapter summary");
-		expect(text(response)).not.toContain("marked done.");
-		expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("in_progress");
-	}, 30_000);
+	for (const budgetStop of [false, true]) {
+		it(`subagent real session has no todo tool, an off store, and ${budgetStop ? "budget" : "operator"} stop retains its partial output without a tick`, async () => {
+			registerMockApi(SOURCE);
+			const fixture = await parent();
+			const auth = createInMemoryAuthStorage();
+			auth.keys.setRuntime("mock", "test-key");
+			cleanup.push(async () => {
+				auth.close();
+			});
+			const registry = new ModelRegistry(auth);
+			const started = Promise.withResolvers<void>();
+			let childTools: string[] = [];
+			let childStore: string | undefined;
+			let requests = 0;
+			const model = createMockModel({
+				handler: context => {
+					if (!context.tools?.some(tool => tool.name === "yield")) return { content: ["Adapter"] };
+					const request = ++requests;
+					if (request === 1) {
+						const session = AgentRegistry.global().get("Stopped")!.session!;
+						childTools = session.getEnabledToolNames();
+						childStore = session.getTodoStore().info.state;
+						started.resolve();
+					}
+					if (budgetStop && request <= 2) return { content: ["Inspecting adapter."] };
+					if (!budgetStop && request === 1) {
+						return { content: ["Inspecting adapter."], delayMs: 10_000 };
+					}
+					return { content: [{ type: "toolCall", name: "yield", arguments: { data: "partial adapter summary" } }] };
+				},
+			});
+			const available = registry.getAvailable.bind(registry);
+			vi.spyOn(registry, "getAvailable").mockImplementation(kind => [model, ...available(kind)]);
+			vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
+				agents: [{ ...agent, tools: ["read", "todo"], model: ["mock/mock-model"] }],
+				projectAgentsDir: null,
+			});
+			fixture.session.authStorage = auth;
+			fixture.session.modelRegistry = registry;
+			fixture.session.enableMCP = false;
+			fixture.session.noContextFiles = true;
+			fixture.session.rules = [];
+			fixture.session.skills = [];
+			fixture.session.settings = fixture.settings.overlay({
+				"task.agentIdleTtlMs": 0,
+				"task.softRequestBudget": budgetStop ? 1 : 0,
+				"task.structured": true,
+				"compaction.enabled": false,
+				"retry.enabled": false,
+				"todo.reminders": false,
+				"advisor.enabled": false,
+				modelRoles: { default: "mock/mock-model", tiny: "mock/mock-model" },
+			});
+			const tool = await TaskTool.create(fixture.session);
+			const running = tool.execute("stopped", { name: "Stopped", task: "Build adapter", todo: fixture.id });
+			await Promise.race([
+				started.promise,
+				running.then(response => {
+					throw new Error(`Task settled before startup: ${text(response)}`);
+				}),
+			]);
+			if (!budgetStop) expect(stopSubagent("Stopped", "scope changed")).toEqual({ ok: true });
+			const response = await running;
+			const stopped = response.details!.results[0]!;
+			expect(childTools).not.toContain("todo");
+			expect(childStore).toBe("off");
+			expect(stopped.operatorStop).toBe(budgetStop ? undefined : "scope changed");
+			expect(stopped.budgetStop).toBe(true);
+			expect(stopped.exitCode).toBe(0);
+			expect(stopped.aborted).toBe(false);
+			if (!budgetStop) expect(stopped.output).toContain("Stopped by operator: scope changed\n\n");
+			expect(text(response)).toContain(
+				formatTaskResultSummary(stopped, { totalDurationMs: response.details!.totalDurationMs }),
+			);
+			expect(text(response)).toContain("partial adapter summary");
+			expect(text(response)).not.toContain("marked done.");
+			expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("in_progress");
+		}, 30_000);
+	}
 });

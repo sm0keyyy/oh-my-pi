@@ -1909,13 +1909,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 	}
 
-	#resolveTodoLink(params: TaskParams): { task: TodoItem; phase: TodoPhase } | undefined {
+	#resolveTodoLink(params: TaskParams, description?: string): { task: TodoItem; phase: TodoPhase } | undefined {
 		const phases = this.session.getTodoPhases?.() ?? [];
 		if (params.todo !== undefined) return resolveTodoTarget(phases, params.todo);
+		if (!description?.trim()) return undefined;
 		let match: { task: TodoItem; phase: TodoPhase } | undefined;
 		for (const phase of phases) {
 			for (const task of phase.tasks) {
-				if (isClosedTodo(task) || !todoMatchesAnyDescription(task.content, [params.task ?? ""])) continue;
+				if (isClosedTodo(task) || !todoMatchesAnyDescription(task.content, [description])) continue;
 				if (match) return undefined;
 				match = { task, phase };
 			}
@@ -1938,7 +1939,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const link = this.#resolveTodoLink(params);
-		const todo = link ? (link.task.id ?? link.task.content) : undefined;
+		let todo = link ? (link.task.id ?? link.task.content) : undefined;
 		const assignment = link
 			? prompt.render(taskBeadTemplate, { assignment: (params.task ?? "").trim(), ...link })
 			: (params.task ?? "").trim();
@@ -2002,6 +2003,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				},
 			});
+			if (todo === undefined) {
+				const implicitLink = this.#resolveTodoLink(params, execution.result.description);
+				if (implicitLink) todo = implicitLink.task.id ?? implicitLink.task.content;
+			}
 			const result = { ...execution.result, ...taskFileMetadata, ...(todo !== undefined ? { todo } : {}) };
 			let todoNotice = missingLink;
 			if (
@@ -2011,6 +2016,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				!result.error &&
 				!result.retryFailure &&
 				result.operatorStop === undefined &&
+				result.budgetStop === undefined &&
+				execution.changesApplied !== false &&
+				!execution.requiresRecoveryArtifacts &&
 				!signal?.aborted &&
 				this.session.getTodoPhases &&
 				this.session.setTodoPhases

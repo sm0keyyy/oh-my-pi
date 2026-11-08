@@ -125,6 +125,11 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: { open: "boolean" },
 	},
 	{
+		name: "focus_ask_pane",
+		doc: "Focus the pending operator ask in the floating Rex pane.",
+		result: { focused: "boolean" },
+	},
+	{
 		name: "get_available_commands",
 		doc: "List the slash-command catalog.",
 		result: { commands: "AvailableSlashCommand[]" },

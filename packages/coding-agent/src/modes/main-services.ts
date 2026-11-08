@@ -3,6 +3,7 @@ import { startCodegraphMain } from "../codegraph-index";
 import type { Settings } from "../config/settings";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
 import { startOperatorQueue } from "../operator-queue";
+import { startAskPane } from "../rex-ask";
 import { type MainPaneRecord, startMainPaneRecord } from "../rex-panes/main-pane-record";
 import { createTabTitleRex, startTabTitle } from "../rex-panes/tab-title";
 import { startDiffReview } from "../rex-review/diff-review";
@@ -33,6 +34,18 @@ export function startMainServices(input: MainServicesInput): MainServices {
 			logger.warn(`${name}: main service start failed`, { error: String(error) });
 		}
 	};
+	start("rex-ask", () =>
+		startAskPane({
+			settings: input.settings,
+			ui: input.toolUi,
+			source: () => ({
+				agent: "Main",
+				role: "main",
+				sessionId: input.sessionId(),
+				sessionLabel: input.session.sessionManager.getSessionName(),
+			}),
+		}),
+	);
 	start("operator-queue", () =>
 		startOperatorQueue({ ui: input.toolUi, sessionId: input.sessionId, askUi: input.askUi }),
 	);

@@ -226,10 +226,14 @@ export type ExtensionReviewResult =
 	| { kind: "verdict"; verdict: "approve" | "request-changes"; comments: ExtensionReviewComment[] }
 	| { kind: "cancelled"; timedOut?: boolean };
 
+import type { AskSource } from "../../rex-ask/types";
+
 /**
  * UI dialog options for extensions.
  */
 export interface ExtensionUIDialogOptions {
+	source?: AskSource;
+	context?: string;
 	signal?: AbortSignal;
 	timeout?: number;
 	/** Invoked when the UI times out while waiting for a selection/input */

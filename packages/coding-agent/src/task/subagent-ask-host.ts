@@ -8,6 +8,8 @@ import type {
 	ExtensionUIContext,
 } from "../extensibility/extensions/types";
 import type { EventBus } from "../utils/event-bus";
+import { askPaneAvailable } from "../rex-ask";
+import { AgentRegistry } from "../registry/agent-registry";
 
 export const SUBAGENT_ASK_TIMEOUT_MS = 600_000;
 
@@ -55,6 +57,7 @@ export function subagentAskHostFor(bus: EventBus | undefined): SubagentAskHost |
 class AskHost implements SubagentAskHost {
 	readonly subagentEventBus: EventBus;
 	readonly #queue: PendingAsk[] = [];
+	readonly #floating = new Set<AbortController>();
 	#active: PendingAsk | undefined;
 	#disposed = false;
 
@@ -97,16 +100,28 @@ class AskHost implements SubagentAskHost {
 			timeoutStartsOnPresentation: true,
 			review: (request, dialogOptions) =>
 				this.#enqueueReview(agentId, { ...request, title: `${displayName}: ${request.title}` }, dialogOptions),
-			askDialog: (questions, dialogOptions) =>
-				this.#enqueue(
+			askDialog: (questions, dialogOptions) => {
+				const ref = AgentRegistry.global().get(agentId);
+				const options = {
+					...dialogOptions,
+					source: {
+						...dialogOptions?.source,
+						agent: displayName,
+						role: ref?.history?.agent ?? dialogOptions?.source?.role ?? "subagent",
+						sessionId: dialogOptions?.source?.sessionId ?? ref?.session?.sessionManager.getSessionId(),
+						sessionLabel: dialogOptions?.source?.sessionLabel ?? ref?.session?.sessionManager.getSessionName(),
+					},
+				};
+				return this.#enqueue(
 					agentId,
 					questions.map(question => ({
 						...question,
 						question: `${displayName}: ${question.question}`,
 						header: question.header ? `${displayName}: ${question.header}` : displayName,
 					})),
-					dialogOptions,
-				),
+					options,
+				);
+			},
 		};
 	}
 
@@ -125,6 +140,7 @@ class AskHost implements SubagentAskHost {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		if (hosts.get(this.subagentEventBus) === this) hosts.delete(this.subagentEventBus);
+		for (const controller of this.#floating) controller.abort();
 		this.#active?.cancel();
 		for (const request of this.#queue.splice(0)) request.cancel();
 	}
@@ -205,6 +221,64 @@ class AskHost implements SubagentAskHost {
 		external = false,
 	): Promise<ExtensionAskDialogResult | undefined> {
 		if (this.#disposed || dialogOptions?.signal?.aborted) return Promise.resolve(undefined);
+		if (askPaneAvailable() && this.options.main.askDialog) {
+			const controller = new AbortController();
+			this.#floating.add(controller);
+			const signal = dialogOptions?.signal
+				? AbortSignal.any([dialogOptions.signal, controller.signal])
+				: controller.signal;
+			const answer = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+			let settled = false;
+			let timer: NodeJS.Timeout | undefined;
+			let presented = false;
+			const finish = (result: ExtensionAskDialogResult | undefined): void => {
+				if (settled) return;
+				settled = true;
+				answer.resolve(result);
+				controller.abort();
+			};
+			const onAbort = (): void => finish(undefined);
+			signal.addEventListener("abort", onAbort, { once: true });
+			void Promise.try(() =>
+				this.options.main.askDialog!(questions, {
+					...dialogOptions,
+					signal,
+					timeout: external ? dialogOptions?.timeout : undefined,
+					onTimeoutStart: () => {
+						if (presented || settled) return;
+						presented = true;
+						if (!external)
+							timer = setTimeout(() => {
+								finish({
+									kind: "submit",
+									results: questions.map(question => ({
+										id: question.id,
+										question: question.question,
+										options: question.options.map(option => option.label),
+										multi: question.multi ?? false,
+										selectedOptions:
+											question.recommended !== undefined &&
+											Number.isInteger(question.recommended) &&
+											question.options[question.recommended]
+												? [question.options[question.recommended]!.label]
+												: [],
+										timedOut: true,
+									})),
+								});
+								dialogOptions?.onTimeout?.();
+							}, SUBAGENT_ASK_TIMEOUT_MS);
+						dialogOptions?.onTimeoutStart?.();
+					},
+				}),
+			).then(finish, answer.reject);
+			return answer.promise.finally(() => {
+				settled = true;
+				clearTimeout(timer);
+				signal.removeEventListener("abort", onAbort);
+				this.#floating.delete(controller);
+				controller.abort();
+			});
+		}
 		const { promise, resolve, reject } = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
 		const controller = new AbortController();
 		let settled = false;
@@ -250,20 +324,27 @@ class AskHost implements SubagentAskHost {
 				const abort = new AbortController();
 				mirrorController = abort;
 				const signal = AbortSignal.any([controller.signal, abort.signal]);
-				void ui.askDialog(questions, { signal, acceptImages: dialogOptions?.acceptImages }).then(
-					result => {
-						if (mirrorUi !== ui || mirrorController !== abort || signal.aborted) return;
-						// Pane teardown resolves undefined too; only a current pane's Esc is an answer.
-						if (result === undefined && this.options.mirror?.(agentId) !== ui) return;
-						finish(result);
-					},
-					error => {
-						// A pane failure must leave the main dialog available.
-						if (!settled && !signal.aborted) {
-							logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
-						}
-					},
-				);
+				void ui
+					.askDialog(questions, {
+						signal,
+						acceptImages: dialogOptions?.acceptImages,
+						source: dialogOptions?.source,
+						context: dialogOptions?.context,
+					})
+					.then(
+						result => {
+							if (mirrorUi !== ui || mirrorController !== abort || signal.aborted) return;
+							// Pane teardown resolves undefined too; only a current pane's Esc is an answer.
+							if (result === undefined && this.options.mirror?.(agentId) !== ui) return;
+							finish(result);
+						},
+						error => {
+							// A pane failure must leave the main dialog available.
+							if (!settled && !signal.aborted) {
+								logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
+							}
+						},
+					);
 			} catch (error) {
 				logger.warn("rex-panes: ask mirror failed", { agentId, error: String(error) });
 			}
@@ -309,6 +390,8 @@ class AskHost implements SubagentAskHost {
 					void main
 						.askDialog(questions, {
 							...(external ? dialogOptions : { acceptImages: dialogOptions?.acceptImages }),
+							source: dialogOptions?.source,
+							context: dialogOptions?.context,
 							signal: controller.signal,
 							onTimeoutStart: onPresented,
 						})

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
+import type { AskSource } from "../rex-ask/types";
 import { acquireLock, lockHolder } from "./lock";
 import { ensureDirs, envMilliseconds, queuePaths, type QueuePaths } from "./paths";
 import {
@@ -37,6 +38,7 @@ export async function renderQuestions(
 	ui: ExtensionUIContext,
 	questions: AskQuestion[],
 	signal?: AbortSignal,
+	metadata?: { source?: AskSource; context?: string },
 ): Promise<
 	| { kind: "answered"; answers: Answers }
 	| { kind: "cancelled" }
@@ -50,6 +52,7 @@ export async function renderQuestions(
 	const signals = [signal, deadline].filter((s): s is AbortSignal => s !== undefined);
 	const result = await ui
 		.askDialog(questions, {
+			...metadata,
 			timeout: timeoutMs,
 			signal: signals.length ? AbortSignal.any(signals) : undefined,
 			onTimeout: () => {
@@ -106,7 +109,13 @@ async function drainPending(
 					await quarantine(paths, ref);
 					continue;
 				}
-				const outcome = await renderQuestions(main.askUi?.() ?? main.ui, ref.interview.questions, signal);
+				const outcome = await renderQuestions(main.askUi?.() ?? main.ui, ref.interview.questions, signal, {
+					source: ref.interview.source ?? {
+						agent: ref.interview.from ?? "Operator queue",
+						sessionId: ref.interview.session,
+					},
+					context: ref.interview.context,
+				});
 				if (outcome.kind === "aborted") return "done";
 				if (outcome.kind === "cancelled") {
 					stopped = "Cancelled.";

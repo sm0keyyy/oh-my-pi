@@ -101,6 +101,7 @@ export type RpcCommand =
 	  }
 	| { id?: string; type: "pane_crashed"; blockId: string }
 	| { id?: string; type: "reopen_pane"; blockId: string }
+	| { id?: string; type: "focus_ask_pane" }
 	| { id?: string; type: "view_markdown"; path: string }
 	| { id?: string; type: "get_subagent_thread"; subagentId: string }
 	| { id?: string; type: "run_runbook_step"; runbookId: string; step: number | "all" }
@@ -601,6 +602,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "toggle_pane"; success: true; data: { open: boolean } }
 	| { id?: string; type: "response"; command: "pane_crashed"; success: true; data: { known: boolean } }
 	| { id?: string; type: "response"; command: "reopen_pane"; success: true; data: ReopenOutcome }
+	| { id?: string; type: "response"; command: "focus_ask_pane"; success: true; data: { focused: boolean } }
 	| { id?: string; type: "response"; command: "view_markdown"; success: true; data: { opened: boolean } }
 	| { id?: string; type: "response"; command: "get_subagent_thread"; success: true; data: { thread: AgentThread } }
 	| { id?: string; type: "response"; command: "run_runbook_step"; success: true; data: RunOutcome }
@@ -903,6 +905,8 @@ export type RpcExtensionUIRequest =
 			method: "ask";
 			questions: RpcAskDialogQuestion[];
 			timeout?: number;
+			source?: { agent: string; role?: string; sessionId?: string; sessionLabel?: string };
+			context?: string;
 	  }
 	| {
 			type: "extension_ui_request";

@@ -57,6 +57,7 @@ import type { RpcSocketServer } from "../rpc/rpc-socket";
 import type { RpcExtensionUIRequest } from "../rpc/rpc-types";
 import { approvalAnswerForChoice, approvalChoiceLabels, approvalOnceLabel } from "../../tools/approval";
 import { createReviewOverlay } from "../../rex-review/review-pane";
+import { routeAskDialog } from "../../rex-ask";
 
 const MAX_WIDGET_LINES = 10;
 
@@ -939,15 +940,17 @@ export class ExtensionUiController {
 		// on the guest path or taking down the local render.
 		const normalized = normalizeDialogQuestions(questions);
 		const host = this.ctx.collabHost;
-		if (!host) return this.#showLocalAskDialog(normalized, dialogOptions);
+		const local = (signal: AbortSignal | undefined) =>
+			routeAskDialog(normalized, { ...dialogOptions, signal }, () =>
+				this.#showLocalAskDialog(normalized, { ...dialogOptions, signal }),
+			);
+		if (!host) return local(dialogOptions?.signal);
 		const localAbort = new AbortController();
 		const remoteAbort = new AbortController();
 		const parentSignal = dialogOptions?.signal;
 		const localSignal = parentSignal ? AbortSignal.any([parentSignal, localAbort.signal]) : localAbort.signal;
 		const remoteSignal = parentSignal ? AbortSignal.any([parentSignal, remoteAbort.signal]) : remoteAbort.signal;
-		const localWinner = this.#showLocalAskDialog(normalized, { ...dialogOptions, signal: localSignal }).then(
-			(value): CollabAskDialogWinner => ({ source: "local", value }),
-		);
+		const localWinner = local(localSignal).then((value): CollabAskDialogWinner => ({ source: "local", value }));
 		const remoteWinner: Promise<CollabAskDialogWinner> = this.#runGuestAskDialog(host, normalized, remoteSignal).then(
 			result => (result === "unavailable" ? localWinner : { source: "remote", value: result }),
 		);

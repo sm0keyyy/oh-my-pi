@@ -1658,6 +1658,14 @@ class EditorUiRequest:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class AskSource:
+    agent: str
+    role: str | None = None
+    session_id: str | None = None
+    session_label: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class AskUiRequest:
     """Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it."""
     type: Literal["extension_ui_request"] = "extension_ui_request"
@@ -1665,6 +1673,8 @@ class AskUiRequest:
     method: Literal["ask"] = "ask"
     questions: tuple[AskQuestion, ...]
     timeout: int | None = None
+    source: AskSource | None = None
+    context: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -1763,6 +1773,8 @@ class ExtensionUiRequest(ExtensionUiRequestMixin):
     prefill: str | None = None
     prompt_style: bool | None = None
     questions: tuple[AskQuestion, ...] | None = None
+    source: AskSource | None = None
+    context: str | None = None
     path: str | None = None
     sections: tuple[ReviewSection, ...] | None = None
     target_id: str | None = None
@@ -1816,6 +1828,11 @@ class NegotiateProtocolResult:
 @dataclass(slots=True, frozen=True, kw_only=True)
 class TogglePaneResult:
     open: bool
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class FocusAskPaneResult:
+    focused: bool
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -3343,6 +3360,16 @@ def parse_editor_ui_request(value: object, path: str = "EditorUiRequest") -> Edi
     )
 
 
+def parse_ask_source(value: object, path: str = "AskSource") -> AskSource:
+    payload = expect_object(value, path)
+    return AskSource(
+        agent=required(payload, "agent", decode_str, path),
+        role=optional(payload, "role", decode_str, path),
+        session_id=optional(payload, "sessionId", decode_str, path),
+        session_label=optional(payload, "sessionLabel", decode_str, path),
+    )
+
+
 def parse_ask_ui_request(value: object, path: str = "AskUiRequest") -> AskUiRequest:
     payload = expect_object(value, path)
     required(payload, "type", cast('Decoder[Literal["extension_ui_request"]]', literal(frozenset({"extension_ui_request"}))), path)
@@ -3351,6 +3378,8 @@ def parse_ask_ui_request(value: object, path: str = "AskUiRequest") -> AskUiRequ
         id=required(payload, "id", decode_str, path),
         questions=required(payload, "questions", array(parse_ask_question), path),
         timeout=optional(payload, "timeout", decode_int, path),
+        source=optional(payload, "source", parse_ask_source, path),
+        context=optional(payload, "context", decode_str, path),
     )
 
 
@@ -3465,6 +3494,8 @@ def parse_extension_ui_request(value: object, path: str = "ExtensionUiRequest") 
         prefill=optional(payload, "prefill", decode_str, path),
         prompt_style=optional(payload, "promptStyle", decode_bool, path),
         questions=optional(payload, "questions", array(parse_ask_question), path),
+        source=optional(payload, "source", parse_ask_source, path),
+        context=optional(payload, "context", decode_str, path),
         path=optional(payload, "path", decode_str, path),
         sections=optional(payload, "sections", array(parse_review_section), path),
         target_id=optional(payload, "targetId", decode_str, path),
@@ -3526,6 +3557,13 @@ def parse_toggle_pane_result(value: object, path: str = "TogglePaneResult") -> T
     payload = expect_object(value, path)
     return TogglePaneResult(
         open=required(payload, "open", decode_bool, path),
+    )
+
+
+def parse_focus_ask_pane_result(value: object, path: str = "FocusAskPaneResult") -> FocusAskPaneResult:
+    payload = expect_object(value, path)
+    return FocusAskPaneResult(
+        focused=required(payload, "focused", decode_bool, path),
     )
 
 
@@ -3813,6 +3851,11 @@ class WireClient:
         if shape is not None:
             params["shape"] = shape
         return parse_toggle_pane_result(self._command("toggle_pane", params), "toggle_pane")
+
+    def focus_ask_pane(self) -> FocusAskPaneResult:
+        """Focus the pending operator ask in the floating Rex pane."""
+        params: dict[str, object] = {}
+        return parse_focus_ask_pane_result(self._command("focus_ask_pane", params), "focus_ask_pane")
 
     def get_available_commands(self) -> tuple[AvailableSlashCommand, ...]:
         """List the slash-command catalog."""
@@ -4464,6 +4507,7 @@ __all__ = [
     "AskAnswer",
     "AskOption",
     "AskQuestion",
+    "AskSource",
     "AskUiRequest",
     "AssistantContent",
     "AssistantDoneEvent",
@@ -4529,6 +4573,7 @@ __all__ = [
     "FastModeResult",
     "FileMentionItem",
     "FileMentionMessage",
+    "FocusAskPaneResult",
     "FollowUpSubagentOutcome",
     "GetSessionLeaseResult",
     "GetSubagentThreadResult",
@@ -4687,6 +4732,7 @@ __all__ = [
     "parse_ask_answer",
     "parse_ask_option",
     "parse_ask_question",
+    "parse_ask_source",
     "parse_ask_ui_request",
     "parse_assistant_content",
     "parse_assistant_done_event",
@@ -4742,6 +4788,7 @@ __all__ = [
     "parse_fast_mode_result",
     "parse_file_mention_item",
     "parse_file_mention_message",
+    "parse_focus_ask_pane_result",
     "parse_follow_up_subagent_outcome",
     "parse_get_session_lease_result",
     "parse_get_subagent_thread_result",

@@ -14,6 +14,8 @@ import { routePaneInput } from "../../src/rex-panes/pane-input";
 import { fixture } from "./fixture";
 import { SessionManager } from "../../src/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { Markdown } from "@oh-my-pi/pi-tui/components/markdown";
+import { getMarkdownTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 
 test("pick routes only a valid owner link and rejects forged ids, steps and duplicate running picks", async () => {
 	const gate = Promise.withResolvers<{ exitCode: number; output: string }>();
@@ -116,5 +118,35 @@ test("session adoption retires old Run links and the same tool can publish in th
 		expect(f.deliveries[0]).toContain("new session");
 	} finally {
 		await f.close();
+	}
+});
+
+test("assistant markdown cannot turn a runbook URI into an execution control", async () => {
+	await initTheme(false);
+	const f = fixture({ local: async () => ({ exitCode: 0, output: "must not run" }) });
+	try {
+		const result = await new RunbookTool(f.session).execute("markdown", {
+			title: "Approval",
+			steps: [{ title: "Run", command: "ignored" }],
+		});
+		f.save(result.details!);
+		setExtensionLinks([RUNBOOK_LINK_SCHEME]);
+		const id = result.details!.runbookId;
+		for (const text of [
+			`[Open docs](omp-runbook:${id}/all)`,
+			`<omp-runbook:${id}/1>`,
+			`[Run](OMP-RUNBOOK:${id}/all)`,
+		]) {
+			const rows = new Markdown(text, 0, 0, getMarkdownTheme()).render(120);
+			const labels = rows.flatMap(row => extensionLinkLabels(row));
+			for (const label of labels) await activateRunbookLink(label.url, f.journal.getSessionId());
+			expect(labels).toEqual([]);
+			expect(rows.join("")).not.toContain("\x1b]8;");
+		}
+		expect(f.jobs.getAllJobs()).toHaveLength(0);
+		expect(runbookLines(result.details!).flatMap(row => extensionLinkLabels(row))).toHaveLength(2);
+	} finally {
+		await f.close();
+		setExtensionLinks([]);
 	}
 });

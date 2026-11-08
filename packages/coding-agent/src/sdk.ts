@@ -2550,6 +2550,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// mutation (any tool) bumped it in the meantime.
 		const fileMutationVersions = new Map<string, number>();
 		const disposeCallbacks = new Set<() => void>();
+		const pendingSessionChangeCallbacks = new Set<{ callback: () => void; unregister?: () => void }>();
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
 		const setActiveToolNames = (names: Iterable<string>): void => {
@@ -2680,7 +2681,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				disposeCallbacks.add(callback);
 				return () => disposeCallbacks.delete(callback);
 			},
-			registerSessionChangeCallback: callback => session?.registerSessionChangeCallback(callback),
+			registerSessionChangeCallback: callback => {
+				if (hasSession) return session.registerSessionChangeCallback(callback);
+				const registration: { callback: () => void; unregister?: () => void } = { callback };
+				pendingSessionChangeCallbacks.add(registration);
+				return () => {
+					pendingSessionChangeCallbacks.delete(registration);
+					registration.unregister?.();
+				};
+			},
 			bumpFileMutationVersion: path => {
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
 				fileMutationVersions.set(path, next);
@@ -5191,6 +5200,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
+		for (const registration of pendingSessionChangeCallbacks) {
+			registration.unregister = session.registerSessionChangeCallback(registration.callback);
+		}
+		pendingSessionChangeCallbacks.clear();
 		credentialNoticeSession = session;
 		// Hashline snapshots are session-scoped: /new and switchSession fire the
 		// change callbacks, so clear the tool-side store there — stale tags would

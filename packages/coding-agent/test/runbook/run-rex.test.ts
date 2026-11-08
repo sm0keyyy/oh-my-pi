@@ -6,6 +6,8 @@ import { fixture } from "./fixture";
 import { RunbookTool } from "../../src/runbook/tool";
 import { runRunbook } from "../../src/runbook/registry";
 import { runbookLines } from "@oh-my-pi/pi-tui/tools/runbook";
+import * as fs from "node:fs/promises";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 function fake(timeout = false) {
 	const calls: string[][] = [];
@@ -155,5 +157,78 @@ test("interactive unraid job shows its input notice and delivers only captured o
 	} finally {
 		gate.resolve();
 		await f.close();
+	}
+});
+
+test("unraid retries a rejected session creation and dispose tolerates a rejected creation", async () => {
+	const f = fake();
+	let reject = true;
+	const runner = createRunbookRex({
+		host: "unraid",
+		run: async (args, timeout) => {
+			if (args[3] === "new" && reject) {
+				reject = false;
+				throw new Error("host unavailable");
+			}
+			return f.run(args, timeout);
+		},
+	});
+	try {
+		await expect(
+			runner.run({ ...step, host: "unraid", interactive: false }, "omp: retry.1", undefined, 1000),
+		).rejects.toThrow("host unavailable");
+		expect(
+			(await runner.run({ ...step, host: "unraid", interactive: false }, "omp: retry.1", undefined, 1000)).output,
+		).toBe("program output only");
+	} finally {
+		await runner.dispose();
+	}
+	expect(f.calls.at(-1)).toEqual(["-S", "unraid", "--autostart=false", "kill", "session:remote"]);
+	const failed = createRunbookRex({
+		host: "unraid",
+		run: async () => {
+			throw new Error("unreachable");
+		},
+	});
+	await expect(failed.run({ ...step, host: "unraid" }, "omp: failed.1", undefined, 1000)).rejects.toThrow();
+	await expect(failed.dispose()).resolves.toBeUndefined();
+});
+
+test("capture streams a large terminal through a one MiB UTF-8 tail", async () => {
+	await using temp = await TempDir.create("runbook-capture-");
+	const binary = temp.join("rex.js");
+	await Bun.write(
+		binary,
+		`#!${process.execPath}
+const command = process.argv[5];
+if (command === "capture") {
+	const writer = Bun.stdout.writer();
+	const chunk = "x".repeat(65536);
+	for (let n = 0; n < 1024; n++) { writer.write(chunk); await writer.flush(); }
+	writer.write("éCAPTURE_END");
+	await writer.flush();
+} else if (command === "new") {
+	console.log(JSON.stringify({ session_id: "s", initial_windows: [{ window_id: "w", block_ids: ["anchor"] }] }));
+} else if (command === "run") {
+	console.log(JSON.stringify({ block_ids: ["b"] }));
+} else if (command === "wait") {
+	console.log(JSON.stringify({ exit_code: 0 }));
+} else { console.log("{}"); }
+`,
+	);
+	await fs.chmod(binary, 0o700);
+	const runner = createRunbookRex({ binary, host: "unraid" });
+	try {
+		const result = await runner.run(
+			{ ...step, host: "unraid", interactive: false },
+			"omp: capture.1",
+			undefined,
+			1000,
+		);
+		expect(result.exitCode).toBe(0);
+		expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(1024 * 1024);
+		expect(result.output.endsWith("éCAPTURE_END")).toBe(true);
+	} finally {
+		await runner.dispose();
 	}
 });

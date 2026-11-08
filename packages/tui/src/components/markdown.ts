@@ -4423,6 +4423,11 @@ export class Markdown implements Component {
 						this.#proseFgExemptContext(resolvedStyleContext),
 					);
 					const href = typeof token.href === "string" ? token.href : "";
+					// Only runbook tool controls may authorize shell execution, never model-written markdown.
+					if (/^omp-runbook:/i.test(href)) {
+						result += linkText + stylePrefix;
+						break;
+					}
 					// An extension owns this link: no suffix, and no hyperlink the terminal could open.
 					// Its label gets its own (dotted) underline instead of the web-link one.
 					if (href && extensionLinkScheme(href)) {

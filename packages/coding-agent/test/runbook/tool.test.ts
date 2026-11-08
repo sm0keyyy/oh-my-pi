@@ -10,6 +10,7 @@ import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { convertToLlm } from "../../src/session/messages";
+import { AsyncJobManager } from "../../src/async/job-manager";
 
 test("single tool publishes steps and hosts without running commands", async () => {
 	const invoked: string[] = [];
@@ -133,5 +134,83 @@ test.each([false, true])("single completion reaches the owning model once when r
 		await live.dispose();
 		auth.close();
 		await f.close();
+	}
+});
+
+test("a failed step records its error without disabling later Run picks", async () => {
+	let reject = true;
+	const f = fixture({
+		local: async () => {
+			if (reject) {
+				reject = false;
+				throw new Error("runner unavailable");
+			}
+			return { exitCode: 0, output: "retry succeeded" };
+		},
+	});
+	try {
+		const result = await new RunbookTool(f.session).execute("failure", {
+			title: "Retry",
+			steps: [{ title: "Step", command: "ignored" }],
+		});
+		f.save(result.details!);
+		await runRunbook(result.details!.runbookId, 1, "tui");
+		await f.settle();
+		expect(f.deliveries[0]).toContain("exit -1");
+		expect(f.deliveries[0]).toContain("runner unavailable");
+		expect((await runRunbook(result.details!.runbookId, 1, "tui")).ok).toBe(true);
+		await f.settle();
+		expect(f.deliveries[1]).toContain("retry succeeded");
+		await expect(
+			new RunbookTool(f.session).execute("next", { title: "Next", steps: [{ title: "Next", command: "ignored" }] }),
+		).resolves.toBeDefined();
+	} finally {
+		await f.close();
+	}
+});
+
+test("job admission failure records exit -1 and allows retry after capacity frees", async () => {
+	const f = fixture({ local: async () => ({ exitCode: 0, output: "admitted" }) });
+	const jobs = new AsyncJobManager({ maxRunningJobs: 1 });
+	const gate = Promise.withResolvers<string>();
+	f.session.asyncJobManager = jobs;
+	jobs.registerDeliverySink(f.agentId, () => {});
+	jobs.register("bash", "occupied", () => gate.promise, { ownerId: f.agentId });
+	try {
+		const result = await new RunbookTool(f.session).execute("admission", {
+			title: "Admission",
+			steps: [{ title: "Step", command: "ignored" }],
+		});
+		f.save(result.details!);
+		expect(await runRunbook(result.details!.runbookId, 1, "tui")).toEqual({ ok: false, reason: "running" });
+		expect(runbookLines(result.details!).join("\n")).toContain("exit -1");
+		expect(runbookLines(result.details!).join("\n")).toContain("Background job limit reached");
+		expect(f.journal.getEntries()).toContainEqual(
+			expect.objectContaining({
+				type: "custom",
+				customType: "runbook-run",
+				data: {
+					runbookId: result.details!.runbookId,
+					steps: [
+						expect.objectContaining({
+							n: 1,
+							exitCode: -1,
+							tail: expect.stringContaining("Background job limit reached"),
+						}),
+					],
+				},
+			}),
+		);
+		gate.resolve("released");
+		await jobs.waitForAll();
+		await jobs.drainDeliveries({ timeoutMs: 2000 });
+		expect((await runRunbook(result.details!.runbookId, 1, "tui")).ok).toBe(true);
+		await jobs.waitForAll();
+		await jobs.drainDeliveries({ timeoutMs: 2000 });
+		expect(runbookLines(result.details!).join("\n")).toContain("admitted");
+	} finally {
+		gate.resolve("released");
+		await f.close();
+		await jobs.dispose();
 	}
 });

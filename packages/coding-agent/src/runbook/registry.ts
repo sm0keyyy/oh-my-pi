@@ -56,11 +56,11 @@ export class RunbookOwner {
 		}
 		this.#unregisterExit = postmortem.register(`runbook:${crypto.randomUUID()}`, () => this.dispose());
 		this.#unregisterChange = session.registerSessionChangeCallback?.(() => {
-			void this.dispose().catch(error => this.fail(error));
+			void this.dispose().catch(error => logger.warn("runbook: cleanup failed", { error: String(error) }));
 			registerRunbookSession(session, runners);
 		});
 		this.#unregisterDispose = session.registerDisposeCallback?.(() => {
-			void this.dispose().catch(error => this.fail(error));
+			void this.dispose().catch(error => logger.warn("runbook: cleanup failed", { error: String(error) }));
 		});
 	}
 	get alive(): boolean {
@@ -82,6 +82,21 @@ export class RunbookOwner {
 		books.set(details.runbookId, book);
 		setRunbookView(details.runbookId, () => book.view);
 	}
+	async persistRun(book: RegisteredBook, steps: RunbookRunEntry["steps"]): Promise<string> {
+		try {
+			if (steps.length && !this.#disposed && this.#sessionId === this.session.getSessionId?.()) {
+				this.session.sessionManager?.appendCustomEntry(RUNBOOK_RUN_CUSTOM_TYPE, {
+					runbookId: book.details.runbookId,
+					steps,
+				} satisfies RunbookRunEntry);
+				await this.session.sessionManager?.flush();
+			}
+			return "";
+		} catch (error) {
+			this.fail(error);
+			return "\nrunbook: captured results could not be saved; runbook disabled.";
+		}
+	}
 	dispose(): Promise<void> {
 		if (this.#closing) return this.#closing;
 		this.#disposed = true;
@@ -94,9 +109,9 @@ export class RunbookOwner {
 			books.delete(id);
 			setRunbookView(id, undefined);
 		}
-		this.#closing = Promise.all([this.#mac?.dispose(), this.#unraid?.dispose()]).then(() => {
-			this.#unregisterExit();
-		});
+		this.#closing = Promise.all([this.#mac?.dispose(), this.#unraid?.dispose()])
+			.then(() => undefined)
+			.finally(this.#unregisterExit);
 		return this.#closing;
 	}
 	async execute(book: RegisteredBook, picked: number | "all", signal: AbortSignal): Promise<string> {
@@ -140,9 +155,13 @@ export class RunbookOwner {
 						);
 					}
 				} catch (error) {
-					this.fail(error);
+					logger.warn("runbook: step failed", {
+						runbookId: book.details.runbookId,
+						step: n,
+						error: String(error),
+					});
 					result = {
-						exitCode: combinedSignal.aborted ? 130 : -1,
+						exitCode: -1,
 						output: `runbook: ${error instanceof Error ? error.message : String(error)}`,
 					};
 				}
@@ -159,16 +178,7 @@ export class RunbookOwner {
 			}
 		} finally {
 			try {
-				if (results.length && !this.#disposed && this.#sessionId === this.session.getSessionId?.()) {
-					this.session.sessionManager?.appendCustomEntry(RUNBOOK_RUN_CUSTOM_TYPE, {
-						runbookId: book.details.runbookId,
-						steps: results,
-					} satisfies RunbookRunEntry);
-					await this.session.sessionManager?.flush();
-				}
-			} catch (error) {
-				this.fail(error);
-				persistenceNotice = "\nrunbook: captured results could not be saved; runbook disabled.";
+				persistenceNotice = await this.persistRun(book, results);
 			} finally {
 				book.view.running = undefined;
 				book.view.notice = undefined;
@@ -202,12 +212,15 @@ export async function runRunbook(runbookId: string, step: number | "all", _origi
 	const session = book.owner.session;
 	const ownerId = session.getAgentId?.();
 	if (!book.owner.alive || !session.asyncJobManager || !ownerId) return { ok: false, reason: "owner-gone" };
+	try {
+		if (session.sessionManager && !rebuildRunbooks(session.sessionManager.getBranch()).has(runbookId))
+			return { ok: false, reason: "unknown-runbook" };
+	} catch (error) {
+		book.owner.fail(error);
+		return { ok: false, reason: "owner-gone" };
+	}
 	book.view.running = step === "all" ? 1 : step;
 	try {
-		if (session.sessionManager && !rebuildRunbooks(session.sessionManager.getBranch()).has(runbookId)) {
-			book.view.running = undefined;
-			return { ok: false, reason: "unknown-runbook" };
-		}
 		const jobId = session.asyncJobManager.register(
 			"bash",
 			`runbook ${runbookId} step ${step}`,
@@ -216,9 +229,25 @@ export async function runRunbook(runbookId: string, step: number | "all", _origi
 		);
 		return { ok: true, jobId };
 	} catch (error) {
-		book.view.running = undefined;
-		book.owner.fail(error);
-		return { ok: false, reason: "owner-gone" };
+		logger.warn("runbook: registration failed", { runbookId, error: String(error) });
+		const n = step === "all" ? 1 : step;
+		const failed = {
+			n,
+			host: book.details.steps[n - 1]!.host,
+			exitCode: -1,
+			tail: truncateTail(error instanceof Error ? error.message : String(error), {
+				maxLines: 40,
+				maxBytes: 1024 * 1024,
+			}).content,
+		};
+		book.view.runs = [...book.view.runs.filter(previous => previous.n !== n), failed];
+		try {
+			await book.owner.persistRun(book, [failed]);
+		} finally {
+			book.view.running = undefined;
+			book.repaint?.();
+		}
+		return { ok: false, reason: "running" };
 	}
 }
 export async function activateRunbookLink(url: string, sessionId: string, repaint?: () => void): Promise<RunOutcome> {

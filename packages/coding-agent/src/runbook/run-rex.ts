@@ -1,11 +1,12 @@
 import type { RunbookStep } from "@oh-my-pi/pi-tui/tools/runbook";
-import { truncateTailBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { TailBuffer, truncateTailBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { isRecord, logger, ptree } from "@oh-my-pi/pi-utils";
 import { componentPaneHost, type RexLocation } from "../rex-panes/component-pane";
 import { createRexCli, type RexRunner } from "../rex-panes/rex-cli";
 import type { StepResult } from "./run-local";
 
 export interface RunbookRexOptions {
+	binary?: string;
 	host?: string;
 	run?: RexRunner;
 	location?: () => RexLocation | undefined;
@@ -21,6 +22,7 @@ export interface RunbookRex {
 	dispose(): Promise<void>;
 }
 export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
+	const binary = options.binary ?? "rex";
 	const prefix = options.host ? ["-S", options.host, "--autostart=false"] : ["--autostart=false"];
 	if (options.host && (options.host.startsWith("-") || /\s|\0/.test(options.host)))
 		throw new Error("Invalid runbook Rex host.");
@@ -31,7 +33,7 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 	async function exec(args: string[], timeoutMs: number, signal?: AbortSignal) {
 		const argv = [...prefix, ...args];
 		if (options.run) return options.run(argv, timeoutMs);
-		const result = await ptree.exec(["rex", ...argv], {
+		const result = await ptree.exec([binary, ...argv], {
 			timeout: timeoutMs,
 			signal,
 			allowNonZero: true,
@@ -40,7 +42,22 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 		if (result.exitError?.aborted) throw result.exitError;
 		return { exitCode: result.exitCode ?? -1, stdout: result.stdout, stderr: result.stderr };
 	}
-	const cli = createRexCli({ binary: "rex", run: (args, timeout) => exec(args.slice(1), timeout) });
+	const cli = createRexCli({ binary, run: (args, timeout) => exec(args.slice(1), timeout) });
+	async function capture(args: string[]): Promise<string> {
+		if (options.run) {
+			const result = await exec(args, 10_000);
+			if (result.exitCode !== 0) throw new Error(`Rex capture failed (exit ${result.exitCode}).`);
+			return truncateTailBytes(result.stdout, 1024 * 1024).text;
+		}
+		using child = ptree.spawn([binary, ...prefix, ...args], { timeout: 10_000, detached: true });
+		const output = new TailBuffer(1024 * 1024);
+		const decoder = new TextDecoder();
+		for await (const chunk of child.stdout) output.append(decoder.decode(chunk, { stream: true }));
+		output.append(decoder.decode());
+		const result = await child.wait({ allowNonZero: true });
+		if (result.exitCode !== 0) throw new Error(`Rex capture failed (exit ${result.exitCode}).`);
+		return output.text();
+	}
 	async function runStep(
 		step: RunbookStep,
 		label: string,
@@ -51,11 +68,16 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 		let sessionId: string;
 		let windowId: string | undefined;
 		if (options.host) {
-			remote ??= cli.newSession("omp: runbook", "Runbook", "omp: runbook host", [
-				"/bin/sh",
-				"-c",
-				"while :; do sleep 3600; done",
-			]);
+			remote ??= cli
+				.newSession("omp: runbook", "Runbook", "omp: runbook host", [
+					"/bin/sh",
+					"-c",
+					"while :; do sleep 3600; done",
+				])
+				.catch(error => {
+					remote = undefined;
+					throw error;
+				});
 			({ sessionId, windowId } = await remote);
 		} else {
 			const host = componentPaneHost();
@@ -78,7 +100,7 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 		let block: string;
 		if (step.interactive) {
 			const interactiveCli = createRexCli({
-				binary: "rex",
+				binary,
 				run: (args, timeout) => exec(args.slice(1), timeout, signal),
 			});
 			const layer = await interactiveCli.newLayer(sessionId, windowId, [0.6, 0.6, 0.38, 0.35], label, argv, {
@@ -132,9 +154,8 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 				exitCode = signal.aborted ? 130 : 124;
 				notice = signal.aborted ? "\nrunbook: step cancelled" : "\nrunbook: step timed out";
 			}
-			const captured = await exec(["capture", "-s", sessionId, "-b", block, "--trim"], 10_000);
-			if (captured.exitCode !== 0) throw new Error(`Rex capture failed (exit ${captured.exitCode}).`);
-			result = { exitCode, output: truncateTailBytes(captured.stdout + notice, 1024 * 1024).text };
+			const output = await capture(["capture", "-s", sessionId, "-b", block, "--trim"]);
+			result = { exitCode, output: truncateTailBytes(output + notice, 1024 * 1024).text };
 		} catch (error) {
 			await cli.closeBlock(sessionId, block).catch(cleanup => {
 				throw new AggregateError([error, cleanup], "Runbook step and cleanup failed.");
@@ -175,10 +196,11 @@ export function createRunbookRex(options: RunbookRexOptions = {}): RunbookRex {
 			disposed = true;
 			for (const controller of controllers) controller.abort();
 			await Promise.allSettled(pending);
-			if (remote) {
-				const session = await remote;
-				await cli.killSession(session.sessionId);
-				remote = undefined;
+			const cached = remote;
+			remote = undefined;
+			if (cached) {
+				const [created] = await Promise.allSettled([cached]);
+				if (created.status === "fulfilled") await cli.killSession(created.value.sessionId);
 			}
 		},
 	};

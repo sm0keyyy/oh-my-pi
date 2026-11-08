@@ -6,6 +6,7 @@ import { createRpcConnection, type RpcHostAdapter } from "../src/modes/rpc/rpc-m
 import { registerPaneSupervisor } from "../src/rex-panes/supervise";
 import { normalizeRunbook } from "../src/runbook/entries";
 import { createAgentSession } from "../src/sdk";
+import { SessionManager } from "../src/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../src/task";
 import { startUsagePoller, onUsageChange } from "../src/usage";
 import { EventBus } from "../src/utils/event-bus";
@@ -49,6 +50,7 @@ async function harness() {
 	let sequence = 0;
 	return {
 		temp,
+		session,
 		bus,
 		host,
 		async send(command: object) {
@@ -124,7 +126,7 @@ test("markdown RPC rejects relative paths before opening operator files", async 
 
 test("runbook RPC requires an explicit command, validates the pick and passes admission outcomes through", async () => {
 	await using rpc = await harness();
-	const book = fixture();
+	const book = fixture(undefined, rpc.session.sessionManager);
 	const details = normalizeRunbook(
 		{ title: "RPC book", steps: [{ title: "Print", command: "printf rpc-runbook-result" }] },
 		crypto.randomUUID(),
@@ -157,6 +159,55 @@ test("runbook RPC requires an explicit command, validates the pick and passes ad
 		});
 	} finally {
 		await book.close();
+	}
+}, 30000);
+
+test("runbook RPC runs its own and child books but hides another root's books without running them", async () => {
+	await using rpc = await harness();
+	const rootFile = rpc.session.sessionManager.getSessionFile();
+	if (!rootFile) throw new Error("RPC session has no root transcript");
+	const childJournal = await SessionManager.open(
+		path.join(rootFile.slice(0, -".jsonl".length), "Worker.jsonl"),
+		undefined,
+		undefined,
+		{ parentSession: rootFile },
+	);
+	const child = fixture(undefined, childJournal);
+	const otherJournal = SessionManager.create(rpc.temp.path(), rpc.temp.join("other-root"));
+	const other = fixture(undefined, otherJournal);
+	const own = fixture(undefined, rpc.session.sessionManager);
+	const marker = rpc.temp.join("unauthorized-run");
+	try {
+		for (const [book, command] of [
+			[other, `touch ${JSON.stringify(marker)}`],
+			[own, "printf own-root-result"],
+			[child, "printf child-root-result"],
+		] as const) {
+			const details = normalizeRunbook(
+				{ title: "Scoped book", steps: [{ title: "Print", command }] },
+				crypto.randomUUID(),
+			);
+			book.owner.add(details);
+			book.save(details);
+			const response = await rpc.send({ type: "run_runbook_step", runbookId: details.runbookId, step: 1 });
+			if (book === other) {
+				expect(response).toMatchObject({ success: true, data: { ok: false, reason: "unknown-runbook" } });
+				await other.settle();
+				expect(other.jobs.getAllJobs()).toHaveLength(0);
+				expect(other.deliveries).toEqual([]);
+				expect(await Bun.file(marker).exists()).toBe(false);
+			} else {
+				expect(response).toMatchObject({ success: true, data: { ok: true, jobId: expect.any(String) } });
+				await book.settle();
+				expect(book.deliveries.join("\n")).toContain(book === own ? "own-root-result" : "child-root-result");
+			}
+		}
+	} finally {
+		await own.close();
+		await child.close();
+		await other.close();
+		await childJournal.close();
+		await otherJournal.close();
 	}
 }, 30000);
 

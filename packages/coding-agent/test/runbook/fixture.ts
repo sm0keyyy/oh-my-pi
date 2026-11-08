@@ -24,7 +24,7 @@ export function fixture(runners?: RunbookRunners, journal = SessionManager.inMem
 		asyncJobManager: jobs,
 		getSessionId: () => journal.getSessionId(),
 		getAgentId: () => agentId,
-		getSessionFile: () => null,
+		getSessionFile: () => journal.getSessionFile() ?? null,
 		getSessionSpawns: () => "*",
 		registerSessionChangeCallback: callback => {
 			changes.add(callback);

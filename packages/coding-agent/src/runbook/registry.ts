@@ -7,6 +7,8 @@ import {
 } from "@oh-my-pi/pi-tui/tools/runbook";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { logger, postmortem } from "@oh-my-pi/pi-utils";
+import { sessionFileBelongsToRoot } from "../registry/persisted-agents";
+import type { SessionManager } from "../session/session-manager";
 import type { ToolSession } from "../tools";
 import { rebuildRunbooks, RUNBOOK_RUN_CUSTOM_TYPE } from "./entries";
 import { runLocal, type StepResult } from "./run-local";
@@ -35,6 +37,7 @@ const owners = new WeakMap<ToolSession, RunbookOwner>();
 export class RunbookOwner {
 	readonly #ids = new Set<string>();
 	readonly #sessionId: string | null | undefined;
+	readonly #sessionFile: string | null;
 	readonly #abort = new AbortController();
 	#mac?: RunbookRex;
 	#unraid?: RunbookRex;
@@ -49,6 +52,7 @@ export class RunbookOwner {
 		readonly runners: RunbookRunners = {},
 	) {
 		this.#sessionId = session.getSessionId?.();
+		this.#sessionFile = session.getSessionFile();
 		try {
 			for (const { details, runs } of rebuildRunbooks(session.sessionManager?.getBranch() ?? []).values())
 				this.add(details, runs);
@@ -71,6 +75,12 @@ export class RunbookOwner {
 			!this.session.isDisposed?.() &&
 			this.#sessionId === this.session.getSessionId?.()
 		);
+	}
+	/** RPC owns its journal and the child transcripts under that journal's artifacts tree. */
+	isOwnedBy(caller: Pick<SessionManager, "getSessionId" | "getSessionFile">): boolean {
+		if (this.#sessionId && this.#sessionId === caller.getSessionId()) return true;
+		const rootSessionFile = caller.getSessionFile();
+		return !!(this.#sessionFile && rootSessionFile && sessionFileBelongsToRoot(this.#sessionFile, rootSessionFile));
 	}
 	fail(error: unknown): void {
 		if (this.#failed) return;
@@ -204,9 +214,15 @@ export function registerRunbookSession(session: ToolSession, runners?: RunbookRu
 	}
 	return owner;
 }
-export async function runRunbook(runbookId: string, step: number | "all", _origin: RunOrigin): Promise<RunOutcome> {
+export async function runRunbook(
+	runbookId: string,
+	step: number | "all",
+	origin: RunOrigin,
+	caller?: Pick<SessionManager, "getSessionId" | "getSessionFile">,
+): Promise<RunOutcome> {
 	const book = books.get(runbookId);
-	if (!book) return { ok: false, reason: "unknown-runbook" };
+	if (!book || (origin === "rpc" && (!caller || !book.owner.isOwnedBy(caller))))
+		return { ok: false, reason: "unknown-runbook" };
 	if (step !== "all" && (!Number.isInteger(step) || step < 1 || step > book.details.steps.length))
 		return { ok: false, reason: "unknown-step" };
 	if (book.view.running !== undefined) return { ok: false, reason: "running" };

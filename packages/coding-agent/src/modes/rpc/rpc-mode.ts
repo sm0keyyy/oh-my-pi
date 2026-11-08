@@ -2470,7 +2470,11 @@ export async function createRpcConnection(options: RpcConnectionOptions): Promis
 					(!Number.isSafeInteger(command.step) || command.step < 1 || command.step > 20)
 				)
 					return error(id, command.type, "Expected step 1 to 20 or all");
-				return success(id, command.type, await runRunbook(command.runbookId, command.step, "rpc"));
+				return success(
+					id,
+					command.type,
+					await runRunbook(command.runbookId, command.step, "rpc", session.sessionManager),
+				);
 
 			case "get_usage":
 				return success(id, command.type, { snapshot: usageSnapshot() ?? null });

@@ -44,8 +44,9 @@ test("pick routes only a valid owner link and rejects forged ids, steps and dupl
 			expect((await activateRunbookLink(forged, f.journal.getSessionId())).ok).toBe(false);
 		expect((await activateRunbookLink(link, "other-session")).ok).toBe(false);
 		expect(f.jobs.getAllJobs()).toHaveLength(0);
+		expect(await runRunbook(id, 1, "rpc")).toEqual({ ok: false, reason: "unknown-runbook" });
 		expect((await activateRunbookLink(link, f.journal.getSessionId())).ok).toBe(true);
-		expect(await runRunbook(id, "all", "rpc")).toEqual({ ok: false, reason: "running" });
+		expect(await runRunbook(id, "all", "rpc", f.journal)).toEqual({ ok: false, reason: "running" });
 		gate.resolve({ exitCode: 0, output: "approved" });
 		await f.settle();
 		expect(f.deliveries).toHaveLength(1);
@@ -86,7 +87,10 @@ test("runbook-run entries restore the output block and operator pane fallback ru
 		await resumedJournal.close();
 		await journal.close();
 	}
-	expect(await runRunbook(result.details!.runbookId, 1, "rpc")).toEqual({ ok: false, reason: "unknown-runbook" });
+	expect(await runRunbook(result.details!.runbookId, 1, "rpc", resumedJournal)).toEqual({
+		ok: false,
+		reason: "unknown-runbook",
+	});
 });
 
 test("headless and RPC-only sessions have no registered runbook even with advertised headless ask", async () => {

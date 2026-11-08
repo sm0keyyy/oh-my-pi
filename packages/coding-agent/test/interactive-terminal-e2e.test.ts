@@ -329,6 +329,7 @@ describe("libkitty end-to-end", () => {
 
 		term.sendInput("LIVE_EDITOR_DRAFT");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT")));
+		expect(mode.startLinkHints()).toBe(false);
 
 		// Alt+O is the configured app.tools.toggleVisibility binding from this test's keybinding manager.
 		term.sendInput("\x1bo");

@@ -4799,7 +4799,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!extensionLinksRouted()) return false;
 		if (this.composer.viewportLinkCount() === 0) {
 			this.showStatus("No extension links on screen");
-			return true;
+			return false;
 		}
 		this.composer.startLinkHints(reason => {
 			this.statusLine.setHookStatus(LINK_HINT_STATUS_KEY, undefined);

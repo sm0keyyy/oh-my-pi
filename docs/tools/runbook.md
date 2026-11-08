@@ -29,6 +29,8 @@ Each accepted selection creates an asynchronous job owned by the runbook's sessi
 
 Results include the step number, host, exit code and captured output tail. They are delivered to the owning agent and persisted as `runbook-run` entries. The current session branch rebuilds runbook cards and their latest per-step results after resume. Switching or disposing the owner retires its old controls; another session cannot activate them. Ordinary assistant Markdown cannot create executable runbook controls.
 
+When no links are visible, link picking leaves the key available to other configured shortcuts.
+
 ## Settings and Limits
 
 - `runbook.stepTimeoutSeconds`: per-step timeout, default 600 seconds; valid range is greater than zero through 86400 seconds.

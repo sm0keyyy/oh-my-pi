@@ -28,12 +28,14 @@ interface OpenPanel {
 	location: RexLocation;
 	pane?: ComponentPane<void>;
 	start?: () => void;
+	feed?: FeedPanel;
 }
 
 export function startRexPanels(main: { settings: Settings; mode: InteractiveMode }): RexPanels {
 	const open = new Map<PanelName, OpenPanel>();
 	const pending = new Map<PanelName, Promise<{ open: boolean }>>();
 	let disposed = false;
+	let unsubscribeFeedSession: (() => void) | undefined;
 	const definitions: Record<PanelName, PanelDefinition> = {
 		todo: {
 			shape: () => cfgRexPanelTodo.get(main.settings),
@@ -61,7 +63,14 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 		},
 		feed: {
 			shape: () => cfgRexPanelFeed.get(main.settings),
-			create: tui => new FeedPanel(tui, main.mode.sessionManager.getSessionFile(), IrcBus.global()),
+			create: (tui, _done, _host, entry) => {
+				unsubscribeFeedSession ??= main.mode.session.registerSessionChangeCallback(() => {
+					open.get("feed")?.feed?.setSession(main.mode.sessionManager.getSessionFile());
+				});
+				const panel = new FeedPanel(tui, main.mode.sessionManager.getSessionFile(), IrcBus.global());
+				entry.feed = panel;
+				return panel;
+			},
 		},
 	};
 	const release = (name: PanelName, entry: OpenPanel): void => {
@@ -140,6 +149,7 @@ export function startRexPanels(main: { settings: Settings; mode: InteractiveMode
 		isOpen: name => open.get(name)?.pane !== undefined,
 		async dispose() {
 			disposed = true;
+			unsubscribeFeedSession?.();
 			const entries = [...open];
 			for (const [, entry] of entries) entry.abort.abort();
 			try {

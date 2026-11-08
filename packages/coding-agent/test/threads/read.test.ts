@@ -72,6 +72,40 @@ describe("thread files", () => {
 		expect(older.older).toBeUndefined();
 	});
 
+	it("shows a 2 MiB item with a size marker and preserves paging to older items", async () => {
+		using dir = TempDir.createSync("@omp-thread-large-");
+		const file = `${dir.path()}/child.jsonl`;
+		const timestamp = "2026-01-01T00:00:00Z";
+		await Bun.write(
+			file,
+			[
+				JSON.stringify({ type: "session", id: "large", timestamp }),
+				...["oldest", "large", "latest"].map((id, index) =>
+					JSON.stringify({
+						type: "message",
+						id,
+						timestamp,
+						message: { role: "user", content: `${id}:${"x".repeat(index === 1 ? 2 * 1024 * 1024 : 980 * 1024)}` },
+					}),
+				),
+			].join("\n"),
+		);
+		const latest = await readAgentThreadPage("Alpha", file);
+		expect(latest.items.map(item => "entryId" in item && item.entryId)).toEqual(["latest"]);
+		const large = await readAgentThreadPage("Alpha", file, undefined, { before: latest.older });
+		expect(large.items).toHaveLength(1);
+		expect(large.items[0]).toMatchObject({ entryId: "large", kind: "operator" });
+		expect("text" in large.items[0]! && large.items[0].text).toMatch(
+			/large:[\s\S]*Truncated thread entry: 2097\d+ bytes/,
+		);
+		expect(large.peakRetainedBytes).toBeLessThanOrEqual(1024 * 1024);
+		expect(large.older).toBeDefined();
+		const oldest = await readAgentThreadPage("Alpha", file, undefined, { before: large.older });
+		expect(oldest.items).toHaveLength(1);
+		expect(oldest.items[0]).toMatchObject({ entryId: "oldest", kind: "brief" });
+		expect(oldest.older).toBeUndefined();
+	});
+
 	it.each(["child", "revived", "empty"])(
 		"keeps the streaming %s projection equivalent to the in-memory reducer",
 		async name => {

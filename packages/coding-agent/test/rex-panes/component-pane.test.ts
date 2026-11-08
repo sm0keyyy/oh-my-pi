@@ -485,6 +485,7 @@ test("crash-reopened usage and feed resume live subscriptions and feed history",
 	const mode = {
 		refreshRexPanelWidgets() {},
 		sessionManager: { getSessionFile: () => `${import.meta.dir}/../fixtures/threads/feed/root.jsonl` },
+		session: { registerSessionChangeCallback: () => () => {} },
 	} as unknown as InteractiveMode;
 	const settings = Settings.isolated();
 	const panels = startRexPanels({ settings, mode });

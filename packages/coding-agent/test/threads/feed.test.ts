@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { readIrcFeed } from "@oh-my-pi/pi-coding-agent/threads/index";
+import { MAX_FEED_BYTES, readIrcFeed, readIrcFeedPage } from "@oh-my-pi/pi-coding-agent/threads/index";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, TempDir } from "@oh-my-pi/pi-utils";
 
 const fixtures = `${import.meta.dir}/../fixtures/threads`;
 const start = Date.UTC(2026, 0, 1);
@@ -23,6 +23,55 @@ describe("team IRC", () => {
 			{ from: "Alpha", to: "Main", text: "Root gets this.", ts: start + 6000 },
 		]);
 	});
+
+	it("streams descendant histories over 50 MiB into bounded pages and reads older entries from disk", async () => {
+		using dir = TempDir.createSync("@omp-feed-pages-");
+		const root = `${dir.path()}/root.jsonl`;
+		await Bun.write(
+			root,
+			`${JSON.stringify({ type: "session", id: "root", timestamp: new Date(start).toISOString() })}\n`,
+		);
+		const body = "x".repeat(64 * 1024);
+		let diskBytes = 0;
+		for (let child = 0; child < 3; child++) {
+			const file = `${dir.path()}/root/${child === 0 ? "Alpha" : child === 1 ? "Alpha/Beta" : "Gamma"}.jsonl`;
+			await Bun.write(file, "");
+			const writer = Bun.file(file).writer();
+			try {
+				writer.write(
+					`${JSON.stringify({ type: "session", id: `child-${child}`, timestamp: new Date(start).toISOString() })}\n`,
+				);
+				for (let index = 0; index < 400; index++) {
+					const id = child * 400 + index;
+					const timestamp = new Date(start + id).toISOString();
+					const line = `${JSON.stringify({ type: "custom_message", id: `irc-${id}`, timestamp, customType: "irc:incoming", details: { id: `irc-${id}`, from: "Main", message: `message-${id}:${body}` } })}\n`;
+					diskBytes += Buffer.byteLength(line);
+					writer.write(line);
+					writer.write(
+						`${JSON.stringify({ type: "message", id: `tool-${id}`, timestamp, message: { role: "toolResult", toolName: "read", content: [{ type: "text", text: body }] } })}\n`,
+					);
+					if (index % 20 === 0) await writer.flush();
+				}
+			} finally {
+				await writer.end();
+			}
+		}
+		expect(diskBytes).toBeGreaterThan(50 * 1024 * 1024);
+		const latest = await readIrcFeedPage(root);
+		expect(latest.peakRetainedBytes).toBeLessThanOrEqual(MAX_FEED_BYTES);
+		expect(Buffer.byteLength(JSON.stringify(latest.items))).toBeLessThanOrEqual(MAX_FEED_BYTES);
+		expect(latest.items.at(-1)?.text).toContain("message-1199:");
+		expect(latest.items.at(-1)?.text).toContain("Truncated IRC entry");
+		expect(latest.older).toBeDefined();
+		const older = await readIrcFeedPage(root, { before: latest.older });
+		expect(older.peakRetainedBytes).toBeLessThanOrEqual(MAX_FEED_BYTES);
+		expect(older.items.at(-1)!.ts).toBeLessThan(latest.items[0]!.ts);
+		expect(older.items.length).toBeGreaterThan(0);
+		let active = true;
+		const cancelled = readIrcFeedPage(root, { shouldContinue: () => active });
+		active = false;
+		expect((await cancelled).items).toEqual([]);
+	}, 30000);
 
 	it("TM.c: publishes each successful delivery once, isolates listener errors and unsubscribes", async () => {
 		const registry = new AgentRegistry();

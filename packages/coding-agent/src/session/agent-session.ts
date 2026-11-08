@@ -519,6 +519,7 @@ function jobSnapshotItem(job: AsyncJob, widgets: JobWidgetRegistry | undefined):
 }
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
+import { captureProseAsk } from "../rex-ask/prose-capture";
 import { classifyTodoDone } from "./todo-done-check";
 import { EAGER_TODO_PRELUDE_MESSAGE_TYPE, TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
@@ -4945,6 +4946,7 @@ export class AgentSession implements SettingsScope {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			const sessionId = this.sessionId;
 			const settledMessages = event.messages;
 			const activeMessages = this.agent.state.messages;
 			// TTSR retry work runs concurrently and clears the live flag before
@@ -5308,6 +5310,33 @@ export class AgentSession implements SettingsScope {
 			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
 			await emitAgentEndNotification(sessionStopWillContinue ? { willContinue: true } : undefined);
+			if (!sessionStopWillContinue && msg.stopReason === "stop" && this.#agentKind === "main") {
+				const text = msg.content
+					.filter(content => content.type === "text")
+					.map(content => content.text)
+					.join("\n\n");
+				// Do not hold post-prompt maintenance open while the operator answers.
+				void captureProseAsk(text, {
+					settings: this.settings,
+					registry: this.#modelRegistry,
+					sessionId,
+					model: this.model,
+					metadataResolver: provider => this.agent.metadataForProvider(provider),
+					onUsage: journalJudgmentUsage(this.sessionManager),
+					telemetry: this.agent.telemetry,
+					signal: this.#postPromptTasksAbortController.signal,
+					agentKind: this.#agentKind,
+					source: {
+						agent: this.#agentId ?? "Main",
+						role: this.#agentKind,
+						sessionId,
+						sessionLabel: this.sessionName,
+					},
+					isCurrent: () =>
+						!this.#isDisposed && this.sessionId === sessionId && this.#promptGeneration === eventPromptGeneration,
+					prompt: (answer, options) => this.prompt(answer, options),
+				});
+			}
 		}
 	};
 

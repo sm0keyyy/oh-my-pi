@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added operator-gated runbooks with Mac and Unraid steps, floating interactive terminals, captured output, and resume state.
 - Persist main-session todos in beads with durable IDs, ready/adopt/file operations, dependencies, offline reconciliation and agent-only auto-advance.
 - Preserve queued todo writes and recovered bead identities across maintenance and restarts.
 - Added live Rex todo and Agents panels with dock/float defaults, native controls, and automatic main-HUD restoration.

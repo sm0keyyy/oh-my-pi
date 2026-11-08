@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logger } from "@oh-my-pi/pi-utils";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
+import { runLatestRunbook } from "../runbook/registry";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
 import { abortSubagent, stopSubagent } from "../task/run-controls";
@@ -8,6 +9,7 @@ import { abortSubagent, stopSubagent } from "../task/run-controls";
 export type PaneInputOutcome =
 	| { kind: "steered" | "follow-up" | "revived" | "stopped" | "aborted" }
 	| { kind: "tab"; tab: "live" | "thread" }
+	| { kind: "runbook"; jobId: string }
 	| { kind: "refused"; message: string };
 
 export type DeliverOutcome = { ok: true; kind: "steered" | "follow-up" | "revived" } | { ok: false; message: string };
@@ -58,8 +60,19 @@ export async function routePaneInput(agentId: string, text: string): Promise<Pan
 		const [command = "", ...words] = text.split(/\s+/);
 		if ((command === "/thread" || command === "/live") && words.length === 0)
 			return { kind: "tab", tab: command === "/thread" ? "thread" : "live" };
+		if (command === "/run") {
+			if (words.length !== 1 || !/^(all|[1-9][0-9]*)$/.test(words[0]!))
+				return { kind: "refused", message: "Usage: /run <n> or /run all (latest runbook)." };
+			const outcome = await runLatestRunbook(agentId, words[0] === "all" ? "all" : Number(words[0]));
+			return outcome.ok
+				? { kind: "runbook", jobId: outcome.jobId }
+				: { kind: "refused", message: `Runbook: ${outcome.reason}` };
+		}
 		if (command !== "/stop" && command !== "/abort") {
-			return { kind: "refused", message: "Pane commands: /thread, /live, /stop <reason> or /abort <reason>." };
+			return {
+				kind: "refused",
+				message: "Pane commands: /thread, /live, /run <n|all>, /stop <reason> or /abort <reason>.",
+			};
 		}
 		const reason = words.join(" ");
 		if (!reason) return { kind: "refused", message: `Usage: ${command} <reason>` };

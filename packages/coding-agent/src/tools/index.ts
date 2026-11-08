@@ -32,6 +32,7 @@ import { AskOperatorResultTool, AskOperatorTool } from "../operator-queue/tools"
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { ArtifactManager } from "../session/artifacts";
+import { RunbookTool } from "../runbook/tool";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CostGate } from "../session/cost-gate";
 import type { CustomMessage } from "../session/messages";
@@ -591,6 +592,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ask: AskTool.createIf,
 	request_approval: RequestApprovalTool.createIf,
 	show_markdown: ShowMarkdownTool.createIf,
+	runbook: RunbookTool.createIf,
 	ask_operator: s => new AskOperatorTool(s),
 	ask_operator_result: () => new AskOperatorResultTool(),
 	debug: DebugTool.createIf,

@@ -20,6 +20,7 @@ import { lspToolRenderer } from "./lsp";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory";
 import { readToolRenderer } from "./read";
 import type { ToolRenderer } from "./renderer";
+import { runbookToolRenderer } from "./runbook";
 import { resolveRenderer } from "./resolve";
 import { taskToolRenderer } from "./task";
 import { thinkToolRenderer } from "./think";
@@ -48,6 +49,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	lsp: lspToolRenderer,
 	wait: waitToolRenderer,
 	read: readToolRenderer,
+	runbook: runbookToolRenderer,
 	// Keyed by xd:// resolution-device names: the write dispatch delegates here
 	// by dispatch tool, and historical `resolve` tool transcripts still render
 	// through the `resolve` entry. Both devices carry the same ResolveDetails.

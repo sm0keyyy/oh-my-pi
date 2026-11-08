@@ -29,6 +29,7 @@ export interface RexCli {
 		bounds: PaneBounds,
 		label: string,
 		argv: string[],
+		options?: { keepOpen?: boolean; cwd?: string },
 	): Promise<{ layerId: string; blockId: string }>;
 	floatBlock(sessionId: string, blockId: string, bounds: PaneBounds): Promise<void>;
 	focusBlock(sessionId: string, blockId: string): Promise<void>;
@@ -146,7 +147,7 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 				throw error;
 			}
 		},
-		async newLayer(sessionId, windowId, bounds, label, argv) {
+		async newLayer(sessionId, windowId, bounds, label, argv, options) {
 			const result = await json([
 				"api",
 				"call",
@@ -162,7 +163,12 @@ export function createRexCli(options: { binary: string; run?: RexRunner }): RexC
 						block: {
 							flavor: "com.superlogical.terminal.shell",
 							label,
-							options: { command: argv, shell: "none" },
+							options: {
+								command: argv,
+								shell: "none",
+								...(options?.keepOpen ? { exit: { on_completion: false } } : {}),
+								...(options?.cwd ? { cwd: options.cwd } : {}),
+							},
 						},
 					},
 				}),

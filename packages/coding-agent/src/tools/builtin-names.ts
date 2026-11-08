@@ -8,6 +8,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"ask",
 	"request_approval",
 	"show_markdown",
+	"runbook",
 	"ask_operator",
 	"ask_operator_result",
 	"debug",

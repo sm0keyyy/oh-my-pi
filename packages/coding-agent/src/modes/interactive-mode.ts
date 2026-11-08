@@ -48,6 +48,7 @@ import {
 	latestJobWidget,
 } from "@oh-my-pi/pi-tui/tools/job-widget";
 import type { AsyncJobManager } from "../async/job-manager";
+import { activateRunbookLink, RUNBOOK_LINK_SCHEME } from "../runbook/registry";
 import type { JobWidgetRegistry } from "../job-widgets/types";
 import { sameItems } from "@oh-my-pi/pi-tui/native/memo";
 import { describeSegmentTrack, renderSegmentTrack, type TrackSegment } from "@oh-my-pi/pi-tui/chrome/segment-track";
@@ -4732,7 +4733,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const before = extensionLinksVersion();
 		const viewed = this.viewSession.extensionRunner;
 		viewed?.followSuspension(this.session.extensionRunner);
-		setExtensionLinks(viewed?.getLinkSchemes() ?? []);
+		setExtensionLinks([RUNBOOK_LINK_SCHEME, ...(viewed?.getLinkSchemes() ?? [])]);
 		return extensionLinksVersion() !== before;
 	}
 
@@ -4769,6 +4770,17 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Raise `link_activate` for `url` on the viewed session's extension runner. */
 	#activateLink(url: string): boolean {
+		if (url.startsWith(`${RUNBOOK_LINK_SCHEME}:`)) {
+			void activateRunbookLink(url, this.viewSession.sessionManager.getSessionId(), () => {
+				this.ui.invalidate();
+				this.ui.requestRender();
+			})
+				.then(outcome => {
+					if (!outcome.ok) this.showStatus(`Runbook: ${outcome.reason}`);
+				})
+				.catch(error => logger.warn("runbook: link pick failed", { error: String(error) }));
+			return true;
+		}
 		const runner = this.viewSession.extensionRunner;
 		if (!runner) return false;
 		// A focused subagent's runner is headless: hand its handler the UI drawing that transcript.

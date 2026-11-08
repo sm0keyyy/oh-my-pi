@@ -238,6 +238,7 @@ export interface StructuredSubagentResult {
 	policy: EffectiveSubagentPolicy;
 	mergeSummary: string;
 	changesApplied: boolean | null;
+	requiresRecoveryArtifacts?: true;
 	artifactsDir: string;
 	temporaryArtifacts: boolean;
 }
@@ -1114,6 +1115,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			policy,
 			mergeSummary,
 			changesApplied,
+			...(requiresRecoveryArtifacts ? { requiresRecoveryArtifacts: true as const } : {}),
 			artifactsDir: lease.artifactsDir,
 			temporaryArtifacts: lease.temporary,
 		};

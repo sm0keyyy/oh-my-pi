@@ -36,6 +36,9 @@ import taskCoordinationAdvisoryTemplate from "../prompts/tools/task-coordination
 import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" with { type: "text" };
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
+import taskBeadTemplate from "../prompts/tools/task-bead.md" with { type: "text" };
+import { isClosedTodo, normalizeForTodoMatch, type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { applyOpsToPhases, resolveTodoTarget } from "../tools/todo";
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
@@ -274,6 +277,7 @@ function validateEffort(effort: TaskEffort | undefined, label: string): string |
 }
 
 function validateTaskInput(item: TaskItem | undefined, label: string, fileEnabled: boolean): string | undefined {
+	if (item?.todo !== undefined && typeof item.todo !== "string") return `${label} \`todo\` must be a string.`;
 	const hasTask = item?.task !== undefined;
 	const hasTaskFile = item?.taskFile !== undefined;
 	if (!fileEnabled) {
@@ -397,6 +401,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("isolated" in params) item.isolated = params.isolated;
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
 	if ("model" in params) item.model = params.model;
+	if ("todo" in params) item.todo = params.todo;
 	return [item];
 }
 
@@ -462,6 +467,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
+	if (item.todo !== undefined) spawn.todo = item.todo;
 	if (params.context !== undefined) spawn.context = params.context;
 	if ("outputSchema" in item) spawn.outputSchema = item.outputSchema;
 	if ("schemaMode" in item) spawn.schemaMode = item.schemaMode;
@@ -1042,6 +1048,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<SpawnRun | undefined> {
 		// File bytes must be captured at dispatch, not while arguments stream.
 		if (spawn.taskFile !== undefined) return undefined;
+		// A linked run must not tick the caller's list before the full call is accepted.
+		if (spawn.todo !== undefined || this.#resolveTodoLink(spawn)) return undefined;
 		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
 		let blocking: boolean;
 		try {
@@ -1901,6 +1909,22 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 	}
 
+	#resolveTodoLink(params: TaskParams): { task: TodoItem; phase: TodoPhase } | undefined {
+		const phases = this.session.getTodoPhases?.() ?? [];
+		if (params.todo !== undefined) return resolveTodoTarget(phases, params.todo);
+		const label = normalizeForTodoMatch((params.task ?? "").split(/\r?\n/, 1)[0]);
+		if (!label) return undefined;
+		let match: { task: TodoItem; phase: TodoPhase } | undefined;
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				if (isClosedTodo(task) || normalizeForTodoMatch(task.content) !== label) continue;
+				if (match) return undefined;
+				match = { task, phase };
+			}
+		}
+		return match;
+	}
+
 	/** Spawn a fresh subagent and run it to completion; the body of every {@link SpawnRun}. */
 	async #runSpawn(
 		toolCallId: string,
@@ -1915,7 +1939,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		tools?: TextTap,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = (params.task ?? "").trim();
+		const link = this.#resolveTodoLink(params);
+		const todo = link ? (link.task.id ?? link.task.content) : undefined;
+		const assignment = link
+			? prompt.render(taskBeadTemplate, { assignment: (params.task ?? "").trim(), ...link })
+			: (params.task ?? "").trim();
+		const missingLink = params.todo !== undefined && !link ? `Todo link ${params.todo} not found.` : undefined;
 		const taskFileMetadata =
 			params.taskFile !== undefined ? { taskFile: params.taskFile, taskFileSha256: params.taskFileSha256 } : {};
 		const context = this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined;
@@ -1975,11 +2004,40 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				},
 			});
+			const result = { ...execution.result, ...taskFileMetadata, ...(todo !== undefined ? { todo } : {}) };
+			let todoNotice = missingLink;
+			if (
+				todo !== undefined &&
+				result.exitCode === 0 &&
+				!result.aborted &&
+				!result.error &&
+				!result.retryFailure &&
+				result.operatorStop === undefined &&
+				result.budgetStop === undefined &&
+				execution.changesApplied !== false &&
+				!execution.requiresRecoveryArtifacts &&
+				!signal?.aborted &&
+				this.session.getTodoPhases &&
+				this.session.setTodoPhases
+			) {
+				const current = this.session.getTodoPhases();
+				const target = resolveTodoTarget(current, todo);
+				if (target && !isClosedTodo(target.task)) {
+					const { phases, errors } = applyOpsToPhases(current, [
+						{ op: "done", task: target.task.id ?? target.task.content },
+					]);
+					if (errors.length) throw new Error(errors.join("; "));
+					this.session.setTodoPhases(phases, { advance: true });
+					this.session.persistTodoPhases?.(this.session.getTodoPhases());
+					todoNotice = `Todo ${todo} marked done.`;
+				}
+			}
 			return this.#buildResultPayload(
-				{ ...execution.result, ...taskFileMetadata },
+				result,
 				execution.policy.discovery.projectAgentsDir,
 				Date.now() - startTime,
 				execution.mergeSummary,
+				todoNotice,
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
@@ -1992,11 +2050,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				? {
 						...settled,
 						...taskFileMetadata,
+						...(todo !== undefined ? { todo } : {}),
 						error: settled.error ?? (cause instanceof Error ? cause.message : message),
 					}
 				: undefined;
 			return {
-				content: [{ type: "text", text: `Task execution failed: ${message}` }],
+				content: [
+					{ type: "text", text: `Task execution failed: ${message}${missingLink ? `\n${missingLink}` : ""}` },
+				],
 				isError: true,
 				details: {
 					projectAgentsDir: null,
@@ -2016,10 +2077,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		projectAgentsDir: string | null,
 		totalDurationMs: number,
 		mergeSummary: string,
+		todoNotice?: string,
 	): AgentToolResult<TaskToolDetails> {
 		const summary = formatTaskResultSummary(result, { totalDurationMs, mergeSummary });
 		return {
-			content: [{ type: "text", text: summary }],
+			content: [{ type: "text", text: todoNotice ? `${summary}\n${todoNotice}` : summary }],
 			details: {
 				projectAgentsDir,
 				results: [result],

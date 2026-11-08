@@ -33,7 +33,7 @@
 
 ## Inputs
 
-The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, effort?, outputSchema?, schemaMode?, tools?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on).
+The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, todo?, effort?, outputSchema?, schemaMode?, tools?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on).
 
 `task.file` defaults to `false`: `task` is required, and `taskFile` is absent from the wire schema and rejected at runtime. Enable `task.file` to provide exactly one of `task` or `taskFile` per item, in either shape.
 
@@ -73,6 +73,14 @@ Batch calls reject a top-level `agent` rather than silently discarding a special
 
 There is no legacy per-call `schema` parameter. Use `outputSchema` and optional `schemaMode`; when absent, structured output falls back to the agent definition's `output` frontmatter and then the inherited parent session schema.
 
+### Todo links
+
+Set `todo` to a bead ID or exact todo text in the caller's list. Use `tasks[].todo` in a batch and top-level `todo` in the flat form. Without `todo`, omp links at spawn only when exactly one open item's normalized text equals the normalized first line of the assignment. Normalization ignores case, collapses punctuation and whitespace, and trims the result. It never uses substring matching or the generated result label. An empty first line or an ambiguous match links nothing. A missing explicit target does not stop the spawn; its result says `Todo link <value> not found.`, even if that target appears later.
+
+The linked child receives a read-only `<bead>` block with the ID (when present), title, status, phase, blocker, details, and notes. The main session owns bead writes. Children must not modify beads through `bd`; their own scratch lists remain session-only. A nested task links and updates only its caller's scratch list.
+
+After a synchronous or background child succeeds, omp marks the linked item done through the caller's todo tracker, persists the list, and starts the first pending item when no item is in progress. Blocked items do not start. The result adds `Todo <id or text> marked done.` A nonzero exit, abort, error, exhausted retry, operator stop, request-budget wrap-up, failed isolated merge, or failed nested patch apply leaves the item unchanged. Every link keeps its spawn-time identity. The tick does not reopen a completed or abandoned item.
+
 ## Outputs
 
 The tool returns one text block plus `details: TaskToolDetails`.
@@ -103,6 +111,7 @@ Settled response (`async.enabled=false`, no job manager, every item's agent `blo
 - structured result: optional `structuredOutput` with schema source/mode, validation status, parsed `data`, and validation `error`
 - artifact metadata: `outputPath?`, `isolated?`, `patchPath?`, `hasRootChanges?`, `branchName?`, `branchBaseSha?`, `nestedPatches?`, `nestedPatchPaths?`, `outputMeta?`
 - extracted tool data: `extractedToolData?` from registered subprocess tool handlers such as `yield`
+- todo link: optional `todo`, the linked bead ID or exact todo text; optional `operatorStop`, the operator wrap-up reason (also retained in the existing partial-summary text); optional `budgetStop: true`, set after a request-budget wrap-up or an operator stop
 
 Artifacts and side channels:
 

@@ -14,6 +14,7 @@ import { createSessionStub } from "../helpers/interactive-mode-context";
 
 beforeAll(() => initTheme(false));
 afterEach(() => {
+	vi.restoreAllMocks();
 	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
 });
@@ -31,14 +32,17 @@ for (const owner of ["main", "agent"] as const) {
 			return true;
 		});
 		const settings = Settings.isolated();
-		const main = createSessionStub(SessionManager.inMemory("/tmp"), settings, { prompt: mainPrompt });
+		const main = createSessionStub(SessionManager.inMemory("/tmp"), settings, {
+			prompt: mainPrompt,
+			registerSessionChangeCallback: () => () => {},
+		});
 		const agent = createSessionStub(SessionManager.inMemory("/tmp"), settings, {
 			prompt: agentPrompt,
 			isStreaming: true,
 		});
 		AgentRegistry.global().register({ id: "Main", displayName: "Main", kind: "main", session: main });
 		AgentRegistry.global().register({ id: "Worker", displayName: "Worker", kind: "sub", session: agent });
-		let overlay: PlanReviewOverlay | undefined;
+		let overlay: Pick<PlanReviewOverlay, "handleInput" | "render"> | undefined;
 		const host: ComponentPaneHost = {
 			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
 			agentLocation: () => ({ sessionId: "worker", blockId: "worker" }),
@@ -49,7 +53,7 @@ for (const owner of ["main", "agent"] as const) {
 				expect(label).toBe("omp: md guide.md");
 				const answer = Promise.withResolvers<unknown>();
 				overlay = (await factory(
-					{ terminal: { rows: 20 } } as TUI,
+					{ terminal: { rows: 20 }, requestRender() {} } as TUI,
 					theme,
 					KeybindingsManager.inMemory(),
 					answer.resolve,
@@ -95,9 +99,12 @@ for (const owner of ["main", "agent"] as const) {
 
 test("batch discard closes without delivering to its owner", async () => {
 	const prompt = vi.fn(async () => true);
-	const main = createSessionStub(SessionManager.inMemory("/tmp"), Settings.isolated(), { prompt });
+	const main = createSessionStub(SessionManager.inMemory("/tmp"), Settings.isolated(), {
+		prompt,
+		registerSessionChangeCallback: () => () => {},
+	});
 	AgentRegistry.global().register({ id: "Main", displayName: "Main", kind: "main", session: main });
-	let overlay: PlanReviewOverlay | undefined;
+	let overlay: Pick<PlanReviewOverlay, "handleInput" | "render"> | undefined;
 	const closed = Promise.withResolvers<unknown>();
 	const unregister = registerComponentPaneHost({
 		mainLocation: () => ({ sessionId: "main", blockId: "main" }),
@@ -106,7 +113,7 @@ test("batch discard closes without delivering to its owner", async () => {
 		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		async open(_placement, _label, factory) {
 			overlay = (await factory(
-				{ terminal: { rows: 20 } } as TUI,
+				{ terminal: { rows: 20 }, requestRender() {} } as TUI,
 				theme,
 				KeybindingsManager.inMemory(),
 				closed.resolve,
@@ -133,3 +140,76 @@ test("batch discard closes without delivering to its owner", async () => {
 		unregister();
 	}
 });
+
+for (const transition of ["session change", "session disposal", "view disposal", "submit race"] as const) {
+	test(`markdown comments are rejected after ${transition}`, async () => {
+		const prompt = vi.fn(async () => true);
+		const manager = SessionManager.inMemory("/tmp");
+		const callbacks = new Set<() => void>();
+		let disposed = false;
+		const main = createSessionStub(manager, Settings.isolated(), {
+			prompt,
+			get isDisposed() {
+				return disposed;
+			},
+			registerSessionChangeCallback(callback) {
+				callbacks.add(callback);
+				return () => callbacks.delete(callback);
+			},
+		});
+		AgentRegistry.global().register({ id: "Main", displayName: "Main", kind: "main", session: main });
+		let view: Pick<PlanReviewOverlay, "handleInput" | "render"> & { dispose(): void };
+		const answer = Promise.withResolvers<unknown>();
+		const requestRender = vi.fn();
+		const unregister = registerComponentPaneHost({
+			mainLocation: () => ({ sessionId: "main", blockId: "main" }),
+			agentLocation: () => undefined,
+			revealAgent: async () => false,
+			reopen: async () => ({ ok: false, reason: "unknown-block" }),
+			async open(_placement, _label, factory) {
+				view = (await factory(
+					{ terminal: { rows: 20 }, requestRender } as unknown as TUI,
+					theme,
+					KeybindingsManager.inMemory(),
+					answer.resolve,
+				)) as typeof view;
+				return { blockId: "md", result: answer.promise as never, requestRender, close: async () => {} };
+			},
+		});
+		try {
+			await openMarkdownDocument(
+				{ path: "/tmp/guide.md", title: "Guide", markdown: "## Section\n\nBuild", sections: [] },
+				{ kind: "main" },
+			);
+			view!.handleInput("\x1b[A");
+			view!.handleInput("c");
+			view!.handleInput("old conversation note");
+			view!.handleInput("\r");
+			if (transition === "submit race") {
+				view!.handleInput("s");
+				vi.spyOn(manager, "getSessionId").mockReturnValue("new-session");
+			} else if (transition === "session change") {
+				await manager.newSession();
+				for (const callback of callbacks) callback();
+				expect(requestRender).toHaveBeenCalled();
+			} else if (transition === "session disposal") disposed = true;
+			else {
+				view!.dispose();
+				answer.resolve(undefined);
+			}
+			view!.handleInput("s");
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(prompt).not.toHaveBeenCalled();
+			const shown = view!.render(80).join("\n");
+			expect(shown).toMatch(/session changed/i);
+			expect(shown).toMatch(/comments not sent/i);
+			view!.handleInput("\x1b");
+			await answer.promise;
+			view!.dispose();
+			expect(callbacks.size).toBe(0);
+		} finally {
+			unregister();
+		}
+	});
+}

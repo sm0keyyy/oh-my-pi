@@ -4,6 +4,13 @@
 
 ### Added
 
+- Persist main-session todos in beads with durable IDs, ready/adopt/file operations, dependencies, offline reconciliation and agent-only auto-advance.
+- Preserve queued todo writes and recovered bead identities across maintenance and restarts.
+- Added live Rex todo and Agents panels with dock/float defaults, native controls, and automatic main-HUD restoration.
+- Task calls can link todos or beads and complete them after successful subagent results; failed, aborted and operator-stopped runs leave them unchanged.
+- Show bead IDs in the Rex todo panel and refresh todo displays and tab titles from tracker changes.
+- Added dockable usage and read-only Team feed panels.
+- Added a floating dashboard that follows Rex tabs and starts ready beads through their main session.
 - Added per-pane Rex resume records that preserve conversations after disconnects.
 - Added Rex tab titles from the session title and active todo item, preserving manual renames.
 - Finished Rex subagent panes retain the last five runs with Live and Thread views; operator messages revive finished agents.

@@ -70,7 +70,7 @@ function createCloneStub(overrides?: {
 	const clone = {
 		agent: { appendMessage, state: { messages } },
 		sessionManager: overrides?.sessionManager,
-		setTodoPhases: vi.fn(),
+		resetTodoPhases: vi.fn(),
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
 		getMountedXdevToolNames: vi.fn(() => overrides?.mountedToolNames ?? []),
@@ -638,7 +638,7 @@ describe("TanCommandController", () => {
 		// Inherited parent todos are wiped both in-memory and in the persisted
 		// session so reloads agree; otherwise todo reminders drag the tan back
 		// onto the parent's task.
-		expect(stub.clone.setTodoPhases).toHaveBeenCalledWith([]);
+		expect(stub.clone.resetTodoPhases).toHaveBeenCalledWith([]);
 		expect(harness.cloneManager.appendCustomEntry).toHaveBeenCalledWith("user_todo_edit", { phases: [] });
 		// Initial dispatch places the fork notice before prompt(); after a
 		// post-dispatch compaction, the listener restores both messages in order

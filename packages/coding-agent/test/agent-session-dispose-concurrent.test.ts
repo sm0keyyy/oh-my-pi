@@ -209,9 +209,15 @@ describe("AgentSession concurrent disposal", () => {
 		const current = createSession();
 		const hangingTask = Promise.withResolvers<void>();
 		current.trackPostPromptTaskForTests(hangingTask.promise);
+		const aborted = Promise.withResolvers<void>();
+		const abort = current.agent.abort.bind(current.agent);
+		vi.spyOn(current.agent, "abort").mockImplementation(() => {
+			abort();
+			aborted.resolve();
+		});
 
 		const dispose = current.dispose();
-		await flushMicrotasks();
+		await aborted.promise;
 		vi.advanceTimersByTime(5_000);
 		await flushMicrotasks();
 		await dispose;

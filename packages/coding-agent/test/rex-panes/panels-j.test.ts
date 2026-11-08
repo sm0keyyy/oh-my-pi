@@ -67,6 +67,7 @@ function panels() {
 		mainLocation: () => ({ sessionId: "session:test", blockId: "block:main" }),
 		agentLocation: () => undefined,
 		revealAgent: async () => false,
+		reopen: async () => ({ ok: false, reason: "unknown-block" }),
 		async open(placement, label, factory) {
 			placements.push(placement);
 			const done = Promise.withResolvers<undefined>();

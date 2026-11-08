@@ -83,6 +83,9 @@ class PanelHost implements ComponentPaneHost {
 	agentLocation() {
 		return undefined;
 	}
+	async reopen() {
+		return { ok: false, reason: "unknown-block" } as const;
+	}
 	async revealAgent(id: string) {
 		this.revealed.push(id);
 		this.focus.resolve(id);

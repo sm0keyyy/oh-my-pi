@@ -205,9 +205,7 @@ describe("todo task links", () => {
 				result(options.agentId, {
 					isolated: true,
 					patchPath: `${options.artifactsDir}/${options.agentId}.patch`,
-					...(nested
-						? { nestedPatches: [{ relativePath: "nested", patch: "nested changes" }] }
-						: {}),
+					...(nested ? { nestedPatches: [{ relativePath: "nested", patch: "nested changes" }] } : {}),
 				}),
 			);
 			vi.spyOn(isolationRunner, "mergeIsolatedChanges").mockResolvedValue({
@@ -313,7 +311,9 @@ describe("todo task links", () => {
 				coordinator,
 				parentToolCallId: toolCall.id,
 			})) as TaskLaunchSession;
-			const task = linked ? "BUILD adapter!\nReport the result." : "Inspect dependencies.\nBuild adapter is separate.";
+			const task = linked
+				? "BUILD adapter!\nReport the result."
+				: "Inspect dependencies.\nBuild adapter is separate.";
 			let assignment = "";
 			vi.spyOn(executor, "runSubprocess").mockImplementation(async options => {
 				assignment = options.assignment ?? "";
@@ -443,7 +443,9 @@ describe("todo task links", () => {
 					if (!budgetStop && request === 1) {
 						return { content: ["Inspecting adapter."], delayMs: 10_000 };
 					}
-					return { content: [{ type: "toolCall", name: "yield", arguments: { data: "partial adapter summary" } }] };
+					return {
+						content: [{ type: "toolCall", name: "yield", arguments: { data: "partial adapter summary" } }],
+					};
 				},
 			});
 			const available = registry.getAvailable.bind(registry);

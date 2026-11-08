@@ -25,7 +25,12 @@ export async function peerRpc(pid: number, options: { dir?: string } = {}): Prom
 				let meta: unknown;
 				try {
 					const info = await file.stat();
-					if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > 4096)
+					if (
+						!info.isFile() ||
+						info.uid !== process.getuid?.() ||
+						(info.mode & 0o777) !== 0o600 ||
+						info.size > 4096
+					)
 						continue;
 					meta = JSON.parse(await file.readFile("utf8"));
 				} finally {

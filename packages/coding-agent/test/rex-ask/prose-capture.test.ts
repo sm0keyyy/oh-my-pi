@@ -57,6 +57,7 @@ describe("prose questions become operator asks", () => {
 		judged = [];
 		filed = [];
 		replies = [];
+		vi.spyOn(asks, "askHostSessionId").mockReturnValue("test-prose-capture");
 		vi.spyOn(globalThis, "fetch").mockImplementation(
 			asGlobalFetch(async (_url, init) => {
 				const body = JSON.parse(String(init?.body));
@@ -96,8 +97,7 @@ describe("prose questions become operator asks", () => {
 		};
 	}
 
-	it("captures the main final paragraph and delivers /quit as literal user text", async () => {
-		const manager = SessionManager.inMemory("/tmp/prose-capture");
+	function mainSession(): AgentSession {
 		const agent = new Agent({
 			initialState: {
 				model: getBundledModel("anthropic", "claude-sonnet-4-5"),
@@ -106,33 +106,48 @@ describe("prose questions become operator asks", () => {
 				systemPrompt: ["Test"],
 			},
 		});
-		session = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry: registry });
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory("/tmp/prose-capture"),
+			settings,
+			modelRegistry: registry,
+		});
+		vi.spyOn(asks, "askHostSessionId").mockReturnValue(session.sessionId);
+		return session;
+	}
+
+	it("captures the main final paragraph and delivers /quit as literal user text", async () => {
+		const live = mainSession();
+		const agent = live.agent;
 		const delivered = Promise.withResolvers<void>();
 		const prompt = vi.spyOn(agent, "prompt").mockImplementation(async () => delivered.resolve());
 		const message = createAssistantMessage(`The watchdog is configured.\n\n${question}`);
 		agent.emitExternalEvent({ type: "message_end", message });
 		agent.emitExternalEvent({ type: "agent_end", messages: [message] });
 		await untilAborted(AbortSignal.timeout(4_000), delivered.promise);
-		await session.waitForIdle();
+		await live.waitForIdle();
 		expect(judged).toEqual([message.content[0].type === "text" ? message.content[0].text : ""]);
 		expect(filed).toEqual([
 			{
 				question,
 				context: "The watchdog is configured.",
-				source: { agent: "Main", role: "main", sessionId: session.sessionId, sessionLabel: undefined },
+				source: { agent: "Main", role: "main", sessionId: live.sessionId, sessionLabel: undefined },
 				allowFreeText: true,
+				signal: expect.any(AbortSignal),
 			},
 		]);
-		expect(prompt.mock.calls[0][0]).toEqual([
+		const dispatched: unknown = prompt.mock.calls[0][0];
+		expect(dispatched).toEqual([
 			expect.objectContaining({ role: "user", content: [{ type: "text", text: "/quit" }] }),
 		]);
 		agent.state.isStreaming = true;
 		try {
 			await captureProseAsk(`${question} (busy)`, {
 				...deps(),
-				prompt: (answer, options) => session!.prompt(answer, options),
+				sessionId: live.sessionId,
+				prompt: (answer, options) => live.prompt(answer, options),
 			});
-			expect(session.getQueuedMessages()).toMatchObject({ followUp: ["/quit"], steering: [] });
+			expect(live.getQueuedMessages()).toMatchObject({ followUp: ["/quit"], steering: [] });
 		} finally {
 			agent.state.isStreaming = false;
 		}
@@ -155,6 +170,47 @@ describe("prose questions become operator asks", () => {
 		expect(judged).toEqual([]);
 		expect(filed).toEqual([]);
 	});
+
+	it("does not capture a helper session even when its agentKind is main", async () => {
+		await captureProseAsk(question, { ...deps(), sessionId: "helper-session" });
+		expect(judged).toEqual([]);
+		expect(filed).toEqual([]);
+	});
+
+	it("does not call Jev without an ask-pane host", async () => {
+		vi.spyOn(asks, "askHostSessionId").mockReturnValue(undefined);
+		await captureProseAsk(question, deps());
+		expect(judged).toEqual([]);
+		expect(filed).toEqual([]);
+	});
+
+	for (const action of ["abort", "chat"] as const) {
+		it(`${action} withdraws a pending capture and rejects its late answer`, async () => {
+			const live = mainSession();
+			const asked = Promise.withResolvers<Parameters<typeof asks.requestOperatorAsk>[0]>();
+			const answer = Promise.withResolvers<asks.OperatorAskAnswer>();
+			vi.spyOn(asks, "requestOperatorAsk").mockImplementation(req => {
+				asked.resolve(req);
+				return answer.promise;
+			});
+			const prompt = vi.spyOn(live.agent, "prompt").mockResolvedValue();
+			const message = createAssistantMessage(`${question} (${action})`);
+			live.agent.emitExternalEvent({ type: "message_end", message });
+			live.agent.emitExternalEvent({ type: "agent_end", messages: [message] });
+			const pending = await untilAborted(AbortSignal.timeout(4_000), asked.promise);
+			if (action === "abort") await live.abort();
+			else await live.prompt("Do it.");
+			expect(pending.signal?.aborted).toBe(true);
+			answer.resolve({ answer: "Stale float answer" });
+			await live.waitForIdle();
+			const dispatched: unknown = prompt.mock.calls.map(([messages]) => messages);
+			expect(dispatched).toEqual(
+				action === "abort"
+					? []
+					: [[expect.objectContaining({ role: "user", content: [{ type: "text", text: "Do it." }] })]],
+			);
+		});
+	}
 
 	it("logs one capture failure and files nothing when Jev fails", async () => {
 		fail = true;

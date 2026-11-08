@@ -1222,6 +1222,7 @@ export class AgentSession implements SettingsScope {
 	#postPromptTasksPromise: Promise<void> | undefined = undefined;
 	#postPromptTasksResolve: (() => void) | undefined = undefined;
 	#postPromptTasksAbortController = new AbortController();
+	#proseCaptureAbort: AbortController | undefined;
 	/**
 	 * Cancels the current turn's pre-dispatch setup (memory-backend auto-recall and
 	 * other awaited preparation in {@link #prepareAgentStart}) when {@link abort} runs.
@@ -4512,6 +4513,7 @@ export class AgentSession implements SettingsScope {
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
+			this.#abortProseCapture();
 			this.#activeAgentPromptGeneration = eventPromptGeneration;
 			// A run resumed from an unpaired assistant tail (retry of a failed tool
 			// batch) executes that turn's calls without a new message_end.
@@ -5308,9 +5310,15 @@ export class AgentSession implements SettingsScope {
 				await emitAgentEndNotification({ willContinue: true, awaitingAsyncWork: true });
 				return;
 			}
+			let proseCapture: AbortController | undefined;
+			if (msg.stopReason === "stop" && this.#agentKind === "main") {
+				this.#abortProseCapture();
+				proseCapture = new AbortController();
+				this.#proseCaptureAbort = proseCapture;
+			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
 			await emitAgentEndNotification(sessionStopWillContinue ? { willContinue: true } : undefined);
-			if (!sessionStopWillContinue && msg.stopReason === "stop" && this.#agentKind === "main") {
+			if (!sessionStopWillContinue && proseCapture && !proseCapture.signal.aborted) {
 				const text = msg.content
 					.filter(content => content.type === "text")
 					.map(content => content.text)
@@ -5324,7 +5332,7 @@ export class AgentSession implements SettingsScope {
 					metadataResolver: provider => this.agent.metadataForProvider(provider),
 					onUsage: journalJudgmentUsage(this.sessionManager),
 					telemetry: this.agent.telemetry,
-					signal: this.#postPromptTasksAbortController.signal,
+					signal: proseCapture.signal,
 					agentKind: this.#agentKind,
 					source: {
 						agent: this.#agentId ?? "Main",
@@ -5335,7 +5343,11 @@ export class AgentSession implements SettingsScope {
 					isCurrent: () =>
 						!this.#isDisposed && this.sessionId === sessionId && this.#promptGeneration === eventPromptGeneration,
 					prompt: (answer, options) => this.prompt(answer, options),
+				}).finally(() => {
+					if (this.#proseCaptureAbort === proseCapture) this.#proseCaptureAbort = undefined;
 				});
+			} else if (this.#proseCaptureAbort === proseCapture) {
+				this.#abortProseCapture();
 			}
 		}
 	};
@@ -5699,7 +5711,14 @@ export class AgentSession implements SettingsScope {
 		return true;
 	}
 
+	#abortProseCapture(): void {
+		const controller = this.#proseCaptureAbort;
+		this.#proseCaptureAbort = undefined;
+		controller?.abort();
+	}
+
 	async #cancelPostPromptTasks(): Promise<void> {
+		this.#abortProseCapture();
 		this.#postPromptTasksAbortController.abort();
 		this.#postPromptTasksAbortController = new AbortController();
 		this.#ttsr.resolveResume();
@@ -6147,6 +6166,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#beginSessionTransition(): Disposable {
+		this.#abortProseCapture();
 		// Before anything awaits: a reload keeps the session id, so only the transition itself can supersede
 		// a pending idle check or an in-flight recap that belong to the transcript being replaced.
 		this.#idleMaintenance?.invalidate();
@@ -6278,6 +6298,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	#notifySessionChangeCallbacks(): void {
+		this.#abortProseCapture();
 		for (const callback of Array.from(this.#sessionChangeCallbacks)) {
 			try {
 				callback();
@@ -6348,6 +6369,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#abortProseCapture();
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -8307,6 +8329,7 @@ export class AgentSession implements SettingsScope {
 	 * that a prior user interrupt suppressed and resets plan-mode reminder state.
 	 */
 	#noteUserTurn(): void {
+		this.#abortProseCapture();
 		this.#advisors.autoResumeSuppressed = false;
 		this.#planModeReminderCount = 0;
 		this.#planModeReminderAwaitingProgress = false;

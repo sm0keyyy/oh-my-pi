@@ -2,7 +2,7 @@ import { type JudgmentState, judgeQuestions } from "@oh-my-pi/pi-ai";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import { resolveJudge, sharedJudgmentCache } from "../judgment";
 import questionFile from "../prompts/judge/prose-capture.json" with { type: "json" };
-import { requestOperatorAsk } from "../rex-ask";
+import { askHostSessionId, requestOperatorAsk } from "../rex-ask";
 import type { PromptOptions } from "../session/agent-session-types";
 import type { ClassifyUnexpectedStopDeps } from "../session/unexpected-stop-classifier";
 import { rexAskSettings } from "./settings";
@@ -22,13 +22,14 @@ interface ProseCaptureDeps extends ClassifyUnexpectedStopDeps {
 /** Optional post-turn capture; an unavailable judge must not create an ask. */
 export async function captureProseAsk(message: string, deps: ProseCaptureDeps): Promise<void> {
 	if (deps.agentKind !== "main" || !rexAskSettings.proseCapture.get(deps.settings)) return;
+	if (deps.sessionId !== askHostSessionId()) return;
 	const text = message.trim();
 	const separator = /\r?\n[\t ]*\r?\n/g;
 	let paragraphStart = 0;
 	for (const match of text.matchAll(separator)) paragraphStart = match.index + match[0].length;
 	const paragraph = text.slice(paragraphStart).trim();
 	if (!ASK_PATTERN.test(text) && !paragraph.includes("?")) return;
-	if (deps.signal?.aborted || !deps.isCurrent()) return;
+	if (deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId()) return;
 
 	try {
 		const timeout = AbortSignal.timeout(8_000);
@@ -48,15 +49,18 @@ export async function captureProseAsk(message: string, deps: ProseCaptureDeps): 
 		const { answers } = await untilAborted(signal, () =>
 			judge.judge({ state, questions: { asks: QUESTIONS.asks } }, { signal }),
 		);
-		if (answers.asks.noul < 0.5 || deps.signal?.aborted || !deps.isCurrent()) return;
+		if (answers.asks.noul < 0.5 || deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId())
+			return;
 		const pending = requestOperatorAsk({
 			question: paragraph.slice(0, 500),
 			context: text.slice(0, paragraphStart).trim().slice(-600),
 			source: deps.source,
 			allowFreeText: true,
+			signal: deps.signal,
 		});
 		const result = deps.signal ? await untilAborted(deps.signal, () => pending) : await pending;
-		if ("cancelled" in result || deps.signal?.aborted || !deps.isCurrent()) return;
+		if ("cancelled" in result || deps.signal?.aborted || !deps.isCurrent() || deps.sessionId !== askHostSessionId())
+			return;
 		await deps.prompt(result.answer, { expandPromptTemplates: false, streamingBehavior: "followUp" });
 	} catch (error) {
 		// Capture is optional; leave the original final message available on failure.

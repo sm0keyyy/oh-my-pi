@@ -55,7 +55,7 @@ test("write keeps the shell hook record current across a session switch and refu
 	}
 });
 
-test("exit follows RR.b while disconnect signals and plain teardown preserve the record", async () => {
+test("RR.b removes the record on normal exit but preserves it on crashes, signals and plain teardown", async () => {
 	const fixture = await createTestSession();
 	let onExit: ((reason: postmortem.Reason) => void | Promise<void>) | undefined;
 	const register = postmortem.register;
@@ -66,9 +66,9 @@ test("exit follows RR.b while disconnect signals and plain teardown preserve the
 	try {
 		for (const [reason, kept] of [
 			[postmortem.Reason.EXIT, false],
-			[postmortem.Reason.SIGINT, false],
-			[postmortem.Reason.UNCAUGHT_EXCEPTION, false],
-			[postmortem.Reason.UNHANDLED_REJECTION, false],
+			[postmortem.Reason.SIGINT, true],
+			[postmortem.Reason.UNCAUGHT_EXCEPTION, true],
+			[postmortem.Reason.UNHANDLED_REJECTION, true],
 			[postmortem.Reason.SIGHUP, true],
 			[postmortem.Reason.SIGTERM, true],
 		] as const) {

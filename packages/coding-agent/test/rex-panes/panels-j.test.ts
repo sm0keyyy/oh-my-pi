@@ -7,7 +7,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { type Component, TUI } from "@oh-my-pi/pi-tui";
 import { getKeybindings } from "@oh-my-pi/pi-tui/keybindings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../../tui/test/virtual-terminal";
 import { Setting } from "../../src/config/registry";
 import { Settings } from "../../src/config/settings";
@@ -60,9 +60,11 @@ async function eventually(assertion: () => void): Promise<void> {
 	}
 }
 
-function panels() {
+function panels(initialSessionFile?: string) {
 	const placements: PanePlacement[] = [];
 	const components: Component[] = [];
+	let sessionFile = initialSessionFile;
+	const sessionChanges = new Set<() => void>();
 	const host: ComponentPaneHost = {
 		mainLocation: () => ({ sessionId: "session:test", blockId: "block:main" }),
 		agentLocation: () => undefined,
@@ -91,12 +93,27 @@ function panels() {
 	const settings = Settings.isolated();
 	const mode = {
 		refreshRexPanelWidgets() {},
-		sessionManager: { getSessionFile: () => undefined },
-		session: { sessionManager: { getCwd: () => "/tmp" } },
+		sessionManager: { getSessionFile: () => sessionFile },
+		session: {
+			sessionManager: { getCwd: () => "/tmp" },
+			registerSessionChangeCallback(callback: () => void) {
+				sessionChanges.add(callback);
+				return () => sessionChanges.delete(callback);
+			},
+		},
 	} as unknown as InteractiveMode;
 	const service = startRexPanels({ settings, mode });
 	cleanups.push(() => service.dispose());
-	return { service, settings, placements, components };
+	return {
+		service,
+		settings,
+		placements,
+		components,
+		switchSession(file: string | undefined) {
+			sessionFile = file;
+			for (const callback of sessionChanges) callback();
+		},
+	};
 }
 
 test("PJ.a usage docks by default, floats on override, renders numeric snapshots and redraws", async () => {
@@ -212,6 +229,42 @@ test("PJ.c feed reconciles live delivery with nearby history timestamps without 
 	await bus.send({ from: "Beta", to: "Alpha", body: "Team update.", broadcast: true });
 	await later;
 	expect(plain(panel).match(/Team update\./g)).toHaveLength(2);
+});
+
+test("an open Feed resets on new and resumed sessions and cancels the previous history load", async () => {
+	using dir = TempDir.createSync("@omp-feed-switch-");
+	const resumed = `${dir.path()}/resumed.jsonl`;
+	await Bun.write(
+		resumed,
+		[
+			JSON.stringify({ type: "session", id: "resumed", timestamp: "2026-01-01T00:00:00Z" }),
+			JSON.stringify({
+				type: "custom_message",
+				id: "new-irc",
+				timestamp: "2026-01-01T00:00:01Z",
+				customType: "irc:incoming",
+				details: { from: "NewAgent", message: "Resumed persisted history" },
+			}),
+		].join("\n"),
+	);
+	const f = panels(`${import.meta.dir}/../fixtures/threads/feed/root.jsonl`);
+	await f.service.toggle("feed");
+	const panel = f.components.at(-1) as FeedPanel;
+	await panel.ready;
+	expect(plain(panel)).toContain("Team update.");
+	f.switchSession(undefined);
+	await panel.ready;
+	expect(plain(panel)).not.toContain("Team update.");
+	f.switchSession(`${import.meta.dir}/../fixtures/threads/feed/root.jsonl`);
+	const stale = panel.ready;
+	f.switchSession(resumed);
+	await Promise.all([stale, panel.ready]);
+	expect(plain(panel)).toContain("Resumed persisted history");
+	expect(plain(panel)).not.toContain("Team update.");
+	expect(plain(panel)).not.toContain("Root gets this.");
+	await f.service.dispose();
+	f.switchSession(undefined);
+	expect(plain(panel)).not.toContain("Resumed persisted history");
 });
 
 test("PJ.c feed retains only the newest 500 items after timestamp sorting", async () => {

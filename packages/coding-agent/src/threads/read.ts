@@ -1,3 +1,4 @@
+import { truncateHeadBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { isEnoent, isRecord, logger, readLines, tryParseJson } from "@oh-my-pi/pi-utils";
 import type { FileEntry, SessionEntry, SessionTitleSlotEntry } from "../session/session-entries";
 import { AgentThreadProjection, textContent, threadItemBytes, type ThreadCallSource } from "./build";
@@ -69,8 +70,18 @@ export async function readAgentThreadPage(
 		(item, discardIndex) => {
 			const cursor = { ts: item.ts, index: index++ };
 			if (options.before && compareCursor(cursor, options.before) >= 0) return;
+			const originalBytes = threadItemBytes(item);
+			if (originalBytes > MAX_THREAD_BYTES) {
+				const marker = `\n[Truncated thread entry: ${originalBytes} bytes; full entry in ${sessionFile}]`;
+				// JSON escaping can use six bytes per character. Leave room for identity fields and the marker.
+				const text =
+					truncateHeadBytes(
+						item.kind === "ask" ? item.questions.join("\n") : item.text,
+						Math.floor((MAX_THREAD_BYTES - MAX_INDEX_BYTES) / 6),
+					).text + marker;
+				item = item.kind === "ask" ? { ...item, questions: [text] } : { ...item, text };
+			}
 			const bytes = threadItemBytes(item);
-			if (bytes > MAX_THREAD_BYTES) return;
 			if (itemBytes + indexBytes + bytes > MAX_THREAD_BYTES) discardIndex();
 			let position = retained.length;
 			while (position > 0 && compareCursor(retained[position - 1]!.cursor, cursor) > 0) position--;

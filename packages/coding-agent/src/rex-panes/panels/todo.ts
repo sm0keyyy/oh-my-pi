@@ -71,9 +71,9 @@ export class TodoPanel implements Component {
 		readonly location: () => RexLocation,
 		readonly signal: AbortSignal,
 	) {
-		this.#view = mode.todoHudView(true);
+		this.#view = mode.todoHudView(true, { ids: true });
 		this.#unsubscribe = mode.onTodoPanelChange(() => {
-			this.#view = mode.todoHudView(true);
+			this.#view = mode.todoHudView(true, { ids: true });
 			tui.requestRender();
 		});
 	}

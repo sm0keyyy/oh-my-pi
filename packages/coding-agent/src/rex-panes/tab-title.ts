@@ -78,15 +78,12 @@ export function startTabTitle(session: AgentSession, rex: TabTitleRex, env: Node
 	let disposed = false;
 	let running = false;
 	let dirty = false;
-	let observed: string | undefined;
 	let debounce: NodeJS.Timeout | undefined;
-	let poll: NodeJS.Timeout | undefined;
 	const unsubscribers: Array<() => void> = [];
 	const dispose = (): void => {
 		if (disposed) return;
 		disposed = true;
 		clearTimeout(debounce);
-		clearInterval(poll);
 		for (const unsubscribe of unsubscribers) unsubscribe();
 	};
 	const title = (): string | undefined => tabTitleFor(session.sessionName, session.getTodoPhases());
@@ -100,8 +97,7 @@ export function startTabTitle(session: AgentSession, rex: TabTitleRex, env: Node
 		}
 		running = true;
 		try {
-			observed = title();
-			if (!observed) return;
+			if (!title()) return;
 			const window = await rex.windowOf(sessionId, blockId);
 			if (disposed || !window || overridden.has(window.windowId)) return;
 			const previous = labels.get(window.windowId);
@@ -113,7 +109,6 @@ export function startTabTitle(session: AgentSession, rex: TabTitleRex, env: Node
 			if (!next || disposed) return;
 			if (next !== window.label) await rex.setWindowLabel(sessionId, window.windowId, next);
 			labels.set(window.windowId, next);
-			observed = next;
 		} catch (error) {
 			dispose();
 			logger.warn("rex-panes: tab title unavailable", { error: String(error) });
@@ -135,17 +130,13 @@ export function startTabTitle(session: AgentSession, rex: TabTitleRex, env: Node
 		unsubscribers.push(
 			session.sessionManager.onSessionNameChanged(schedule),
 			session.registerSessionChangeCallback(schedule),
+			session.subscribeTodoPhases(schedule),
 			session.subscribe(event => {
 				if (event.type === "agent_end" || (event.type === "tool_execution_end" && event.toolName === "todo")) {
 					schedule();
 				}
 			}),
 		);
-		// Direct todo edits append user_todo_edit without a session event.
-		poll = setInterval(() => {
-			if (title() !== observed) void refresh();
-		}, 1000);
-		poll.unref();
 		void refresh();
 	} catch (error) {
 		dispose();

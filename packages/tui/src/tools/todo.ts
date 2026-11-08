@@ -85,7 +85,8 @@ const TODO_DESCRIPTION_MIN_OVERLAP = 6;
 const NORMALIZED_TODO_CACHE_LIMIT = 1024;
 const normalizedTodoCache = new Map<string, string>();
 
-function normalizeForTodoMatch(value: string): string {
+/** Normalize todo text for description matching and exact task links. */
+export function normalizeForTodoMatch(value: string): string {
 	let normalized = normalizedTodoCache.get(value);
 	if (normalized !== undefined) return normalized;
 	normalized = value

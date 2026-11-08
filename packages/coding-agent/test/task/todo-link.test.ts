@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
+import type { AgentToolCall, SpeculativeOperationSink } from "@oh-my-pi/pi-agent-core";
 import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
@@ -19,6 +20,7 @@ import * as executor from "../../src/task/executor";
 import * as isolationRunner from "../../src/task/isolation-runner";
 import { formatTaskResultSummary } from "../../src/task/result-summary";
 import { stopSubagent } from "../../src/task/run-controls";
+import type { TaskLaunchSession } from "../../src/task/speculative-launch";
 import { cfgTaskBatch, cfgTaskEnableLsp, cfgTaskMaxRecursionDepth, cfgTaskPrewalk } from "../../src/task/settings";
 import { getTaskSchema, taskItemSchema, taskSchema } from "../../src/task/types";
 import { cfgAsyncEnabled } from "../../src/tools/settings";
@@ -228,25 +230,28 @@ describe("todo task links", () => {
 
 	it("link resolves exact text or one unique match, but never an ambiguous or missing target", async () => {
 		const fixture = await parent();
-		vi.spyOn(executor, "runSubprocess").mockImplementation(async options =>
-			result(options.id, { description: "Build adapter and report" }),
-		);
+		let assignment = "";
+		vi.spyOn(executor, "runSubprocess").mockImplementation(async options => {
+			assignment = options.assignment ?? "";
+			return result(options.id);
+		});
 		const tool = await TaskTool.create(fixture.session);
 		for (const todo of ["Build adapter", undefined]) {
 			fixture.tracker.setPhases([{ name: "Build", tasks: [{ content: "Build adapter", status: "pending" }] }]);
 			const response = await tool.execute("match", {
-				task: "Build adapter and report the result",
+				task: "  BUILD---adapter! \nReport the result.",
 				...(todo ? { todo } : {}),
 			});
+			expect(assignment).toContain("<bead>");
 			expect(response.details!.results[0]!.todo).toBe("Build adapter");
 			expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("completed");
 		}
 		fixture.tracker.setPhases([
 			{ name: "One", tasks: [{ content: "Build adapter", status: "pending" }] },
-			{ name: "Two", tasks: [{ content: "adapter and report", status: "pending" }] },
+			{ name: "Two", tasks: [{ content: "BUILD adapter!", status: "pending" }] },
 		]);
 		const before = fixture.tracker.phases;
-		const ambiguous = await tool.execute("ambiguous", { task: "Build adapter and report" });
+		const ambiguous = await tool.execute("ambiguous", { task: "Build adapter\nReport the result." });
 		expect(ambiguous.details!.results[0]!.todo).toBeUndefined();
 		expect(fixture.tracker.phases).toEqual(before);
 		const missing = await tool.execute("missing", { task: "Build adapter", todo: "missing-bead" });
@@ -256,23 +261,85 @@ describe("todo task links", () => {
 		expect(fixture.tracker.phases).toEqual(before);
 	});
 
-	it("link ignores a todo mentioned only in the brief, with an unrelated or absent short label", async () => {
+	it("link ignores passing mentions, including a substring of the first line and a matching result label", async () => {
 		const fixture = await parent();
-		let description: string | undefined = "Inspect dependencies";
-		vi.spyOn(executor, "runSubprocess").mockImplementation(async options => result(options.id, { description }));
+		vi.spyOn(executor, "runSubprocess").mockImplementation(async options =>
+			result(options.id, { description: "Build adapter" }),
+		);
 		const tool = await TaskTool.create(fixture.session);
 		const before = fixture.tracker.phases;
-		for (const label of ["Inspect dependencies", undefined]) {
-			description = label;
-			const response = await tool.execute("passing-mention", {
-				task: "Inspect dependencies.\nDo not Build adapter; that belongs to another task.",
-			});
+		for (const task of [
+			"Do not Build adapter; inspect dependencies instead.",
+			"Inspect dependencies.\nBuild adapter belongs to another task.",
+		]) {
+			const response = await tool.execute("passing-mention", { task });
 			expect(response.details!.results[0]!.todo).toBeUndefined();
 			expect(fixture.tracker.phases).toEqual(before);
 			expect(fixture.remote.get(fixture.id)!.status).toBe("in_progress");
 			expect(text(response)).not.toContain("marked done.");
 		}
 	});
+
+	it("an unresolved explicit link stays unlinked when its target appears during the run", async () => {
+		const fixture = await parent();
+		vi.spyOn(executor, "runSubprocess").mockImplementation(async options => {
+			expect(options.assignment).not.toContain("<bead>");
+			const phases = fixture.tracker.phases;
+			phases[0]!.tasks.push({ content: "Late target", status: "pending" });
+			fixture.tracker.setPhases(phases);
+			return result(options.id, { description: "Late target" });
+		});
+		const tool = await TaskTool.create(fixture.session);
+		const response = await tool.execute("late-link", { task: "Inspect dependencies", todo: "Late target" });
+		expect(response.details!.results[0]!.todo).toBeUndefined();
+		expect(text(response)).toContain("Todo link Late target not found.");
+		expect(text(response)).not.toContain("marked done.");
+		expect(fixture.tracker.phases[0]!.tasks.at(-1)!.status).toBe("pending");
+	});
+
+	for (const linked of [false, true]) {
+		it(`speculation ${linked ? "defers first-line links until dispatch" : "can discard a finished unlinked run without ticking its result label"}`, async () => {
+			const fixture = await parent();
+			cfgTaskBatch.override(fixture.settings, true);
+			const tool = await TaskTool.create(fixture.session);
+			const coordinator: SpeculativeOperationSink = {
+				maxInFlight: 1,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: true }),
+				close: () => {},
+			};
+			const toolCall: AgentToolCall = { type: "toolCall", id: "speculative-link", name: "task", arguments: {} };
+			const stream = (await tool.speculation.stream!.open({
+				coordinator,
+				parentToolCallId: toolCall.id,
+			})) as TaskLaunchSession;
+			const task = linked ? "BUILD adapter!\nReport the result." : "Inspect dependencies.\nBuild adapter is separate.";
+			let assignment = "";
+			vi.spyOn(executor, "runSubprocess").mockImplementation(async options => {
+				assignment = options.assignment ?? "";
+				return result(options.id, { description: "Build adapter" });
+			});
+			const args = { context: "shared", tasks: [{ name: "Speculative", task }] };
+			stream.update(toolCall, JSON.stringify(args));
+			const runs = await stream.adopt([{ name: "Speculative", agent: "task", task, context: "shared" }]);
+			if (linked) {
+				expect(runs.size).toBe(0);
+				expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("in_progress");
+				const response = await tool.execute(toolCall.id, args);
+				expect(assignment).toContain("<bead>");
+				expect(response.details!.results[0]!.todo).toBe(fixture.id);
+				expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("completed");
+			} else {
+				const run = runs.get(0)!;
+				const response = await run.result;
+				run.discard("Finished call rejected without dispatch");
+				expect(response.details!.results[0]!.todo).toBeUndefined();
+				expect(text(response)).not.toContain("marked done.");
+				expect(fixture.tracker.phases[0]!.tasks[0]!.status).toBe("in_progress");
+				expect(fixture.remote.get(fixture.id)!.status).toBe("in_progress");
+			}
+		});
+	}
 
 	it("link stays on its bead after a rename and repeated results do not reopen closed items", async () => {
 		const fixture = await parent();

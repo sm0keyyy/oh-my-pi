@@ -37,7 +37,7 @@ import taskSpawnFeedbackTemplate from "../prompts/tools/task-spawn-feedback.md" 
 import taskSpecializationAdvisoryTemplate from "../prompts/tools/task-specialization-advisory.md" with { type: "text" };
 import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { type: "text" };
 import taskBeadTemplate from "../prompts/tools/task-bead.md" with { type: "text" };
-import { isClosedTodo, todoMatchesAnyDescription, type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { isClosedTodo, normalizeForTodoMatch, type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { applyOpsToPhases, resolveTodoTarget } from "../tools/todo";
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
 import { truncateForPrompt } from "../tools/approval";
@@ -1909,14 +1909,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 	}
 
-	#resolveTodoLink(params: TaskParams, description?: string): { task: TodoItem; phase: TodoPhase } | undefined {
+	#resolveTodoLink(params: TaskParams): { task: TodoItem; phase: TodoPhase } | undefined {
 		const phases = this.session.getTodoPhases?.() ?? [];
 		if (params.todo !== undefined) return resolveTodoTarget(phases, params.todo);
-		if (!description?.trim()) return undefined;
+		const label = normalizeForTodoMatch((params.task ?? "").split(/\r?\n/, 1)[0]);
+		if (!label) return undefined;
 		let match: { task: TodoItem; phase: TodoPhase } | undefined;
 		for (const phase of phases) {
 			for (const task of phase.tasks) {
-				if (isClosedTodo(task) || !todoMatchesAnyDescription(task.content, [description])) continue;
+				if (isClosedTodo(task) || normalizeForTodoMatch(task.content) !== label) continue;
 				if (match) return undefined;
 				match = { task, phase };
 			}
@@ -1939,7 +1940,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const link = this.#resolveTodoLink(params);
-		let todo = link ? (link.task.id ?? link.task.content) : undefined;
+		const todo = link ? (link.task.id ?? link.task.content) : undefined;
 		const assignment = link
 			? prompt.render(taskBeadTemplate, { assignment: (params.task ?? "").trim(), ...link })
 			: (params.task ?? "").trim();
@@ -2003,10 +2004,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					});
 				},
 			});
-			if (todo === undefined) {
-				const implicitLink = this.#resolveTodoLink(params, execution.result.description);
-				if (implicitLink) todo = implicitLink.task.id ?? implicitLink.task.content;
-			}
 			const result = { ...execution.result, ...taskFileMetadata, ...(todo !== undefined ? { todo } : {}) };
 			let todoNotice = missingLink;
 			if (
